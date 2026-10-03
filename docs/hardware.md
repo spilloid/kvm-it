@@ -116,6 +116,9 @@ Still unverified on hardware until you report:
 4. **Status**: `kvmit status` shows target USB enumerated, a round trip time, firmware 0.1.0. *(Verified
    except target USB, which needs the USB port on a target.)*
 5. **Type**: with the USB port on a target, `kvmit type "hello"` and `kvmit key ctrl alt delete` work.
+   *(Verified 2026-10-03 into a Windows 11 target: every printable US-ASCII character, chords Win+R and Ctrl+N,
+   Enter/Escape; Ctrl+Alt+Del not sent. Read back through the capture card. If the target sleeps or locks
+   mid-test, keys go to the lock screen: disable sleep on the target first.)*
 6. **Reconnect**: unplug/replug the adapter; `kvmit status` reconnects with no pairing step.
 7. **Stuck keys**: hold a key via the GUI capture then kill the app (`kill -9`): within ~5 s the target's key
    releases. Disconnecting Bluetooth releases immediately.

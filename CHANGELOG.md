@@ -4,7 +4,8 @@
 
 Verification: see the README status table. Short version: USB HID, BLE pairing and the GATT link
 (`kvmit pair`/`status` on Linux) and HDMI capture (one MacroSilicon card, 1080p) are hardware-verified. Typing
-over BLE and the GUI on Linux are maintainer-reported working. The LED and Windows are not verified.
+over BLE (`kvmit type`/`key` from Linux into a Windows 11 target, all printable US-ASCII) is hardware-verified.
+The GUI on Linux is maintainer-reported working. The LED and the Windows *controller* app are not verified.
 
 ### Added
 - GUI: "Send keys" panel (Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen, ...), F13-F24 mapping, and input capture without a video signal.

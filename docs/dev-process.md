@@ -155,3 +155,23 @@ here so the gap is visible; re-run before the release tag.
 - After the 3c fixes (release build, `sm_bonding` gated by the window): bonded reconnect with the window closed
   works (RTT 89 ms); a controller that lost its keys is refused with the window closed (0x205); after a BOOT
   press it pairs ("paired and connected", encrypted+bonded, MTU 247) and reconnects bonded (RTT 90 ms).
+
+## 2026-10-03 — Typing over BLE into a real target
+
+- Setup: Linux controller (Surface Laptop 4) → BLE → adapter USB port in a Windows 11 laptop; that laptop's HDMI into
+  the MacroSilicon capture card on the controller, so every result was read back from a `kvmit video snap` frame.
+- Verified: `kvmit key win r`, `kvmit key ctrl n`, Enter/Escape; `kvmit type` of five lines in a fresh Notepad tab
+  (lower, upper, digits, every shifted and unshifted US-ASCII symbol) arrived exactly; `status` afterwards: 0 keys
+  held, 0 bad frames. Seven further Run-box trials (~290 characters) had no losses.
+- **Open issues found:**
+  - Two single-character drops (`notepad` → `notead`; `p` lost from an alphabet run), both in the Windows Run box in
+    the first typing after the target had just woken and signed in; not reproduced in 11 later runs. Cause unknown
+    (Run-box autocomplete loading is a guess, not shown). The CLI reported `done` both times: it confirms adapter
+    delivery, not what the target did with the keys.
+  - Early tests were spoiled by the target sleeping/locking (keys went to the lock screen). Target power settings
+    must keep it awake during provisioning; worth a note in the user docs.
+  - `bluez-async` 0.8.2 panics in a tokio worker (`messagestream.rs:40`, `unwrap()` on D-Bus "No match with that
+    id found") on some runs; output was unaffected each time, but a panicking task must be fixed before release.
+  - `kvmit video snap` grabs the first frame; this capture card needs a few seconds of streaming (and sometimes a USB
+    reset) before it shows the source, so snapshots took 1-8 retries.
+
