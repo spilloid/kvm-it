@@ -16,6 +16,8 @@ pub fn to_hid(k: K) -> Option<Key> {
         K::Comma => 0x36, K::Period => 0x37, K::Slash => 0x38,
         K::F1 => 0x3A, K::F2 => 0x3B, K::F3 => 0x3C, K::F4 => 0x3D, K::F5 => 0x3E, K::F6 => 0x3F,
         K::F7 => 0x40, K::F8 => 0x41, K::F9 => 0x42, K::F10 => 0x43, K::F11 => 0x44, K::F12 => 0x45,
+        K::F13 => 0x68, K::F14 => 0x69, K::F15 => 0x6A, K::F16 => 0x6B, K::F17 => 0x6C, K::F18 => 0x6D,
+        K::F19 => 0x6E, K::F20 => 0x6F, K::F21 => 0x70, K::F22 => 0x71, K::F23 => 0x72, K::F24 => 0x73,
         K::Insert => 0x49, K::Home => 0x4A, K::PageUp => 0x4B, K::Delete => 0x4C, K::End => 0x4D,
         K::PageDown => 0x4E, K::ArrowRight => 0x4F, K::ArrowLeft => 0x50, K::ArrowDown => 0x51, K::ArrowUp => 0x52,
         _ => return None,
@@ -51,7 +53,8 @@ mod tests {
                                  (K::F5, "F5"), (K::ArrowUp, "UP"), (K::Delete, "DELETE"), (K::Space, "SPACE")] {
             assert_eq!(to_hid(egui_key), kvmit_hid::parse_key(name), "{name}");
         }
-        assert_eq!(to_hid(K::F20), None);
+        assert_eq!(to_hid(K::F20), kvmit_hid::parse_key("F20"));
+        assert_eq!(to_hid(K::F25), None);
     }
 
     #[test]

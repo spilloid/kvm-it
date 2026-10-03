@@ -1,6 +1,6 @@
 # Wire protocol — design rationale
 
-The normative spec is [../protocol/SPEC.md](../protocol/SPEC.md) (framing + codecs implemented and host-tested;
+The normative spec is [protocol/SPEC.md](https://github.com/spilloid/kvm-it/blob/main/protocol/SPEC.md) (framing + codecs implemented and host-tested;
 BLE transport and message handling are not). Where this draft and SPEC.md differ, SPEC.md wins: PONG is a
 `PING` response frame, not a separate type. This file fixes the shape so firmware
 and desktop cannot diverge silently: both sides will test against the same `protocol/vectors.json`.

@@ -61,6 +61,8 @@ pub struct App {
     input_tx: Option<mpsc::UnboundedSender<Input>>,
     input_for: Option<String>,
     capturing: bool,
+    /// A "Send keys" chord is in flight; nothing else may send input until it has fully released.
+    chord_busy: Arc<AtomicBool>,
     prev_mods: Vec<Key>,
     video_devices: Vec<DeviceInfo>,
     video_sel: usize,
@@ -96,6 +98,7 @@ impl App {
             input_tx: None,
             input_for: None,
             capturing: false,
+            chord_busy: Arc::default(),
             prev_mods: Vec::new(),
             video_sel: cfg.last_video.as_ref().and_then(|p| video_devices.iter().position(|d| &d.path == p)).unwrap_or(0),
             video_devices,
@@ -256,10 +259,19 @@ impl App {
     }
 
     fn begin_capture(&mut self, ctx: &egui::Context) {
-        if self.run_handle.as_ref().is_some_and(|r| !r.done.load(Ordering::SeqCst)) || self.pump().is_none() {
+        if self.run_handle.as_ref().is_some_and(|r| !r.done.load(Ordering::SeqCst))
+            || self.chord_busy.load(Ordering::SeqCst)
+            || self.pump().is_none()
+        {
             return;
         }
         self.capturing = true;
+        // Captured keys must reach the target only: a focused local widget would otherwise take Enter/Space.
+        ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
     }
@@ -363,6 +375,10 @@ impl App {
     }
 
     fn start_run(&mut self, script: Script, base_dir: std::path::PathBuf, vars: Vars, dry: bool, ctx: egui::Context) {
+        if self.chord_busy.load(Ordering::SeqCst) {
+            self.set_notice("Wait for the key chord to finish.");
+            return;
+        }
         let Some(dev) = self.device() else {
             self.set_notice("Not connected to an adapter.");
             return;
@@ -523,9 +539,18 @@ impl eframe::App for App {
                     }
                 }
                 _ => {
-                    ui.centered_and_justified(|ui| {
-                        ui.label(if self.video_devices.is_empty() { "No capture device found. Plug in an HDMI capture card." } else { "Open a capture device in the left panel." });
-                    });
+                    // No picture, but input can still be driven (e.g. watching the target's own screen).
+                    let can_capture = self.device().is_some();
+                    let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
+                    let msg = if self.video_devices.is_empty() { "No capture device found. Plug in an HDMI capture card." } else { "Open a capture device in the left panel." };
+                    let hint = if self.capturing { "Input captured — Ctrl+Alt+Esc to release" } else if can_capture { "Click here to capture keyboard and mouse without video" } else { "Connect an adapter to send input" };
+                    ui.painter().text(rect.center() - egui::vec2(0.0, 10.0), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(16.0), ui.visuals().text_color());
+                    ui.painter().text(rect.center() + egui::vec2(0.0, 14.0), egui::Align2::CENTER_CENTER, hint, egui::FontId::proportional(13.0), ui.visuals().weak_text_color());
+                    if self.capturing {
+                        ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(4.0, egui::Color32::from_rgb(220, 70, 60)), egui::StrokeKind::Inside);
+                    } else if resp.clicked() && can_capture {
+                        self.begin_capture(ctx);
+                    }
                 }
             }
         });
@@ -620,9 +645,62 @@ impl App {
                     ui.label(format!("{}×{} @ {} fps {}", c.mode.width, c.mode.height, c.mode.fps, if c.mode.mjpeg { "MJPEG" } else { "YUYV" }));
                 }
             }
-            if ui.add_enabled(self.device().is_some() && self.texture.is_some(), egui::Button::new("Capture keyboard & mouse")).clicked() {
+            if ui.add_enabled(self.device().is_some(), egui::Button::new("Capture keyboard & mouse")).clicked() {
                 self.begin_capture(ctx);
             }
+        });
+
+        egui::CollapsingHeader::new("Send keys").show(ui, |ui| {
+            ui.small("Keys your own OS would intercept, or that the capture view can't see.");
+            let running = self.run_handle.as_ref().is_some_and(|r| !r.done.load(Ordering::SeqCst));
+            // One input producer at a time: no chords during capture, a script, or another chord.
+            let on = self.device().is_some() && !self.capturing && !running && !self.chord_busy.load(Ordering::SeqCst);
+            const CHORDS: &[(&str, &[&str])] = &[
+                ("Ctrl+Alt+Del", &["CTRL", "ALT", "DEL"]),
+                ("Win", &["WIN"]),
+                ("Alt+Tab", &["ALT", "TAB"]),
+                ("Alt+F4", &["ALT", "F4"]),
+                ("Ctrl+Esc", &["CTRL", "ESC"]),
+                ("Win+R", &["WIN", "R"]),
+                ("PrintScreen", &["PRTSC"]),
+                ("Menu", &["MENU"]),
+                ("CapsLock", &["CAPSLOCK"]),
+                ("NumLock", &["NUMLOCK"]),
+                ("Pause", &["PAUSE"]),
+                ("ScrollLock", &["SCROLLLOCK"]),
+            ];
+            ui.horizontal_wrapped(|ui| {
+                for (label, keys) in CHORDS {
+                    if ui.add_enabled(on, egui::Button::new(*label)).clicked() {
+                        if let Some(d) = self.device() {
+                            let ks: Vec<Key> = keys.iter().filter_map(|n| kvmit_hid::parse_key(n)).collect();
+                            let (busy, notice, label) = (self.chord_busy.clone(), self.notice.clone(), *label);
+                            busy.store(true, Ordering::SeqCst);
+                            self.rt.spawn(async move {
+                                let mut ok = true;
+                                for k in &ks {
+                                    if d.key_down(*k).await.is_err() {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                                for k in ks.iter().rev() {
+                                    ok &= d.key_up(*k).await.is_ok();
+                                }
+                                if !ok {
+                                    // A failed key-up leaves the key held on the target: release everything.
+                                    let released = d.release_all().await.is_ok();
+                                    *notice.lock().unwrap() = format!(
+                                        "{label} was not delivered cleanly; {}",
+                                        if released { "all keys released." } else { "release failed: check the adapter link." }
+                                    );
+                                }
+                                busy.store(false, Ordering::SeqCst);
+                            });
+                        }
+                    }
+                }
+            });
         });
 
         egui::CollapsingHeader::new("Type text").show(ui, |ui| {
