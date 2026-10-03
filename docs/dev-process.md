@@ -245,3 +245,9 @@ Hardware-verified after 3f (release build): reset, wait past 15 s, `kvmit pair` 
   (≈ 5.2 s held, so released ≈ 3.2 s after the kill, consistent with the 5 s timeout from the last 1 s keepalive),
   then stayed at 226 characters from +8.6 s to +21.5 s. Read back through the capture card.
 
+## 2026-10-03 — GUI check and release
+
+- Maintainer exercised the GUI after the round-3d/3e changes (Send keys via the ordered pump, capture and
+  Ctrl+Alt+Esc release, sidebar disabled during capture, Type): all worked as described.
+- 0.1.0 (Linux controller) released from `main`; the Windows controller app is 0.2.0.
+
