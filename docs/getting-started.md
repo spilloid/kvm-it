@@ -6,7 +6,7 @@
 |---|---|
 | ESP32-S3 dev board with two USB-C ports | One port is a serial/flash port (**COM**), the other is the native USB the target sees (**USB**). Details in [hardware](hardware.md). |
 | USB HDMI capture card (UVC) | Any generic one. Optional: you can drive input without video. |
-| A Linux PC with Bluetooth LE and BlueZ | Windows builds exist but are not usable yet (no video backend, never run). |
+| A Linux PC with Bluetooth LE and BlueZ | 0.1.0 is Linux-only on the controller side; the Windows app is planned for 0.2.0. The *target* can run any OS. |
 
 ## Install
 

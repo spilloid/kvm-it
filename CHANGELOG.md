@@ -6,7 +6,7 @@ Verification: see the README status table. Short version: USB HID, BLE pairing a
 (`kvmit pair`/`status` on Linux) and HDMI capture (one MacroSilicon card, 1080p) are hardware-verified. Typing
 over BLE (`kvmit type`/`key` from Linux into a Windows 11 target, all printable US-ASCII) is hardware-verified.
 The GUI on Linux is maintainer-reported working. The LED, BOOT gestures (pairing window, 10 s trust reset) and reconnect after replug
-are hardware-verified. The Windows *controller* app is not verified.
+are hardware-verified. The Windows controller app is out of scope for 0.1.0 (cross-compiles only) and is planned for 0.2.0.
 
 ### Added
 - GUI: "Send keys" panel (Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen, ...), F13-F24 mapping, and input capture without a video signal.

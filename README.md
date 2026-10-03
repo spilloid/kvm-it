@@ -74,7 +74,7 @@ Labels are strict: **built** = compiles; **host-tested** = automated tests pass 
 | Desktop: BLE transport + BlueZ pairing | **hardware-verified** on Linux/BlueZ (Intel AX201): `scan`, `pair`, `status` (90 ms RTT); `type`/`key` **hardware-verified** into a Windows 11 target (every printable US-ASCII character, checked on screen through the capture card) |
 | Desktop: V4L2 capture | **hardware-verified** with an HDMI capture card (MacroSilicon `345f:2109`): 1920x1080 frame of a live Windows 11 desktop via `kvmit video snap` |
 | Desktop: egui GUI (capture, Send keys toolbar, scripts) | **maintainer-reported working** on Linux with an adapter and a target (2026-10-03); not independently logged |
-| Windows | cross-compiles (`scripts/rs.sh windows`); never run; **no video backend yet**, pairing is the OS prompt |
+| Windows as the controller (app) | **planned for v0.2.0**: cross-compiles (`scripts/rs.sh windows`); never run; no video backend yet. (Windows as the *target* works today: it only sees a USB keyboard and mouse.) |
 | Built-in OOBE script | template only, never run on a real OOBE |
 | Session recording | planned |
 

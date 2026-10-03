@@ -8,25 +8,26 @@ Status key: done = built and software-verified; **hw?** = built, awaiting verifi
 | 1 | Enumerates as USB keyboard + mouse | done — hardware-verified via lsusb on a separate host (2026-10-03) |
 | 2 | Self-test: `HELLO FROM KVM`, Enter, mouse nudge | done — maintainer-reported working (2026-10-03) |
 | 3 | Protocol v1 spec/vectors, codecs | done — host-tested |
-| 3b | BLE discovery, bonding, desktop connects | built; **hw?** |
-| 4 | BLE key events → USB keyboard (dispatcher, dedup, keepalive) | host-tested; **hw?** |
+| 3b | BLE discovery, bonding, desktop connects | done — hardware-verified on Linux/BlueZ (2026-10-03) |
+| 4 | BLE key events → USB keyboard (dispatcher, dedup, keepalive) | done — typing hardware-verified into a Windows 11 target; keepalive release on a killed app not yet shown deterministically |
 | 5 | Mouse move/buttons/scroll over BLE | host-tested; **hw?** |
 | 6 | Text injection, US layout (desktop-side) | host-tested |
-| 7 | UVC capture (V4L2) | built; verified with a laptop camera, not an HDMI card |
-| 8 | GUI: video + device controls | built; **not run with an adapter** |
+| 7 | UVC capture (V4L2) | done — hardware-verified with an HDMI capture card (MacroSilicon `345f:2109`) |
+| 8 | GUI: video + device controls | maintainer-reported working with an adapter and a target |
 | 9 | Live keyboard/mouse capture | built; **hw?** |
 | 10 | Macros + native script engine | host-tested |
 | 10b | Screen-aware `wait_for`, `confirm`, DuckyScript import, dry-run | host-tested on synthetic frames; not on real OOBE |
-| 11 | Pairing window, bond, BOOT trust reset | built; **hw?** (see docs/security.md for the residual risk) |
+| 11 | Pairing window, bond, BOOT trust reset | done — hardware-verified (15 s power-on window, BOOT window, 10 s trust reset, LED); residual risk in docs/security.md |
 | 12 | Hotplug/reconnect hardening | basic auto-reconnect built; soak testing outstanding |
-| 13 | Linux release build | `scripts/rs.sh build`; no packaging yet |
-| 14 | Windows port | cross-compiles; no video backend, never run |
+| 13 | Linux release build | **v0.1.0**: `scripts/rs.sh build`; no packaging yet |
+| 14 | Windows controller app | **v0.2.0**: cross-compiles; no video backend, never run (Windows as a *target* already works: it is plain USB HID) |
 
 ## Backlog / known gaps
 
-- Windows: capture backend (Media Foundation), native pairing call, running it at all.
+- v0.2.0 (Windows controller): capture backend (Media Foundation), native pairing call, running and
+  hardware-verifying the app on Windows.
 - GUI video upload is a full-frame texture copy per frame; 1080p60 cost unmeasured.
-- Only the US layout; scroll `h` (pan) is accepted by the protocol but ignored by the firmware.
+- Only the US layout.
 - Privacy-enabled (RPA) controllers are handled by identity-address lookup in the bond store; untested.
 - Packaging (AppImage/MSI), signed releases, firmware OTA.
 

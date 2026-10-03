@@ -208,7 +208,7 @@ pub async fn connect(id: &str) -> Result<Connection> {
 }
 
 /// Pair and trust an adapter through BlueZ. Pairing is Just Works, so the adapter only accepts it
-/// within its physical pairing window (first boot with no controller, or BOOT short press).
+/// within its physical pairing window (15 s after power-on, or after a BOOT short press).
 #[cfg(target_os = "linux")]
 pub async fn pair(id: &str) -> Result<()> {
     use bluer::agent::Agent;
@@ -228,7 +228,17 @@ pub async fn pair(id: &str) -> Result<()> {
         dev.set_trusted(true).await?;
         return Ok(());
     }
-    dev.pair().await?;
+    // A leftover unpaired link (e.g. from a status call that failed against a reset adapter) makes BlueZ's
+    // pairing fail with "Authentication Canceled"; start from a clean link, and retry once on a fresh one.
+    if dev.is_connected().await? {
+        let _ = dev.disconnect().await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
+    }
+    if let Err(first) = dev.pair().await {
+        let _ = dev.disconnect().await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        dev.pair().await.map_err(|e| BackendError(format!("{e} (first attempt: {first})")))?;
+    }
     dev.set_trusted(true).await?;
     Ok(())
 }
