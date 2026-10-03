@@ -4,6 +4,7 @@ use crate::frame::Frame;
 use crate::model::{Script, Step, WaitSpec};
 use kvmit_hid::{parse_key, Key, MOUSE_LEFT, MOUSE_MIDDLE, MOUSE_RIGHT};
 use kvmit_layout::{Layout, Stroke};
+use zeroize::Zeroize;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -59,9 +60,34 @@ impl std::fmt::Display for RunError {
 }
 impl std::error::Error for RunError {}
 
+/// Compiled key strokes. For secrets these *are* the password, so Debug shows only a length and the buffer is
+/// overwritten on drop (best effort: copies made by the allocator or the OS are out of our hands).
+#[derive(Clone, PartialEq)]
+pub struct Strokes(Vec<Stroke>);
+impl std::ops::Deref for Strokes {
+    type Target = Vec<Stroke>;
+    fn deref(&self) -> &Vec<Stroke> {
+        &self.0
+    }
+}
+impl std::fmt::Debug for Strokes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Strokes(<{}>)", self.0.len())
+    }
+}
+impl Drop for Strokes {
+    fn drop(&mut self) {
+        for s in self.0.iter_mut() {
+            // SAFETY: `s` is a valid, aligned, exclusive reference; volatile keeps the wipe from being optimised away.
+            unsafe { std::ptr::write_volatile(s, Stroke { key: Key(0), shift: false }) };
+        }
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
-    Type { strokes: Vec<Stroke>, secret: bool },
+    Type { strokes: Strokes, secret: bool },
     Key(Key),
     Chord(Vec<Key>),
     Delay(Duration),
@@ -173,9 +199,14 @@ fn compile_steps(
     for (i, step) in steps.iter().enumerate() {
         let idx = top.unwrap_or(i);
         let op = match step {
-            Step::Text(t) | Step::SecretText(t) => {
+            Step::Text(_) | Step::SecretText(_) => {
                 let secret = matches!(step, Step::SecretText(_));
-                let (text, used_secret) = substitute(t, script, vars, secret)?;
+                let t: &str = match step {
+                    Step::Text(t) => t,
+                    Step::SecretText(t) => t,
+                    _ => unreachable!(),
+                };
+                let (mut text, used_secret) = substitute(t, script, vars, secret)?;
                 let secret = secret || used_secret;
                 let mut strokes = Vec::new();
                 let mut bad = Vec::new();
@@ -185,12 +216,18 @@ fn compile_steps(
                         None => bad.push(c),
                     }
                 }
+                text.zeroize();
                 if !bad.is_empty() {
                     let count = bad.len();
-                    bad.dedup();
-                    return Err(RunError::Untypable { step: idx, chars: (!secret).then_some(bad), count });
+                    let shown = (!secret).then(|| {
+                        let mut b = bad.clone();
+                        b.dedup();
+                        b
+                    });
+                    bad.zeroize();
+                    return Err(RunError::Untypable { step: idx, chars: shown, count });
                 }
-                Op::Type { strokes, secret }
+                Op::Type { strokes: Strokes(strokes), secret }
             }
             Step::Key(k) => Op::Key(parse_key(k).ok_or_else(|| RunError::UnknownKey(k.clone()))?),
             Step::Chord(ks) => Op::Chord(
@@ -245,18 +282,18 @@ const RISKY: &[&str] = &[
 pub fn preview(script: &Script, vars: &Vars, layout: &dyn Layout, opts: &RunOptions) -> Result<Preview, RunError> {
     fn walk(ops: &[(usize, Op)], mult: usize, p: &mut Preview, opts: &RunOptions, plain: &mut Vec<String>) {
         for (_, op) in ops {
-            p.steps += mult;
+            p.steps = p.steps.saturating_add(mult);
             match op {
                 Op::Type { strokes, secret } => {
-                    let n = strokes.len() * mult;
-                    if *secret { p.secret_chars += n } else { p.typed_chars += n }
-                    p.estimated_typing += (opts.key_hold + opts.key_gap) * (n as u32);
+                    let n = strokes.len().saturating_mul(mult);
+                    if *secret { p.secret_chars = p.secret_chars.saturating_add(n) } else { p.typed_chars = p.typed_chars.saturating_add(n) }
+                    p.estimated_typing = p.estimated_typing.saturating_add((opts.key_hold + opts.key_gap).saturating_mul(n.min(u32::MAX as usize) as u32));
                     let _ = plain;
                 }
-                Op::Delay(d) => p.estimated_typing += *d * (mult as u32),
+                Op::Delay(d) => p.estimated_typing = p.estimated_typing.saturating_add(d.saturating_mul(mult.min(u32::MAX as usize) as u32)),
                 Op::Wait(_) => p.needs_video = true,
                 Op::Confirm(_) => p.has_confirm = true,
-                Op::Repeat { count, ops } => walk(ops, mult * *count as usize, p, opts, plain),
+                Op::Repeat { count, ops } => walk(ops, mult.saturating_mul(*count as usize), p, opts, plain),
                 _ => {}
             }
         }
@@ -333,7 +370,7 @@ impl Runner<'_> {
         self.host.event(RunEvent::StepStarted { index: idx, kind, detail });
         match op {
             Op::Type { strokes, .. } => {
-                for s in strokes {
+                for s in strokes.iter() {
                     self.check()?;
                     if !dry {
                         if s.shift {
@@ -572,6 +609,18 @@ mod tests {
         assert!(!e.to_string().contains('ä'));
         let plain = script("[[steps]]\ntext = \"ä\"\n");
         assert!(matches!(compile(&plain, &Vars::new(), &UsAnsi), Err(RunError::Untypable { chars: Some(_), .. })));
+    }
+
+    #[test]
+    fn debug_output_of_compiled_secrets_is_redacted_and_deep_repeats_do_not_overflow() {
+        let s = script("[vars]\npw = { secret = true }\n[[steps]]\nsecret_text = \"{{pw}}\"\n");
+        let vars: Vars = [("pw".to_string(), "abc".to_string())].into();
+        let ops = compile(&s, &vars, &UsAnsi).unwrap();
+        let dump = format!("{ops:?}");
+        assert!(!dump.contains("Key(") && dump.contains("Strokes(<3>)"), "{dump}");
+        let deep = script("[[steps]]\nrepeat = { count = 10000, steps = [ { repeat = { count = 10000, steps = [ { repeat = { count = 10000, steps = [ { repeat = { count = 10000, steps = [ { repeat = { count = 10000, steps = [ { text = \"a\" } ] } } ] } } ] } } ] } } ] }\n");
+        let p = preview(&deep, &Vars::new(), &UsAnsi, &RunOptions::default()).unwrap();
+        assert_eq!(p.typed_chars, usize::MAX.min(10_000usize.saturating_pow(5)));
     }
 
     #[test]

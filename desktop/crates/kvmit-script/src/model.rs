@@ -1,5 +1,7 @@
 //! The native script file (TOML). See docs/ux.md for the format and rationale.
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::ops::Deref;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -11,7 +13,32 @@ pub struct Script {
     pub steps: Vec<Step>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+/// Template text for `secret_text`. Its Debug output is redacted so a stray `{:?}` can never print a credential.
+#[derive(Clone, PartialEq, Default)]
+pub struct SecretTemplate(pub String);
+impl fmt::Debug for SecretTemplate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "SecretTemplate(<{} bytes, redacted>)", self.0.len())
+    }
+}
+impl Deref for SecretTemplate {
+    type Target = String;
+    fn deref(&self) -> &String {
+        &self.0
+    }
+}
+impl From<String> for SecretTemplate {
+    fn from(s: String) -> Self {
+        SecretTemplate(s)
+    }
+}
+impl From<&str> for SecretTemplate {
+    fn from(s: &str) -> Self {
+        SecretTemplate(s.to_string())
+    }
+}
+
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct VarDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
@@ -22,6 +49,15 @@ pub struct VarDef {
 }
 fn is_false(b: &bool) -> bool {
     !*b
+}
+impl fmt::Debug for VarDef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VarDef")
+            .field("prompt", &self.prompt)
+            .field("default", &self.default.as_ref().map(|d| if self.secret { "<redacted>".to_string() } else { d.clone() }))
+            .field("secret", &self.secret)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,7 +71,7 @@ pub enum WaitSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     Text(String),
-    SecretText(String),
+    SecretText(SecretTemplate),
     Key(String),
     Chord(Vec<String>),
     Delay(Duration),
@@ -156,7 +192,11 @@ fn step_from_raw(r: RawStep) -> Result<Step, String> {
     Ok(if let Some(t) = r.text {
         Step::Text(t)
     } else if let Some(t) = r.secret_text {
-        Step::SecretText(t)
+        // A literal secret in a file would sit on disk in plaintext; secrets must come from a prompted variable.
+        if !t.contains("{{") {
+            return Err("secret_text must reference a secret variable ({{name}}); a literal secret in a script file would be stored in plaintext".into());
+        }
+        Step::SecretText(t.into())
     } else if let Some(k) = r.key {
         Step::Key(k)
     } else if let Some(c) = r.chord {
@@ -206,7 +246,7 @@ fn step_to_raw(s: &Step) -> RawStep {
     let mut r = RawStep::default();
     match s {
         Step::Text(t) => r.text = Some(t.clone()),
-        Step::SecretText(t) => r.secret_text = Some(t.clone()),
+        Step::SecretText(t) => r.secret_text = Some(t.0.clone()),
         Step::Key(k) => r.key = Some(k.clone()),
         Step::Chord(c) => r.chord = Some(c.clone()),
         Step::Delay(d) => r.delay = Some(fmt_duration(*d)),
@@ -243,6 +283,11 @@ impl Script {
         let raw: RawScript = toml::from_str(toml_text).map_err(|e| e.to_string())?;
         if raw.format != FORMAT {
             return Err(format!("unsupported script format {} (this build reads format {FORMAT})", raw.format));
+        }
+        for (name, def) in &raw.vars {
+            if def.secret && def.default.is_some() {
+                return Err(format!("secret variable {name:?} must not have a default (it would be stored in plaintext)"));
+            }
         }
         Ok(Script {
             name: raw.name,
@@ -312,6 +357,16 @@ confirm = "Is the desktop showing?"
         assert_eq!(s.vars["user"].default.as_deref(), Some("tech"));
         let again = Script::parse(&s.to_toml()).unwrap();
         assert_eq!(s, again);
+    }
+
+    #[test]
+    fn secrets_are_never_stored_or_printed() {
+        assert!(Script::parse("format = 1\n[vars]\npw = { secret = true, default = \"hunter2\" }").is_err());
+        assert!(Script::parse("format = 1\n[[steps]]\nsecret_text = \"hunter2\"").is_err());
+        let ok = Script::parse("format = 1\n[vars]\npw = { secret = true }\n[[steps]]\nsecret_text = \"{{pw}}\"").unwrap();
+        assert!(!format!("{ok:?}").contains("{{pw}}"));
+        let leaky = VarDef { secret: true, default: Some("hunter2".into()), ..Default::default() };
+        assert!(!format!("{leaky:?}").contains("hunter2"));
     }
 
     #[test]

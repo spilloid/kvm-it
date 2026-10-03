@@ -10,3 +10,4 @@ kvmit-hid = { path = "../kvmit-hid" }
 kvmit-layout = { path = "../kvmit-layout" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+zeroize = "1"

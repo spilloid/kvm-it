@@ -41,8 +41,10 @@ static uint16_t g_tx_handle;
 static esp_timer_handle_t g_window_timer;
 
 /* ---- worker queue: NimBLE host task never blocks on USB sends ---- */
-typedef enum { Q_FRAME, Q_SESSION_START, Q_SESSION_END } qkind_t;
-typedef struct { qkind_t kind; uint16_t len; uint8_t data[PROTO_MAX_PAYLOAD + PROTO_OVERHEAD]; } qitem_t;
+/* Frames carry the connection generation they arrived on. Session start/end are NOT queue items (a full
+ * queue must never swallow a disconnect): the host task bumps g_gen and the worker reconciles it. */
+typedef struct { uint32_t gen; uint16_t len; uint8_t data[PROTO_MAX_PAYLOAD + PROTO_OVERHEAD]; } qitem_t;
+static volatile uint32_t g_gen;
 static QueueHandle_t g_queue;
 static proto_dev_t g_dev;
 
@@ -88,8 +90,8 @@ static void adv_start(void)
     int rc = ble_gap_adv_set_fields(&f);
     struct ble_hs_adv_fields r = {0};
     r.name = (uint8_t *)name;
-    r.name_len = strlen(name);
-    r.name_is_complete = 1;
+    r.name_len = strlen(name) > 29 ? 29 : strlen(name);  /* legacy scan response holds 31 bytes incl. 2 of header */
+    r.name_is_complete = strlen(name) <= 29;
     if (rc == 0) rc = ble_gap_adv_rsp_set_fields(&r);
     if (rc != 0) { ESP_LOGE(TAG, "adv fields rc=%d", rc); return; }
 
@@ -145,11 +147,6 @@ static void keep_only(const ble_addr_t *keep)
         if (ble_addr_cmp(&peers[i], keep) != 0) ble_store_util_delete_peer(&peers[i]);
 }
 
-static void queue_event(qkind_t k)
-{
-    qitem_t it = {.kind = k};
-    xQueueSend(g_queue, &it, 0);
-}
 
 static int gap_event(struct ble_gap_event *ev, void *arg)
 {
@@ -161,6 +158,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         if (ev->connect.status != 0) { adv_start(); return 0; }
         g_conn = ev->connect.conn_handle;
         g_encrypted = false;
+        g_handshaken = false;
         if (ble_gap_conn_find(g_conn, &d) == 0) {
             /* sec_state.bonded is only set once encrypted, so ask the store directly. */
             ble_addr_t id = d.peer_id_addr;
@@ -175,26 +173,33 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             }
             ESP_LOGI(TAG, "connected (%s)", bonded ? "bonded peer" : "new peer, pairing");
         }
+        g_gen++;  /* new session; the worker resets the dispatcher before touching any frame of it */
         ble_gap_security_initiate(g_conn);
-        queue_event(Q_SESSION_START);
         return 0;
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "disconnected (reason 0x%x)", ev->disconnect.reason);
         g_conn = BLE_HS_CONN_HANDLE_NONE;
         g_encrypted = false;
         g_handshaken = false;
-        queue_event(Q_SESSION_END);
+        g_gen++;  /* worker releases all input for the old session */
         adv_start();
         return 0;
     case BLE_GAP_EVENT_ENC_CHANGE:
         if (ev->enc_change.status == 0 && ble_gap_conn_find(ev->enc_change.conn_handle, &d) == 0) {
+            if (!d.sec_state.bonded) {
+                /* Encrypted but not bonded (peer cleared its bonding flag): no persistent trust, refuse. */
+                ESP_LOGW(TAG, "peer did not bond: disconnecting");
+                ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                return 0;
+            }
             g_encrypted = true;
-            if (d.sec_state.bonded && window_open()) {
-                keep_only(&d.peer_id_addr);
+            /* Exactly one trusted controller, regardless of whether the window expired mid-pairing. */
+            keep_only(&d.peer_id_addr);
+            if (window_open()) {
                 g_window_until_us = 0;  /* paired: close the window */
                 esp_timer_stop(g_window_timer);
             }
-            ESP_LOGI(TAG, "link encrypted (bonded=%d)", d.sec_state.bonded);
+            ESP_LOGI(TAG, "link encrypted and bonded");
         } else if (ev->enc_change.status != 0) {
             ESP_LOGW(TAG, "encryption failed (status %d): disconnecting", ev->enc_change.status);
             ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
@@ -224,7 +229,7 @@ static int rx_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *
     if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR || !g_encrypted) return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
     uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
     if (conn != g_conn || len == 0 || len > PROTO_MAX_PAYLOAD + PROTO_OVERHEAD) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-    qitem_t it = {.kind = Q_FRAME, .len = len};
+    qitem_t it = {.gen = g_gen, .len = len};
     if (os_mbuf_copydata(ctxt->om, 0, len, it.data) != 0) return BLE_ATT_ERR_UNLIKELY;
     xQueueSend(g_queue, &it, 0);  /* full queue = dropped; the controller's retry/accumulation covers it */
     return 0;
@@ -262,7 +267,7 @@ static hidop_t o_up(void *c, uint8_t u) { (void)c; return map(usb_hid_key_up(u))
 static hidop_t o_rel(void *c) { (void)c; usb_hid_release_all(); return HIDOP_OK; }  /* local state always cleared; retried by usb_hid */
 static hidop_t o_move(void *c, int8_t x, int8_t y) { (void)c; return map(usb_hid_mouse_move(x, y)); }
 static hidop_t o_btn(void *c, uint8_t m, bool d) { (void)c; return map(usb_hid_mouse_button(m, d)); }
-static hidop_t o_wheel(void *c, int8_t v, int8_t h) { (void)c; (void)h; return map(usb_hid_mouse_wheel(v)); }
+static hidop_t o_wheel(void *c, int8_t v, int8_t h) { (void)c; return map(usb_hid_mouse_wheel(v, h)); }
 static bool o_mounted(void *c) { (void)c; return usb_hid_mounted(); }
 static bool o_held(void *c) { (void)c; return usb_hid_any_held(); }
 static void o_counts(void *c, uint8_t *k, uint8_t *b) { (void)c; usb_hid_counts(k, b); }
@@ -275,22 +280,37 @@ static void worker(void *arg)
     (void)arg;
     static qitem_t it;
     uint8_t resp[PROTO_MAX_PAYLOAD + PROTO_OVERHEAD];
+    uint32_t seen_gen = 0;
+    uint32_t last_tick = ms();
     for (;;) {
-        if (xQueueReceive(g_queue, &it, pdMS_TO_TICKS(250)) != pdTRUE) {
-            if (g_handshaken && proto_dev_tick(&g_dev, ms())) ESP_LOGW(TAG, "keepalive timeout: released all input");
-            continue;
+        BaseType_t got = xQueueReceive(g_queue, &it, pdMS_TO_TICKS(50));
+        /* Reconcile connection generation first: release the old session, start the new one, and (below) drop
+         * any frame that arrived on an older connection. Runs even when the queue is full or flooded. */
+        uint32_t gen = g_gen;
+        if (gen != seen_gen) {
+            if (proto_dev_active(&g_dev)) {
+                proto_dev_session_end(&g_dev);
+                ESP_LOGI(TAG, "session ended: released all input");
+            }
+            seen_gen = gen;
+            if (g_conn != BLE_HS_CONN_HANDLE_NONE) proto_dev_session_start(&g_dev, ms());
+            g_handshaken = false;
         }
-        if (it.kind == Q_SESSION_START) { proto_dev_session_start(&g_dev, ms()); continue; }
-        if (it.kind == Q_SESSION_END) { proto_dev_session_end(&g_dev); ESP_LOGI(TAG, "link down: released all input"); continue; }
+        /* Watchdog on wall time, independent of traffic (a stream of invalid frames must not starve it). */
+        if ((uint32_t)(ms() - last_tick) >= 250) {
+            last_tick = ms();
+            if (proto_dev_tick(&g_dev, last_tick)) ESP_LOGW(TAG, "keepalive timeout: released all input");
+        }
+        if (got != pdTRUE || it.gen != seen_gen) continue;
         uint16_t conn = g_conn;
-        if (conn == BLE_HS_CONN_HANDLE_NONE) continue;
+        if (conn == BLE_HS_CONN_HANDLE_NONE || !g_encrypted) continue;
         uint32_t before_act = g_dev.activity;
         size_t rl = 0;
         uint16_t budget = ble_att_mtu(conn);
         budget = budget > 3 ? budget - 3 : 20;
         if (budget > sizeof resp) budget = sizeof resp;
         proto_dev_handle(&g_dev, it.data, it.len, ms(), resp, budget, &rl);
-        g_handshaken = g_dev.handshaken && g_encrypted;
+        g_handshaken = g_dev.handshaken && g_encrypted && gen == g_gen;
         if (g_dev.activity != before_act) g_activity = g_dev.activity;
         if (rl) {
             struct os_mbuf *om = ble_hs_mbuf_from_flat(resp, rl);

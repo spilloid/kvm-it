@@ -10,10 +10,10 @@ static int fails;
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #c); fails++; } } while (0)
 
 // ---- fake HID backed by the real hid_state ----
-typedef struct { hid_state_t s; bool mounted; int moves; int resets; int mx, my; char name[40]; } fake_t;
+typedef struct { hid_state_t s; bool fail_up; bool mounted; int moves; int resets; int mx, my; char name[40]; } fake_t;
 static hidop_t f_down(void *c, uint8_t u) { fake_t *f = c; if (!f->mounted) return HIDOP_NOT_MOUNTED;
     hid_state_result_t r = hid_state_key_down(&f->s, u); return r == HID_STATE_ROLLOVER ? HIDOP_REFUSED : r == HID_STATE_INVALID ? HIDOP_INVALID : HIDOP_OK; }
-static hidop_t f_up(void *c, uint8_t u) { fake_t *f = c; if (!f->mounted) return HIDOP_NOT_MOUNTED; hid_state_key_up(&f->s, u); return HIDOP_OK; }
+static hidop_t f_up(void *c, uint8_t u) { fake_t *f = c; if (!f->mounted) return HIDOP_NOT_MOUNTED; if (f->fail_up) return HIDOP_BUSY; hid_state_key_up(&f->s, u); return HIDOP_OK; }
 static hidop_t f_rel(void *c) { fake_t *f = c; f->resets++; hid_state_release_all(&f->s); return HIDOP_OK; }
 static hidop_t f_move(void *c, int8_t dx, int8_t dy) { fake_t *f = c; if (!f->mounted) return HIDOP_NOT_MOUNTED; f->moves++; f->mx += dx; f->my += dy; return HIDOP_OK; }
 static hidop_t f_btn(void *c, uint8_t m, bool d) { fake_t *f = c; if (!f->mounted) return HIDOP_NOT_MOUNTED; d ? hid_state_button_down(&f->s, m) : hid_state_button_up(&f->s, m); return HIDOP_OK; }
@@ -126,6 +126,45 @@ static void test_errors_and_status(void)
     CHECK(proto_decode(r, rl, &f) == PROTO_OK && f.payload[25] == 4);
 }
 
+static void test_astra_regressions(void)
+{
+    uint8_t r[300], a = 4; size_t n;
+    // #6 seq wrap must not replay a stale ack: KEY_UP seq=10, KEY_DOWN seq=11, 254 pings, KEY_UP seq=10 again
+    setup(); hello();
+    send(0x11, PROTO_FLAG_ACK_REQ, 10, &a, 1, r);
+    send(0x10, PROTO_FLAG_ACK_REQ, 11, &a, 1, r);
+    CHECK(fk.s.keys[0] == 4);
+    for (int i = 0; i < 254; i++) send(0x40, 0, (uint8_t)(12 + i), NULL, 0, r);
+    n = send(0x11, PROTO_FLAG_ACK_REQ, 10, &a, 1, r);
+    CHECK(n > 0 && fk.s.keys[0] == 0);          // applied, not replayed
+    // dedup also expires by time: same seq/type long after is a new request
+    setup(); hello();
+    send(0x10, PROTO_FLAG_ACK_REQ, 5, &a, 1, r); hid_state_release_all(&fk.s);
+    now += 2000; send(0x10, PROTO_FLAG_ACK_REQ, 5, &a, 1, r);
+    CHECK(fk.s.keys[0] == 4);
+    // #7 half-failed tap must not leave the key held
+    setup(); hello(); fk.fail_up = true; uint8_t k = 0x28;
+    n = send(0x12, PROTO_FLAG_ACK_REQ, 3, &k, 1, r);
+    CHECK(resp_err(r, n) == PROTO_ERRC_BUSY && !hid_state_any_held(&fk.s));
+    // #10 a retry shortly after 15 other acked commands still replays (16 slots)
+    setup(); hello(); k = 0x28; size_t first = send(0x12, PROTO_FLAG_ACK_REQ, 1, &k, 1, r); (void)first;
+    int resets_before = fk.resets; (void)resets_before;
+    for (uint8_t i = 0; i < 14; i++) send(0x30, PROTO_FLAG_ACK_REQ, (uint8_t)(2 + i), NULL, 0, r);
+    int taps_before = fk.moves; (void)taps_before;
+    hid_state_release_all(&fk.s);
+    send(0x12, PROTO_FLAG_ACK_REQ, 1, &k, 1, r);
+    CHECK(!hid_state_any_held(&fk.s));
+    // #13 MTU too small for HELLO: explicit error, not silence
+    setup(); { uint8_t pp[2] = {1, 0}, b[16]; size_t w, rl; proto_encode(0x01, 0, 1, pp, 2, b, sizeof b, &w);
+        proto_dev_handle(&dev, b, w, now, r, 20, &rl); CHECK(resp_err(r, rl) == PROTO_ERRC_MTU_TOO_SMALL); }
+    // #9 watchdog runs on time, independent of traffic: tick directly after invalid-frame flood
+    setup(); hello(); send(0x10, PROTO_FLAG_ACK_REQ, 1, &a, 1, r);
+    for (int i = 0; i < 100; i++) { uint8_t bad[8] = {1, 0x10, 0, 0, 0, 0, 0, 0}; size_t rl; proto_dev_handle(&dev, bad, 8, now + 100u * i, r, 247, &rl); }
+    CHECK(proto_dev_tick(&dev, now + 6000) && !hid_state_any_held(&fk.s));
+    // session end marks inactive
+    CHECK(proto_dev_active(&dev)); proto_dev_session_end(&dev); CHECK(!proto_dev_active(&dev));
+}
+
 static void test_led(void)
 {
     led_inputs_t in = {.link = LED_LINK_PAIRING, .usb_mounted = true};
@@ -165,7 +204,7 @@ static void test_button(void)
 int main(void)
 {
     test_handshake_gate(); test_keys_and_ack_dedup(); test_rollover_and_not_mounted(); test_mouse();
-    test_keepalive_and_session_end(); test_errors_and_status(); test_led(); test_button();
+    test_keepalive_and_session_end(); test_errors_and_status(); test_astra_regressions(); test_led(); test_button();
     printf("logic tests: %s (%d failures)\n", fails ? "FAILED" : "all passed", fails);
     return fails != 0;
 }

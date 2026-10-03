@@ -82,7 +82,7 @@ the same `type` and `seq`.
 - Only `HELLO`, `PING` and `STATUS` are accepted before a successful handshake; other C frames answer
   `ERROR(NOT_READY)`. Handshake state is per BLE connection.
 - `ERROR` codes: `1 UNSUPPORTED`, `2 BAD_VERSION`, `3 BAD_FLAGS`, `4 BAD_PAYLOAD`, `5 NOT_READY`,
-  `6 HID_NOT_MOUNTED` (target not enumerated us), `7 BUSY`, `8 REFUSED` (e.g. 7th simultaneous key).
+  `6 HID_NOT_MOUNTED` (target not enumerated us), `7 BUSY`, `8 REFUSED` (e.g. 7th simultaneous key), `9 MTU_TOO_SMALL` (ATT MTU below 40: the HELLO response cannot be sent).
   `ERROR` carries the `seq` of the offending frame.
 
 ## Timing (reference controller behaviour)

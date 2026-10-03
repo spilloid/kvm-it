@@ -99,6 +99,7 @@ pub mod error_code {
     pub const HID_NOT_MOUNTED: u8 = 6;
     pub const BUSY: u8 = 7;
     pub const REFUSED: u8 = 8;
+    pub const MTU_TOO_SMALL: u8 = 9;
 
     pub fn describe(code: u8) -> &'static str {
         match code {
@@ -110,6 +111,7 @@ pub mod error_code {
             HID_NOT_MOUNTED => "the target computer has not enumerated the adapter (USB not connected, suspended or off)",
             BUSY => "adapter busy",
             REFUSED => "refused (too many simultaneous keys)",
+            MTU_TOO_SMALL => "Bluetooth link MTU too small for the handshake (need >= 40)",
             _ => "unknown error",
         }
     }

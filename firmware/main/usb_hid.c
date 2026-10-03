@@ -154,13 +154,13 @@ static esp_err_t send_keyboard_locked(void)
                ? ESP_OK : ESP_FAIL;
 }
 
-static esp_err_t send_mouse_locked(int8_t dx, int8_t dy, int8_t wheel)
+static esp_err_t send_mouse_locked(int8_t dx, int8_t dy, int8_t wheel, int8_t pan)
 {
     esp_err_t err = wait_ready(ITF_MOUSE);
     if (err != ESP_OK) {
         return err;
     }
-    return tud_hid_n_mouse_report(ITF_MOUSE, 0, g_state.buttons, dx, dy, wheel, 0)
+    return tud_hid_n_mouse_report(ITF_MOUSE, 0, g_state.buttons, dx, dy, wheel, pan)
                ? ESP_OK : ESP_FAIL;
 }
 
@@ -170,7 +170,7 @@ static esp_err_t flush_release_locked(void)
         return ESP_ERR_INVALID_STATE; /* stays pending */
     }
     esp_err_t k = send_keyboard_locked();
-    esp_err_t m = send_mouse_locked(0, 0, 0);
+    esp_err_t m = send_mouse_locked(0, 0, 0, 0);
     if (k == ESP_OK && m == ESP_OK) {
         g_release_pending = false;
         return ESP_OK;
@@ -238,15 +238,15 @@ esp_err_t usb_hid_release_all(void)
 esp_err_t usb_hid_mouse_move(int8_t dx, int8_t dy)
 {
     xSemaphoreTake(g_lock, portMAX_DELAY);
-    esp_err_t err = send_mouse_locked(dx, dy, 0);
+    esp_err_t err = send_mouse_locked(dx, dy, 0, 0);
     xSemaphoreGive(g_lock);
     return err;
 }
 
-esp_err_t usb_hid_mouse_wheel(int8_t wheel)
+esp_err_t usb_hid_mouse_wheel(int8_t wheel, int8_t pan)
 {
     xSemaphoreTake(g_lock, portMAX_DELAY);
-    esp_err_t err = send_mouse_locked(0, 0, wheel);
+    esp_err_t err = send_mouse_locked(0, 0, wheel, pan);
     xSemaphoreGive(g_lock);
     return err;
 }
@@ -259,7 +259,7 @@ esp_err_t usb_hid_mouse_button(uint8_t mask, bool down)
                                 : hid_state_button_up(&g_state, mask);
     esp_err_t err = ESP_OK;
     if (r == HID_STATE_CHANGED) {
-        err = send_mouse_locked(0, 0, 0);
+        err = send_mouse_locked(0, 0, 0, 0);
         if (err != ESP_OK) {
             g_state = before;
         }

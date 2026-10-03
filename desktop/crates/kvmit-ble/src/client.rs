@@ -23,6 +23,8 @@ pub enum LinkError {
     Device { code: u8 },
     /// Unexpected/invalid reply.
     Protocol(String),
+    /// Too many requests in flight (every sequence number is awaiting a reply).
+    Overloaded,
     UnsupportedVersion { device_major: u8 },
 }
 
@@ -33,6 +35,7 @@ impl std::fmt::Display for LinkError {
             LinkError::Closed => write!(f, "adapter link closed"),
             LinkError::Device { code } => write!(f, "adapter error {code}: {}", error_code::describe(*code)),
             LinkError::Protocol(s) => write!(f, "protocol error: {s}"),
+            LinkError::Overloaded => write!(f, "too many requests in flight"),
             LinkError::UnsupportedVersion { device_major } => write!(f, "adapter speaks protocol v{device_major}"),
         }
     }
@@ -45,7 +48,9 @@ pub struct LinkIo {
     pub rx: mpsc::UnboundedReceiver<Vec<u8>>,
 }
 
-type Pending = Arc<Mutex<HashMap<u8, oneshot::Sender<Reply>>>>;
+/// seq -> (message type the reply must carry, waiter). Matching on type as well as seq stops a late reply to an
+/// earlier request from satisfying a newer one that reused the sequence number.
+type Pending = Arc<Mutex<HashMap<u8, (u8, oneshot::Sender<Reply>)>>>;
 
 struct Inner {
     tx: mpsc::UnboundedSender<Vec<u8>>,
@@ -56,7 +61,36 @@ struct Inner {
     closed_tx: watch::Sender<bool>,
 }
 
+impl Drop for Inner {
+    /// The last handle went away without `shutdown()`: tell the adapter to let go of everything (best effort).
+    /// Without this the keepalive would have stopped anyway, but this makes the release immediate.
+    fn drop(&mut self) {
+        if !self.closed.load(Ordering::SeqCst) {
+            let _ = self.tx.send(Request::ReleaseAll.encode(self.seq.fetch_add(1, Ordering::SeqCst)));
+        }
+    }
+}
+
 impl Inner {
+    fn take_motion(&self) -> (i16, i16) {
+        let mut m = self.motion.lock().unwrap();
+        let dx = m.0.clamp(i16::MIN as i32, i16::MAX as i32);
+        let dy = m.1.clamp(i16::MIN as i32, i16::MAX as i32);
+        *m = (m.0 - dx, m.1 - dy);
+        (dx as i16, dy as i16)
+    }
+
+    /// Send all accumulated motion now, in order, before anything that must not overtake it (clicks).
+    async fn flush_motion(&self) {
+        loop {
+            let (dx, dy) = self.take_motion();
+            if dx == 0 && dy == 0 {
+                return;
+            }
+            let _ = self.request(&Request::MouseMove { dx, dy }).await;
+        }
+    }
+
     fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         let _ = self.closed_tx.send(true);
@@ -67,14 +101,27 @@ impl Inner {
         if self.closed.load(Ordering::SeqCst) {
             return Err(LinkError::Closed);
         }
-        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
-        let bytes = req.encode(seq);
         if !req.expects_reply() {
-            self.tx.send(bytes).map_err(|_| LinkError::Closed)?;
+            let seq = self.seq.fetch_add(1, Ordering::SeqCst);
+            self.tx.send(req.encode(seq)).map_err(|_| LinkError::Closed)?;
             return Ok(Reply::Ack);
         }
         let (tx, mut rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(seq, tx);
+        // Pick a sequence number nobody is still waiting on, and reserve it atomically.
+        let seq = {
+            let mut p = self.pending.lock().unwrap();
+            let mut found = None;
+            for _ in 0..256 {
+                let s = self.seq.fetch_add(1, Ordering::SeqCst);
+                if let std::collections::hash_map::Entry::Vacant(e) = p.entry(s) {
+                    e.insert((req.msg_type(), tx));
+                    found = Some(s);
+                    break;
+                }
+            }
+            found.ok_or(LinkError::Overloaded)?
+        };
+        let bytes = req.encode(seq);
         // Retries reuse the same seq and bytes: the firmware replays its earlier answer instead of re-applying.
         let attempts = if req.wants_ack() { ATTEMPTS } else { 2 };
         for _ in 0..attempts {
@@ -114,17 +161,28 @@ impl Device {
             closed_tx,
         });
 
-        let reader = inner.clone();
+        // Background tasks hold Weak refs so dropping the last Device handle really ends the link.
+        let reader = Arc::downgrade(&inner);
         tokio::spawn(async move {
             while let Some(bytes) = rx.recv().await {
+                let Some(inner) = reader.upgrade() else { return };
                 let Ok(frame) = decode(&bytes) else { continue };
                 if let Ok(reply) = parse_reply(&frame) {
-                    if let Some(w) = reader.pending.lock().unwrap().remove(&frame.seq) {
-                        let _ = w.send(reply);
+                    let key = match &reply {
+                        Reply::Error { orig_type, .. } => *orig_type,
+                        _ => frame.msg_type,
+                    };
+                    let mut p = inner.pending.lock().unwrap();
+                    if p.get(&frame.seq).is_some_and(|(want, _)| *want == key) {
+                        if let Some((_, w)) = p.remove(&frame.seq) {
+                            let _ = w.send(reply);
+                        }
                     }
                 }
             }
-            reader.close();
+            if let Some(inner) = reader.upgrade() {
+                inner.close();
+            }
         });
 
         let hello = inner.request(&Request::Hello { major: VERSION, minor: 0 }).await?;
@@ -135,11 +193,12 @@ impl Device {
         };
         inner.request(&Request::ReleaseAll).await?;
 
-        let ka = inner.clone();
+        let ka = Arc::downgrade(&inner);
         tokio::spawn(async move {
             let mut misses = 0;
             loop {
                 tokio::time::sleep(KEEPALIVE_EVERY).await;
+                let Some(ka) = ka.upgrade() else { return };
                 if ka.closed.load(Ordering::SeqCst) {
                     return;
                 }
@@ -156,20 +215,15 @@ impl Device {
             }
         });
 
-        let mo = inner.clone();
+        let mo = Arc::downgrade(&inner);
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(MOTION_FLUSH_EVERY).await;
+                let Some(mo) = mo.upgrade() else { return };
                 if mo.closed.load(Ordering::SeqCst) {
                     return;
                 }
-                let (dx, dy) = {
-                    let mut m = mo.motion.lock().unwrap();
-                    let dx = m.0.clamp(i16::MIN as i32, i16::MAX as i32);
-                    let dy = m.1.clamp(i16::MIN as i32, i16::MAX as i32);
-                    *m = (m.0 - dx, m.1 - dy);
-                    (dx as i16, dy as i16)
-                };
+                let (dx, dy) = mo.take_motion();
                 if dx != 0 || dy != 0 {
                     let _ = mo.request(&Request::MouseMove { dx, dy }).await;
                 }
@@ -212,6 +266,7 @@ impl Device {
         self.ack(Request::KeyTap(k.0)).await
     }
     pub async fn button(&self, mask: u8, down: bool) -> Result<(), LinkError> {
+        self.inner.flush_motion().await; // a click must not overtake the movement that preceded it
         self.ack(if down { Request::ButtonDown(mask) } else { Request::ButtonUp(mask) }).await
     }
     pub async fn scroll(&self, v: i8, h: i8) -> Result<(), LinkError> {
@@ -414,6 +469,52 @@ mod tests {
         });
         let e = Device::connect(LinkIo { tx: ctl_tx, rx: ctl_rx }).await.err().unwrap();
         assert_eq!(e, LinkError::UnsupportedVersion { device_major: 9 });
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn click_never_overtakes_preceding_motion() {
+        let st = Arc::new(Mutex::new(MockState::default()));
+        let dev = Device::connect(spawn_mock(st.clone())).await.unwrap();
+        dev.mouse_move(100, 0);
+        // button(): the mock does not implement buttons (answers UNSUPPORTED) but must have seen the motion first
+        let _ = dev.button(1, true).await;
+        assert_eq!(st.lock().unwrap().motion, (100, 0));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_reply_of_another_type_does_not_complete_a_request() {
+        // device that answers every request with a KEY_DOWN ack carrying the right seq but the wrong type
+        let (ctl_tx, mut dev_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (dev_tx, ctl_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        tokio::spawn(async move {
+            while let Some(b) = dev_rx.recv().await {
+                let f = decode(&b).unwrap();
+                let r = if f.msg_type == msg::HELLO {
+                    let mut p = vec![1, 0, 7, 0, 0, 0, 0, 1, 0];
+                    p.extend_from_slice(&[0; 16]);
+                    p.push(0);
+                    encode_vec(msg::HELLO, FLAG_RESPONSE, f.seq, &p).unwrap()
+                } else if f.msg_type == msg::RELEASE_ALL && f.seq != 1 {
+                    encode_vec(msg::KEY_DOWN, FLAG_RESPONSE, f.seq, &[]).unwrap() // wrong type for this request
+                } else {
+                    encode_vec(f.msg_type, FLAG_RESPONSE, f.seq, &[]).unwrap()
+                };
+                let _ = dev_tx.send(r);
+            }
+        });
+        let dev = Device::connect(LinkIo { tx: ctl_tx, rx: ctl_rx }).await.unwrap_or_else(|_| panic!("connect"));
+        // connect's own RELEASE_ALL is seq 1 and is answered correctly; a later one gets a mistyped ack
+        assert_eq!(dev.release_all().await.unwrap_err(), LinkError::Timeout);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dropping_the_last_handle_sends_a_release() {
+        let st = Arc::new(Mutex::new(MockState::default()));
+        let dev = Device::connect(spawn_mock(st.clone())).await.unwrap();
+        dev.key_down(Key::A).await.unwrap();
+        drop(dev);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(st.lock().unwrap().keys.is_empty(), "implicit release on drop");
     }
 
     #[tokio::test(start_paused = true)]

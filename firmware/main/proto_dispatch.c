@@ -14,14 +14,19 @@ void proto_dev_init(proto_dev_t *d, const proto_ops_t *ops, const uint8_t uuid[1
 void proto_dev_session_start(proto_dev_t *d, uint32_t now_ms)
 {
     d->handshaken = false;
+    d->active = true;
     d->last_rx_ms = now_ms;
     memset(d->dedup, 0, sizeof d->dedup);
     d->dedup_next = 0;
+    d->rx_count = 0;
 }
+
+bool proto_dev_active(const proto_dev_t *d) { return d->active; }
 
 void proto_dev_session_end(proto_dev_t *d)
 {
     d->handshaken = false;
+    d->active = false;
     d->ops.release_all(d->ops.ctx);  // stuck-key defence (2): link drop releases everything
 }
 
@@ -64,19 +69,26 @@ static bool valid_name(const uint8_t *p, size_t n)
     return true;
 }
 
-static void dedup_store(proto_dev_t *d, uint8_t seq, uint8_t type, const uint8_t *frame, size_t n)
+static void dedup_store(proto_dev_t *d, uint32_t now, uint8_t seq, uint8_t type, const uint8_t *frame, size_t n)
 {
     if (n == 0 || n > PROTO_DEDUP_MAX_FRAME) return;
     proto_dedup_t *e = &d->dedup[d->dedup_next++ % PROTO_DEDUP_SLOTS];
     d->dedup_next %= PROTO_DEDUP_SLOTS;
     e->valid = true; e->seq = seq; e->type = type; e->len = (uint8_t)n;
+    e->at_ms = now; e->at_count = d->rx_count;
     memcpy(e->frame, frame, n);
 }
 
-static const proto_dedup_t *dedup_find(const proto_dev_t *d, uint8_t seq, uint8_t type)
+/* A cached answer may only be replayed for a genuine retry: recent in time AND in frame count, so a sequence
+ * number that wrapped (256 frames later) is treated as a new request, never as a duplicate. */
+static const proto_dedup_t *dedup_find(const proto_dev_t *d, uint32_t now, uint8_t seq, uint8_t type)
 {
-    for (int i = 0; i < PROTO_DEDUP_SLOTS; i++)
-        if (d->dedup[i].valid && d->dedup[i].seq == seq && d->dedup[i].type == type) return &d->dedup[i];
+    for (int i = 0; i < PROTO_DEDUP_SLOTS; i++) {
+        const proto_dedup_t *e = &d->dedup[i];
+        if (e->valid && e->seq == seq && e->type == type && (uint32_t)(now - e->at_ms) < PROTO_DEDUP_AGE_MS &&
+            (uint32_t)(d->rx_count - e->at_count) < PROTO_DEDUP_FRAMES)
+            return e;
+    }
     return NULL;
 }
 
@@ -96,7 +108,10 @@ static uint8_t apply(proto_dev_t *d, const proto_frame_t *f)
         else if (f->type == 0x11) r = o->key_up(o->ctx, u);
         else {
             r = o->key_down(o->ctx, u);
-            if (r == HIDOP_OK) r = o->key_up(o->ctx, u);
+            if (r == HIDOP_OK) {
+                r = o->key_up(o->ctx, u);
+                if (r != HIDOP_OK) o->release_all(o->ctx);  // never leave a half-tapped key held
+            }
         }
         break;
     }
@@ -158,6 +173,7 @@ void proto_dev_handle(proto_dev_t *d, const uint8_t *buf, size_t len, uint32_t n
     }
     if (e != PROTO_OK) return;  // truncated / length problems: nothing trustworthy to answer
     d->last_rx_ms = now_ms;
+    d->rx_count++;
 
     // Responses and device→controller types are never valid inbound.
     if ((f.flags & PROTO_FLAG_RESPONSE) || f.type == 0x7F) {
@@ -173,7 +189,11 @@ void proto_dev_handle(proto_dev_t *d, const uint8_t *buf, size_t len, uint32_t n
         d->handshaken = true;
         uint8_t p[2 + 4 + 3 + 16 + 1 + PROTO_NAME_MAX];
         size_t fixed = 2 + 4 + 3 + 16 + 1;
-        size_t budget = resp_cap > PROTO_OVERHEAD + fixed ? resp_cap - PROTO_OVERHEAD - fixed : 0;
+        if (resp_cap < PROTO_OVERHEAD + fixed) {  // ATT MTU below 37: the handshake cannot be answered
+            *resp_len = emit_error(f.seq, PROTO_ERRC_MTU_TOO_SMALL, f.type, resp, resp_cap);
+            return;
+        }
+        size_t budget = resp_cap - PROTO_OVERHEAD - fixed;
         size_t nl = strlen(d->name);
         if (nl > budget) nl = budget;  // MTU-limited: truncate rather than fail the handshake
         p[0] = PROTO_VERSION; p[1] = 0;
@@ -209,7 +229,7 @@ void proto_dev_handle(proto_dev_t *d, const uint8_t *buf, size_t len, uint32_t n
         return;
     }
     if (f.flags & PROTO_FLAG_ACK_REQ) {
-        const proto_dedup_t *dup = dedup_find(d, f.seq, f.type);
+        const proto_dedup_t *dup = dedup_find(d, now_ms, f.seq, f.type);
         if (dup && dup->len <= resp_cap) {  // retry: replay the earlier answer, apply nothing
             memcpy(resp, dup->frame, dup->len);
             *resp_len = dup->len;
@@ -220,6 +240,6 @@ void proto_dev_handle(proto_dev_t *d, const uint8_t *buf, size_t len, uint32_t n
     if (code) { *resp_len = emit_error(f.seq, code, f.type, resp, resp_cap); return; }
     if (f.flags & PROTO_FLAG_ACK_REQ) {
         *resp_len = emit(f.type, PROTO_FLAG_RESPONSE, f.seq, NULL, 0, resp, resp_cap);
-        dedup_store(d, f.seq, f.type, resp, *resp_len);
+        dedup_store(d, now_ms, f.seq, f.type, resp, *resp_len);
     }
 }

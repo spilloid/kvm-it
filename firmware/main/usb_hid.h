@@ -30,7 +30,7 @@ esp_err_t usb_hid_release_all(void);
 /* Relative motion, clamped to -127..127 per call by the caller's contract. */
 esp_err_t usb_hid_mouse_move(int8_t dx, int8_t dy);
 esp_err_t usb_hid_mouse_button(uint8_t mask, bool down);
-esp_err_t usb_hid_mouse_wheel(int8_t wheel);
+esp_err_t usb_hid_mouse_wheel(int8_t wheel, int8_t pan);
 
 /* Any key or button currently held according to the HID state. */
 bool usb_hid_any_held(void);
