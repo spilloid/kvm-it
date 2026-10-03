@@ -74,8 +74,16 @@ enum Cmd {
 #[derive(Subcommand)]
 enum VideoCmd {
     List,
-    /// Save the current frame as a PNG (use it as a `wait_for` reference image)
-    Snap { output: PathBuf, #[arg(long)] path: Option<String> },
+    /// Save the current frame as a PNG (use it as a `wait_for` reference image). Waits for a non-blank frame:
+    /// capture cards send a flat fill while they lock onto the source.
+    Snap {
+        output: PathBuf,
+        #[arg(long)]
+        path: Option<String>,
+        /// How long to wait for a non-blank frame before saving whatever arrived
+        #[arg(long, default_value = "8s", value_parser = kvmit_script::parse_duration)]
+        timeout: Duration,
+    },
 }
 
 fn parse_kv(s: &str) -> Result<(String, String), String> {
@@ -225,24 +233,39 @@ fn real_main(cli: Cli) -> R<()> {
                 }
                 Ok(())
             }
-            VideoCmd::Snap { output, path } => {
+            VideoCmd::Snap { output, path, timeout } => {
                 let path = match path.or(cfg.last_video) {
                     Some(p) => p,
                     None => kvmit_video::list_devices().first().map(|d| d.path.clone()).ok_or("no capture device")?,
                 };
                 let cap = kvmit_video::Capture::open(&path)?;
-                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let deadline = std::time::Instant::now() + timeout;
+                let mut last = None;
                 let frame = loop {
                     if let Some(f) = cap.latest() {
-                        break f;
+                        if !f.is_blank() {
+                            break Some(f);
+                        }
+                        last = Some(f);
                     }
                     if std::time::Instant::now() > deadline {
-                        return Err("no frame within 5 s (is a source connected to the capture card?)".into());
+                        break None;
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 };
+                let (frame, blank) = match (frame, last) {
+                    (Some(f), _) => (f, false),
+                    (None, Some(f)) => (f, true),
+                    (None, None) => return Err(format!("no frame within {timeout:?} (is the capture card working?)").into()),
+                };
                 image_save(&output, frame.width, frame.height, &frame.rgba)?;
                 println!("saved {}x{} frame to {}", frame.width, frame.height, output.display());
+                if blank {
+                    eprintln!(
+                        "warning: the frame is blank (one flat colour): the card has no signal yet. Check the source is \
+                         outputting (Win+P: Duplicate); if it is, replug the capture card's USB and try again."
+                    );
+                }
                 Ok(())
             }
         },
