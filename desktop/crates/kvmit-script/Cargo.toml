@@ -1,0 +1,12 @@
+[package]
+name = "kvmit-script"
+description = "Replayable scripts (OOBE, installers, BIOS): native TOML format, DuckyScript import, executor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kvmit-hid = { path = "../kvmit-hid" }
+kvmit-layout = { path = "../kvmit-layout" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

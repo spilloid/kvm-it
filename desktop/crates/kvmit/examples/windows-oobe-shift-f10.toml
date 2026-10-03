@@ -1,0 +1,14 @@
+name = "Windows setup: open a command prompt (Shift+F10)"
+format = 1
+description = "TEMPLATE, untested on a real OOBE. Waits for the screen to settle, then presses Shift+F10. Whether Shift+F10 works depends on the Windows build; adjust the waits for your hardware."
+
+[[steps]]
+wait_for = { stable_for = "4s", timeout = "180s" }
+[[steps]]
+confirm = "Is the Windows setup screen showing? Shift+F10 will be pressed next."
+[[steps]]
+chord = ["SHIFT", "F10"]
+[[steps]]
+delay = "2s"
+[[steps]]
+comment = "A command prompt should now be open; add your own steps below."

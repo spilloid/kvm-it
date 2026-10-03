@@ -1,0 +1,9 @@
+[package]
+name = "kvmit-layout"
+description = "Keyboard layouts: text to key strokes (US ANSI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kvmit-hid = { path = "../kvmit-hid" }

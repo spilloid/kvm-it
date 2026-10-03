@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
-# Run cargo for the desktop workspace in a pinned Rust container (host has no Rust toolchain).
-# Usage: scripts/rs.sh {test|clippy|fmt|shell|cargo <args>}
+# Run cargo for the desktop workspace in a container (the host has no Rust toolchain).
+# Usage: scripts/rs.sh {image|test|clippy|fmt|build|windows|run <args>|shell|cargo <args>}
+#   windows  cross-compiles kvmit.exe (x86_64-pc-windows-gnu); compile-checked only, not run on Windows here.
 set -euo pipefail
-RUST_IMAGE="${RUST_IMAGE:-docker.io/library/rust:1.90}"
+IMAGE="${RS_IMAGE:-localhost/kvmit-rs:1.90}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME="${CONTAINER_RUNTIME:-podman}"
+ensure_image() {
+    "$RUNTIME" image exists "$IMAGE" 2>/dev/null || "$RUNTIME" build -t "$IMAGE" -f "$ROOT/scripts/rs.Containerfile" "$ROOT/scripts"
+}
 run() {
-    "$RUNTIME" run --rm $([ -t 0 ] && echo -it) \
+    ensure_image
+    "$RUNTIME" run --rm $([ -t 0 ] && echo -it) ${RS_EXTRA_ARGS:-} \
         -v "$ROOT:/project:z" -v kvmit-cargo:/usr/local/cargo/registry \
-        -w /project/desktop -e CARGO_TARGET_DIR=/project/desktop/target "$RUST_IMAGE" "$@"
+        -w /project/desktop -e CARGO_TARGET_DIR=/project/desktop/target "$IMAGE" "$@"
 }
 case "${1:-}" in
-test)   run cargo test --workspace ;;
-clippy) run bash -c 'rustup component add clippy >/dev/null 2>&1; cargo clippy --workspace --all-targets -- -D warnings' ;;
-fmt)    run bash -c 'rustup component add rustfmt >/dev/null 2>&1; cargo fmt --all' ;;
-shell)  run bash ;;
-cargo)  shift; run cargo "$@" ;;
-*) sed -n '2,3p' "$0"; exit 1 ;;
+image)   ensure_image ;;
+test)    run cargo test --workspace ;;
+clippy)  run cargo clippy --workspace --all-targets -- -D warnings ;;
+fmt)     run cargo fmt --all ;;
+build)   run cargo build --release -p kvmit ;;
+windows) run cargo build --release -p kvmit --target x86_64-pc-windows-gnu ;;
+run)     shift; run cargo run --release -p kvmit -- "$@" ;;
+shell)   run bash ;;
+cargo)   shift; run cargo "$@" ;;
+*) sed -n '2,5p' "$0"; exit 1 ;;
 esac

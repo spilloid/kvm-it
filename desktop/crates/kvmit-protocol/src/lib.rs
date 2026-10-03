@@ -1,4 +1,5 @@
 //! kvm-it wire protocol v1 — framing only (see `protocol/SPEC.md`). No I/O, no allocation on decode.
+pub mod message;
 
 pub const VERSION: u8 = 1;
 pub const MAX_PAYLOAD: usize = 240;
