@@ -13,7 +13,7 @@ menu "kvm-it"
 
     config KVMIT_PAIRING_WINDOW_S
         int "Pairing window length (seconds)"
-        default 120
+        default 300
         help
             How long a BOOT short-press (or first boot with no trusted controller) allows a new controller
             to pair. Physical presence gates pairing; see docs/security.md.

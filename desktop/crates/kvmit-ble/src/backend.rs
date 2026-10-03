@@ -53,9 +53,12 @@ async fn adapter() -> Result<Adapter> {
     }
 }
 
+#[cfg_attr(target_os = "linux", allow(dead_code))]
 async fn describe(p: &Peripheral) -> Option<Found> {
     let props = p.properties().await.ok()??;
-    if !props.services.contains(&SERVICE_UUID) {
+    // Match on the advertised service or the name; a BlueZ discovery-filter on UUID was not reliable.
+    let named = props.local_name.as_deref().is_some_and(|n| n.starts_with("kvm-it"));
+    if !named && !props.services.contains(&SERVICE_UUID) {
         return None;
     }
     Some(Found {
@@ -65,13 +68,53 @@ async fn describe(p: &Peripheral) -> Option<Found> {
     })
 }
 
+/// Linux: use BlueZ's own discovery (transport "auto", like bluetoothctl). btleplug's LE-only discovery filter did
+/// not report the adapter on the development laptop although bluetoothctl did.
+#[cfg(target_os = "linux")]
+pub async fn scan(timeout: Duration) -> Result<Vec<Found>> {
+    let session = bluer::Session::new().await?;
+    let adapter = session.default_adapter().await?;
+    adapter.set_powered(true).await?;
+    // BlueZ forgets unconnected devices quickly and the controller scans slowly while other devices are
+    // connected, so poll its cache for the whole scan and remember every hit.
+    let events = adapter.discover_devices().await?;
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut found: Vec<Found> = Vec::new();
+    while tokio::time::Instant::now() < deadline {
+        for addr in adapter.device_addresses().await? {
+            let id = addr.to_string();
+            if std::env::var_os("KVMIT_DEBUG").is_some() && id.starts_with("28:84") {
+                eprintln!("cache has {id}");
+            }
+            if found.iter().any(|f| f.id == id) {
+                continue;
+            }
+            let Ok(dev) = adapter.device(addr) else { continue };
+            let uuids = dev.uuids().await.ok().flatten().unwrap_or_default();
+            let name = dev.name().await.ok().flatten().unwrap_or_default();
+            if uuids.contains(&SERVICE_UUID) || name.starts_with("kvm-it") {
+                let rssi = dev.rssi().await.ok().flatten();
+                found.push(Found { id, name: if name.is_empty() { "kvm-it".into() } else { name }, rssi });
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    drop(events);
+    found.sort_by_key(|f| std::cmp::Reverse(f.rssi.unwrap_or(i16::MIN)));
+    Ok(found)
+}
+
 /// Scan for adapters advertising the kvm-it service. Returns when `timeout` elapses.
+#[cfg(not(target_os = "linux"))]
 pub async fn scan(timeout: Duration) -> Result<Vec<Found>> {
     let ad = adapter().await?;
-    ad.start_scan(ScanFilter { services: vec![SERVICE_UUID] }).await?;
+    ad.start_scan(ScanFilter::default()).await?;
     tokio::time::sleep(timeout).await;
     let mut found = Vec::new();
     for p in ad.peripherals().await? {
+        if std::env::var_os("KVMIT_DEBUG").is_some() {
+            eprintln!("seen: {:?}", p.properties().await.ok().flatten().map(|x| (x.address.to_string(), x.local_name, x.services, x.rssi)));
+        }
         if let Some(f) = describe(&p).await {
             found.push(f);
         }
@@ -82,7 +125,7 @@ pub async fn scan(timeout: Duration) -> Result<Vec<Found>> {
 }
 
 async fn find(ad: &Adapter, id: &str, wait: Duration) -> Result<Peripheral> {
-    ad.start_scan(ScanFilter { services: vec![SERVICE_UUID] }).await?;
+    ad.start_scan(ScanFilter::default()).await?;
     let deadline = tokio::time::Instant::now() + wait;
     let mut events = ad.events().await?;
     loop {
@@ -179,11 +222,8 @@ pub async fn pair(id: &str) -> Result<()> {
         ..Default::default()
     };
     let _agent = session.register_agent(agent).await?;
-    // Make sure BlueZ has the device object (it is only known after a scan sees it).
-    let ble = adapter_for_discovery(id).await;
     let addr: bluer::Address = id.parse().map_err(|_| BackendError(format!("bad address {id}")))?;
-    let dev = adapter.device(addr)?;
-    drop(ble);
+    let dev = wait_for_device(&adapter, addr, Duration::from_secs(90)).await?;
     if dev.is_paired().await? {
         dev.set_trusted(true).await?;
         return Ok(());
@@ -193,10 +233,21 @@ pub async fn pair(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Keep discovery running until BlueZ has the device in its cache, then hand it back immediately: the cache entry
+/// can vanish again within seconds when the controller only hears the adapter occasionally.
 #[cfg(target_os = "linux")]
-async fn adapter_for_discovery(id: &str) -> Option<Peripheral> {
-    let ad = adapter().await.ok()?;
-    find(&ad, id, Duration::from_secs(20)).await.ok()
+async fn wait_for_device(adapter: &bluer::Adapter, addr: bluer::Address, wait: Duration) -> Result<bluer::Device> {
+    let _events = adapter.discover_devices().await?;
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        if adapter.device_addresses().await?.contains(&addr) {
+            return Ok(adapter.device(addr)?);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return err(format!("adapter {addr} was not heard within {} s (powered, advertising, in range? it only advertises to a bonded controller or while the pairing window is open)", wait.as_secs()));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

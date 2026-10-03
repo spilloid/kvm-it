@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "esp_bt.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -99,8 +100,8 @@ static void adv_start(void)
     p.conn_mode = BLE_GAP_CONN_MODE_UND;
     p.disc_mode = BLE_GAP_DISC_MODE_GEN;
     /* Faster while pairing is wanted, gentler while merely waiting for the known controller. */
-    p.itvl_min = window_open() ? BLE_GAP_ADV_ITVL_MS(40) : BLE_GAP_ADV_ITVL_MS(200);
-    p.itvl_max = window_open() ? BLE_GAP_ADV_ITVL_MS(60) : BLE_GAP_ADV_ITVL_MS(300);
+    p.itvl_min = window_open() ? BLE_GAP_ADV_ITVL_MS(20) : BLE_GAP_ADV_ITVL_MS(200);
+    p.itvl_max = window_open() ? BLE_GAP_ADV_ITVL_MS(30) : BLE_GAP_ADV_ITVL_MS(300);
     rc = ble_gap_adv_start(g_own_addr_type, NULL, BLE_HS_FOREVER, &p, gap_event, NULL);
     if (rc != 0) { ESP_LOGE(TAG, "adv start rc=%d", rc); return; }
     g_adv_active = true;
@@ -357,6 +358,9 @@ esp_err_t ble_link_start(void)
 
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) { g_fault = true; return err; }
+    /* Laptops with weak LE scanning (observed: Surface Laptop 4) miss low-power adverts; use full power. */
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
+    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
     ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;  /* Just Works: no display/keypad on this board */
