@@ -14,6 +14,7 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "proto_dispatch.h"
+#include "radio_diag.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "usb_hid.h"
@@ -50,6 +51,21 @@ static QueueHandle_t g_queue;
 static proto_dev_t g_dev;
 
 static bool window_open(void) { return g_window_until_us > esp_timer_get_time(); }
+
+/* NimBLE accepts SMP pairing as soon as a link exists, which can be before our CONNECT event, so the window must
+ * also gate bonding inside the stack: outside it our side does not set the bonding flag, no keys are persisted,
+ * and ENC_CHANGE (not bonded) disconnects the peer. Re-encrypting an existing bond is unaffected. */
+static void set_window(int64_t until_us)
+{
+    g_window_until_us = until_us;
+    ble_hs_cfg.sm_bonding = until_us > esp_timer_get_time();
+}
+
+static void terminate(uint16_t conn)
+{
+    int rc = ble_gap_terminate(conn, BLE_ERR_REM_USER_CONN_TERM);
+    if (rc != 0 && rc != BLE_HS_EALREADY && rc != BLE_HS_ENOTCONN) ESP_LOGE(TAG, "terminate handle %u rc=%d", conn, rc);
+}
 
 static bool have_bond(void)
 {
@@ -103,6 +119,8 @@ static void adv_start(void)
     p.itvl_min = window_open() ? BLE_GAP_ADV_ITVL_MS(20) : BLE_GAP_ADV_ITVL_MS(200);
     p.itvl_max = window_open() ? BLE_GAP_ADV_ITVL_MS(30) : BLE_GAP_ADV_ITVL_MS(300);
     rc = ble_gap_adv_start(g_own_addr_type, NULL, BLE_HS_FOREVER, &p, gap_event, NULL);
+    if (rc == BLE_HS_EALREADY) { g_adv_active = true; return; }  /* another task got there first */
+    if (rc == BLE_HS_ENOMEM) return;  /* a link not yet reported by CONNECT holds the only slot; reconciled later */
     if (rc != 0) { ESP_LOGE(TAG, "adv start rc=%d", rc); return; }
     g_adv_active = true;
     ESP_LOGI(TAG, "advertising as \"%s\" (%s)", name, window_open() ? "pairing window open" : "known controller only");
@@ -118,13 +136,14 @@ static void window_expired(void *arg)
 {
     (void)arg;
     ESP_LOGI(TAG, "pairing window closed");
+    set_window(0);
     /* Not connected + no bond: go quiet. Connected pairing in progress is left to finish. */
     if (g_conn == BLE_HS_CONN_HANDLE_NONE) adv_restart();
 }
 
 void ble_link_open_pairing(uint32_t seconds)
 {
-    g_window_until_us = esp_timer_get_time() + (int64_t)seconds * 1000000;
+    set_window(esp_timer_get_time() + (int64_t)seconds * 1000000);
     esp_timer_stop(g_window_timer);
     esp_timer_start_once(g_window_timer, (uint64_t)seconds * 1000000);
     ESP_LOGI(TAG, "pairing window open for %u s", (unsigned)seconds);
@@ -134,7 +153,7 @@ void ble_link_open_pairing(uint32_t seconds)
 void ble_link_trust_reset(void)
 {
     ble_store_clear();
-    if (g_conn != BLE_HS_CONN_HANDLE_NONE) ble_gap_terminate(g_conn, BLE_ERR_REM_USER_CONN_TERM);
+    if (g_conn != BLE_HS_CONN_HANDLE_NONE) terminate(g_conn);
     ble_link_open_pairing(CONFIG_KVMIT_PAIRING_WINDOW_S);
 }
 
@@ -158,9 +177,11 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         g_adv_active = false;
         if (ev->connect.status != 0) { adv_start(); return 0; }
         g_conn = ev->connect.conn_handle;
-        g_encrypted = false;
         g_handshaken = false;
         if (ble_gap_conn_find(g_conn, &d) == 0) {
+            /* NimBLE delivers CONNECT after the remote-feature exchange; encryption may already be up (its
+             * ENC_CHANGE ran the bonding checks), so adopt it instead of resetting it. */
+            g_encrypted = d.sec_state.encrypted && d.sec_state.bonded;
             /* sec_state.bonded is only set once encrypted, so ask the store directly. */
             ble_addr_t id = d.peer_id_addr;
             struct ble_store_key_sec k = {0};
@@ -169,13 +190,14 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             bool bonded = ble_store_read_peer_sec(&k, &v) == 0;
             if (!bonded && !window_open()) {
                 ESP_LOGW(TAG, "unbonded peer outside pairing window: disconnecting");
-                ble_gap_terminate(g_conn, BLE_ERR_REM_USER_CONN_TERM);
+                terminate(g_conn);
                 return 0;
             }
-            ESP_LOGI(TAG, "connected (%s)", bonded ? "bonded peer" : "new peer, pairing");
+            ESP_LOGI(TAG, "connected (%s, handle %u)", bonded ? "bonded peer" : "new peer, pairing", g_conn);
         }
+        else g_encrypted = false;
         g_gen++;  /* new session; the worker resets the dispatcher before touching any frame of it */
-        ble_gap_security_initiate(g_conn);
+        if (!g_encrypted) ble_gap_security_initiate(g_conn);
         return 0;
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "disconnected (reason 0x%x)", ev->disconnect.reason);
@@ -190,20 +212,20 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             if (!d.sec_state.bonded) {
                 /* Encrypted but not bonded (peer cleared its bonding flag): no persistent trust, refuse. */
                 ESP_LOGW(TAG, "peer did not bond: disconnecting");
-                ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                terminate(ev->enc_change.conn_handle);
                 return 0;
             }
             g_encrypted = true;
             /* Exactly one trusted controller, regardless of whether the window expired mid-pairing. */
             keep_only(&d.peer_id_addr);
             if (window_open()) {
-                g_window_until_us = 0;  /* paired: close the window */
+                set_window(0);  /* paired: close the window */
                 esp_timer_stop(g_window_timer);
             }
             ESP_LOGI(TAG, "link encrypted and bonded");
         } else if (ev->enc_change.status != 0) {
             ESP_LOGW(TAG, "encryption failed (status %d): disconnecting", ev->enc_change.status);
-            ble_gap_terminate(ev->enc_change.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            terminate(ev->enc_change.conn_handle);
         }
         return 0;
     case BLE_GAP_EVENT_REPEAT_PAIRING:
@@ -301,6 +323,13 @@ static void worker(void *arg)
         if ((uint32_t)(ms() - last_tick) >= 250) {
             last_tick = ms();
             if (proto_dev_tick(&g_dev, last_tick)) ESP_LOGW(TAG, "keepalive timeout: released all input");
+            /* NimBLE suppresses DISCONNECT for a link that dropped before CONNECT was delivered, leaving advertising
+             * stopped with nothing to restart it. Reconcile: idle radio that should be advertising -> advertise. */
+            if (g_started && g_conn == BLE_HS_CONN_HANDLE_NONE && !ble_gap_adv_active() &&
+                (window_open() || have_bond())) {
+                g_adv_active = false;
+                adv_start();
+            }
         }
         if (got != pdTRUE || it.gen != seen_gen) continue;
         uint16_t conn = g_conn;
@@ -321,16 +350,25 @@ static void worker(void *arg)
 }
 
 /* ---- host sync / boot ---- */
+static void start_link(void)
+{
+    g_started = true;
+    /* Plug-in is physical presence: with no bond, offer pairing straight away. */
+    if (!have_bond()) ble_link_open_pairing(CONFIG_KVMIT_PAIRING_WINDOW_S);
+    else adv_start();
+}
+
 static void on_sync(void)
 {
     int rc = ble_hs_util_ensure_addr(0);
     if (rc == 0) rc = ble_hs_id_infer_auto(0, &g_own_addr_type);
     if (rc != 0) { ESP_LOGE(TAG, "address setup rc=%d", rc); g_fault = true; return; }
-    g_started = true;
     ESP_LOGI(TAG, "BLE ready, trusted controller %s", have_bond() ? "stored" : "none");
-    /* Plug-in is physical presence: with no bond, offer pairing straight away. */
-    if (!have_bond()) ble_link_open_pairing(CONFIG_KVMIT_PAIRING_WINDOW_S);
-    else adv_start();
+#if CONFIG_KVMIT_RADIO_DIAG
+    radio_diag_run(start_link);
+#else
+    start_link();
+#endif
 }
 
 static void on_reset(int reason) { ESP_LOGE(TAG, "host reset, reason %d", reason); }
@@ -364,7 +402,7 @@ esp_err_t ble_link_start(void)
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
     ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;  /* Just Works: no display/keypad on this board */
-    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_bonding = 0;  /* set only while the pairing window is open: set_window() */
     ble_hs_cfg.sm_mitm = 0;
     ble_hs_cfg.sm_sc = 1;
     ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;

@@ -1,0 +1,3 @@
+# Radio diagnostics overlay (scripts/fw.sh build-diag). Never ship a build made with this file.
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_KVMIT_RADIO_DIAG=y

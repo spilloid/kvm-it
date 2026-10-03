@@ -19,7 +19,8 @@ BLE LE Secure Connections bonding gives encryption and authentication *if* confi
 pairing. This board has no display or keypad, so pairing would fall back to "Just Works", which is
 **not MITM-protected**: an attacker present during first pairing could bond.
 
-Decision, as implemented in 0.1.0 (built and host-tested; **not yet hardware-verified**):
+Decision, as implemented in 0.1.0 (pairing, bonding and the encrypted GATT link hardware-verified 2026-10-03 on
+Linux/BlueZ; the refusal paths below are built and reviewed but not exercised on hardware):
 
 - **LE Secure Connections bonding is required, and both GATT characteristics need an encrypted link.** An
   unbonded peer can never reach the protocol.
@@ -28,6 +29,9 @@ Decision, as implemented in 0.1.0 (built and host-tested; **not yet hardware-ver
   `CONFIG_KVMIT_PAIRING_WINDOW_S` (300 s) and closes as soon as a pairing succeeds. Outside the window, an
   unbonded peer that connects is disconnected immediately and a re-pairing attempt from a bonded address is
   ignored.
+- **One link at a time, enforced by NimBLE.** The host has a single connection slot, and NimBLE will not start
+  connectable advertising while it is in use, so a second controller cannot connect at all. (This depends on
+  `firmware/patches/esp-idf-v5.5-nimble-conn-handle-index.patch`; see `docs/dev-process.md`, 2026-10-03.)
 - **One trusted controller.** A new pairing replaces the old bond. A 10 s BOOT hold erases all bonds and
   reopens the window. RESET (the EN line) only reboots; it cannot be observed by software.
 - With a bond stored, the adapter advertises only to be found by that controller (slow interval) and never

@@ -29,10 +29,14 @@ CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+# One link: with a single slot NimBLE will not even start connectable advertising while a link exists
+# (BLE_HS_ENOMEM), so a second controller can never connect. This needs
+# patches/esp-idf-v5.5-nimble-conn-handle-index.patch (applied by scripts/fw.sh): stock v5.5 NimBLE indexes
+# arrays of MAX_CONNECTIONS + 1 by the raw connection handle, and the ESP32-S3 controller hands out handles
+# >= 2, which corrupted the host and panicked on connect.
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 CONFIG_BT_NIMBLE_MAX_BONDS=3
 CONFIG_BT_NIMBLE_NVS_PERSIST=y
 CONFIG_BT_NIMBLE_SM_SC=y
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
-CONFIG_BT_NIMBLE_NVS_PERSIST=y
 CONFIG_BT_NIMBLE_SM_LEGACY=n

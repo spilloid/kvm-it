@@ -22,4 +22,18 @@ menu "kvm-it"
         bool "Run the M2 HID self-test at boot (types into the target!)"
         default n
 
+    config KVMIT_RADIO_DIAG
+        bool "Radio diagnostics at boot (diagnostic builds only)"
+        default n
+        depends on BT_NIMBLE_ROLE_OBSERVER
+        help
+            Logs stored bonds and runs a passive scan before advertising, printing every advertiser with
+            min/avg/max RSSI. Enabled by sdkconfig.diag (scripts/fw.sh build-diag); never in release builds.
+
+    config KVMIT_RADIO_DIAG_SCAN_S
+        int "Radio diagnostic scan length (seconds)"
+        range 1 300
+        default 15
+        depends on KVMIT_RADIO_DIAG
+
 endmenu

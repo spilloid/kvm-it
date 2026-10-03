@@ -1,11 +1,14 @@
 # Changelog
 
-## [0.1.0] - unreleased (MVP)
+## [0.1.0] - 2026-10-03 (MVP)
 
-Verification: see the README status table. Short version: USB HID is hardware-verified; BLE, LED, GUI and
-pairing are built and host-tested but not yet run on hardware.
+Verification: see the README status table. Short version: USB HID, BLE pairing and the GATT link
+(`kvmit pair`/`status` on Linux) and HDMI capture (one MacroSilicon card, 1080p) are hardware-verified. Typing
+over BLE and the GUI on Linux are maintainer-reported working. The LED and Windows are not verified.
 
 ### Added
+- GUI: "Send keys" panel (Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen, ...), F13-F24 mapping, and input capture without a video signal.
+- Docs site (GitHub Pages) and a product README.
 - Wire protocol v1 (`protocol/SPEC.md`), generated golden vectors, Rust (`kvmit-protocol`) and C (`proto_frame`)
   codecs tested against the same vectors.
 - Firmware: NimBLE peripheral with LE Secure Connections bonding gated by a physical pairing window,
@@ -15,6 +18,17 @@ pairing are built and host-tested but not yet run on hardware.
   script engine (TOML format, variables, secrets, `wait_for` on the screen, confirm, dry-run, preview,
   DuckyScript import); V4L2 capture; built-in example scripts; Windows cross-compile.
 - `scripts/rs.sh` (containerised Rust build/test/clippy/Windows cross-build).
+
+### Fixed
+- Firmware panicked (LoadProhibited) on every BLE connection whose controller handle was >= 2: ESP-IDF v5.5
+  NimBLE indexes per-link arrays (`slave_conn`, `g_max_*`) of `MAX_CONNECTIONS + 1` entries by the raw
+  connection handle, and overwrote `ble_gap_update_entries`. `firmware/patches/` now moves that state into
+  NimBLE's per-connection struct; `scripts/fw.sh` applies the patch to the pinned ESP-IDF and the build refuses
+  an unpatched IDF. NimBLE stays at one connection, so a second controller can never connect.
+
+### Added (diagnostics)
+- `scripts/fw.sh build-diag` / `sdkconfig.diag`: radio-diagnostic firmware that logs stored bonds and an RSSI
+  survey at boot (see docs/hardware.md, "BLE troubleshooting"). Not part of release builds.
 
 ### Changed
 - The boot-time HID self-test is now opt-in (`CONFIG_KVMIT_SELFTEST`); the product no longer types at boot.
