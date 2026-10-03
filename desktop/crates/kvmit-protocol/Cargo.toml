@@ -1,0 +1,10 @@
+[package]
+name = "kvmit-protocol"
+description = "kvm-it wire protocol v1: frame encode/decode (see protocol/SPEC.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

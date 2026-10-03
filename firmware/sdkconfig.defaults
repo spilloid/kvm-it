@@ -1,0 +1,37 @@
+# YD-ESP32-23 (ESP32-S3-N16R8): 16 MB quad flash, 8 MB octal PSRAM.
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# PSRAM is deliberately NOT enabled for Milestone 2: nothing needs it yet and
+# a wrong octal-PSRAM setting is a boot-loop risk on first flash. Revisit if
+# BLE/OTA buffers ever need it.
+
+# Native USB is owned by TinyUSB (two HID interfaces: boot keyboard, boot mouse).
+# The console therefore stays on UART0, i.e. the board's "COM" USB-C port.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_TINYUSB_HID_COUNT=2
+CONFIG_TINYUSB_CDC_ENABLED=n
+CONFIG_TINYUSB_MSC_ENABLED=n
+CONFIG_TINYUSB_NET_MODE_NONE=y
+
+# Recovery: a hung task resets the chip. The USB device re-enumerates on reboot.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+CONFIG_ESP_INT_WDT=y
+CONFIG_BOOTLOADER_WDT_ENABLE=y
+
+# 1 ms ticks: HID readiness waits and delays are expressed in ms.
+CONFIG_FREERTOS_HZ=1000
+
+# BLE: NimBLE peripheral, LE Secure Connections, bonds persisted in NVS (docs/security.md).
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_MAX_BONDS=3
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+CONFIG_BT_NIMBLE_SM_SC=y
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
+CONFIG_BT_NIMBLE_NVS_PERSIST=y

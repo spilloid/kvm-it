@@ -1,0 +1,8 @@
+firmware/build/
+firmware/build-host/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+target/
+*.swp
+.venv-esptool/

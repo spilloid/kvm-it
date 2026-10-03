@@ -1,0 +1,20 @@
+name: ci
+on:
+  push: {branches: [main]}
+  pull_request:
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host unit tests
+        working-directory: firmware
+        run: |
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+            -o /tmp/t test/host/test_hid_state.c main/hid_state.c main/ascii_us.c && /tmp/t
+      - name: Build firmware
+        working-directory: firmware
+        run: |
+          . /opt/esp/idf/export.sh
+          idf.py set-target esp32s3 && idf.py build

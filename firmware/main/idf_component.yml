@@ -1,0 +1,4 @@
+dependencies:
+  espressif/esp_tinyusb: "^1.7"
+  espressif/led_strip: ">=2.5"
+  idf: ">=5.4"

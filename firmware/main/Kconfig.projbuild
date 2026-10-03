@@ -1,0 +1,25 @@
+menu "kvm-it"
+
+    config KVMIT_LED_GPIO
+        int "Status LED GPIO (WS2812)"
+        default 48
+        help
+            YD-ESP32-23 rev 2022-v1.3: the on-board RGB LED is documented by the vendor on GPIO48.
+            Not yet verified on this exact board; some ESP32-S3 boards use GPIO38. Set -1 to disable.
+
+    config KVMIT_BOOT_GPIO
+        int "BOOT button GPIO"
+        default 0
+
+    config KVMIT_PAIRING_WINDOW_S
+        int "Pairing window length (seconds)"
+        default 120
+        help
+            How long a BOOT short-press (or first boot with no trusted controller) allows a new controller
+            to pair. Physical presence gates pairing; see docs/security.md.
+
+    config KVMIT_SELFTEST
+        bool "Run the M2 HID self-test at boot (types into the target!)"
+        default n
+
+endmenu
