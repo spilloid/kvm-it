@@ -1,8 +1,13 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+
+# Vendored dependency fixes (see vendor/README.md).
+[patch.crates-io]
+bluez-async = { path = "vendor/bluez-async-0.8.2" }
