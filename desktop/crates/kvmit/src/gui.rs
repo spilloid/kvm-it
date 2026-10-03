@@ -41,11 +41,13 @@ enum Input {
     ReleaseAll,
 }
 
+type ConfirmSlot = Arc<Mutex<Option<(String, std_mpsc::Sender<bool>)>>>;
+
 struct RunHandle {
     cancel: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
     log: Arc<Mutex<Vec<String>>>,
-    confirm: Arc<Mutex<Option<(String, std_mpsc::Sender<bool>)>>>,
+    confirm: ConfirmSlot,
 }
 
 pub struct App {
