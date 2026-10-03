@@ -18,11 +18,15 @@ jobs:
           gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
             -o /tmp/l test/host/test_logic.c main/proto_frame.c main/proto_dispatch.c main/hid_state.c \
             main/led_pattern.c main/button_logic.c && /tmp/l
-      - name: Build firmware
+      - name: Apply ESP-IDF patches (as scripts/fw.sh does)
+        run: for p in firmware/patches/*.patch; do patch -p1 -N -d /opt/esp/idf < "$p"; done
+      - name: Build firmware (release and radio-diagnostic)
         working-directory: firmware
         run: |
           . /opt/esp/idf/export.sh
           idf.py set-target esp32s3 && idf.py build
+          idf.py -B build-diag -D SDKCONFIG=build-diag/sdkconfig \
+            -D SDKCONFIG_DEFAULTS='sdkconfig.defaults;sdkconfig.diag' set-target esp32s3 build
   desktop:
     runs-on: ubuntu-latest
     steps:
