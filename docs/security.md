@@ -28,7 +28,9 @@ Linux/BlueZ; the refusal paths below are built and reviewed but not exercised on
   15 s after a power-on or RESET-pin reset, bonded or not (plug-in is presence;
   `CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S`, 0 disables it), and (b) for 300 s on a BOOT short press
   (`CONFIG_KVMIT_PAIRING_WINDOW_S`). With a bond stored, a crash/watchdog/software reboot does **not** open
-  the window, so a remotely triggered crash cannot reopen pairing. With no bond, any boot opens it. It closes as soon as a pairing
+  the window, so a remotely triggered crash cannot reopen pairing. With no bond, any boot opens it. The power-on
+  window is offered once per chip boot (a Bluetooth stack restart does not reopen it), and bonding is refused at
+  the deadline itself (the window timer clears it; the only slack is timer dispatch latency). It closes as soon as a pairing
   succeeds. Outside the window, an
   unbonded peer that connects is disconnected immediately and a re-pairing attempt from a bonded address is
   ignored.

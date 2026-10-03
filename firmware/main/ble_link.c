@@ -167,7 +167,10 @@ static void ev_close(struct ble_npl_event *ev)
 {
     (void)ev;
     if (!window_open()) return;  /* already closed (paired) */
-    if (esp_timer_get_time() < g_window_until_us) return;  /* reopened since the timer fired */
+    if (esp_timer_get_time() < g_window_until_us) {
+        ble_hs_cfg.sm_bonding = 1;  /* reopened since the timer fired: undo its early clear */
+        return;
+    }
     ESP_LOGI(TAG, "pairing window closed");
     set_window(0);
     /* Not connected + no bond: go quiet. A pairing already admitted keeps its bonding decision. */
@@ -200,7 +203,16 @@ static void ev_reconcile(struct ble_npl_event *ev)
     }
 }
 
-static void window_expired(void *arg) { (void)arg; post(&g_ev_close); }
+/* Hard deadline: refuse bonding at the moment the window expires, not when the queued close reaches the host task.
+ * Only ever clears the flag (the host task alone sets it, when it opens a window), so this cannot produce
+ * "window closed, bonding allowed"; a stale clear after a reopen is undone by ev_close. NimBLE offers no hook at
+ * SMP admission, so the remaining gap is the esp_timer dispatch latency. */
+static void window_expired(void *arg)
+{
+    (void)arg;
+    ble_hs_cfg.sm_bonding = 0;
+    post(&g_ev_close);
+}
 
 void ble_link_open_pairing(uint32_t seconds)
 {
@@ -406,6 +418,7 @@ static void worker(void *arg)
 /* ---- host sync / boot ---- */
 static void start_link(void)
 {
+    static bool boot_window_used;  /* the power-on window is offered once per chip boot, not per host re-sync */
     g_started = true;
     /* Plug-in is physical presence: a power-on offers a short pairing window, bonded or not, so a new controller
      * needs no BOOT press. With a bond stored, only a physical reset counts (power-on/plug-in, or the EN/RESET pin,
@@ -413,7 +426,8 @@ static void start_link(void)
      * able to crash the adapter could. A bonded controller reconnects during or after the window as usual. */
     esp_reset_reason_t why = esp_reset_reason();
     bool physical = why == ESP_RST_POWERON || why == ESP_RST_EXT;
-    if (CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S > 0 && (physical || !have_bond())) {
+    if (CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S > 0 && !boot_window_used && (physical || !have_bond())) {
+        boot_window_used = true;
         open_window(CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S);
     } else {
         if (!physical) ESP_LOGI(TAG, "reset reason %d is not a power-on: no pairing window (press BOOT to pair)", why);

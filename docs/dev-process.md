@@ -183,6 +183,19 @@ RELEASE_ALL. 3 findings, all accepted:
   timer closed it at 15.6 s and advertising went to "known controller only"; pairing after the window refused (0x205).
 - Not verified: the non-physical-reset path (no crash/watchdog reset was induced).
 
+**Review round 3f** (astra, on the two commits above). Confirmed sound: per-pump counters and session-keyed pumps;
+host-task serialisation; no pairing/disconnect ordering lets a second new controller use a consumed window (NimBLE
+persists the bond and delivers `ENC_CHANGE` in the same host execution); bonded reset classification is
+conservative (USB-JTAG, brownout, deep sleep, software, panic, watchdog excluded). 2 findings, both accepted:
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | High | A NimBLE host reset re-runs `on_sync()`; `esp_reset_reason()` still says POWERON, so the 15 s window would reopen without any physical action | The power-on window is offered once per chip boot (`boot_window_used`); a host re-sync only restores advertising |
+| 2 | High | The deadline was soft: until the queued close ran on the host task, a fresh SMP request could still be admitted | The window timer's callback clears `sm_bonding` at the deadline (it only ever clears; the host task alone sets it, and `ev_close` undoes a stale clear after a reopen). NimBLE has no SMP-admission hook, so the residual gap is esp_timer dispatch latency |
+
+Hardware-verified after 3f (release build): reset, wait past 15 s, `kvmit pair` refused; reset, `kvmit pair` at
+~1.2 s paired and closed the window; `status` 90 ms.
+
 
 - Hardware-verified (patched **diagnostic** build, whose boot scan occupies a controller slot so links land on
   handle 2, the case that used to panic): BOOT short press → `kvmit pair` "paired and connected" (in-window
