@@ -43,7 +43,8 @@ scripts/fw.sh build          # firmware
 scripts/fw.sh flash          # with the adapter's COM port on your PC and its USB port unplugged
 ```
 
-Plug the adapter's **USB** port into the target, press **BOOT** briefly if it has been paired before, then:
+Plug the adapter's **USB** port into the target. For the next **15 s** it accepts a new pairing (after that,
+press **BOOT** briefly to reopen the window), so run:
 
 ```bash
 desktop/target/release/kvmit pair      # once

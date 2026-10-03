@@ -20,6 +20,12 @@ The GUI on Linux is maintainer-reported working. The LED and the Windows *contro
   DuckyScript import); V4L2 capture; built-in example scripts; Windows cross-compile.
 - `scripts/rs.sh` (containerised Rust build/test/clippy/Windows cross-build).
 
+### Changed (pairing)
+- Every power-on (plug-in or RESET) opens a 15 s pairing window, bonded or not, so a new controller pairs
+  without pressing BOOT (`CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S`, 0 disables). With a bond stored, crash/watchdog
+  reboots do not open it. The trusted controller reconnecting does not use up the window; a new pairing does.
+  BOOT short-press still opens the 300 s window.
+
 ### Fixed
 - Firmware panicked (LoadProhibited) on every BLE connection whose controller handle was >= 2: ESP-IDF v5.5
   NimBLE indexes per-link arrays (`slave_conn`, `g_max_*`) of `MAX_CONNECTIONS + 1` entries by the raw

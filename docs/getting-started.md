@@ -25,10 +25,12 @@ scripts/fw.sh build && scripts/fw.sh flash
 
 ## Pair (once)
 
-1. Plug the adapter's **USB** port into the target. The LED is meant to blink blue while it offers to pair (the LED is not yet verified on hardware; the boot log over the COM port is the reliable signal).
-2. If it has been more than five minutes, or the adapter was paired before, press **BOOT** briefly to reopen
-   the pairing window. Physical presence is the whole authentication, so this step is deliberate.
-3. On your PC: `kvmit pair`, or open `kvmit` and use **Scan → Pair & connect**.
+1. Have `kvmit pair` (or the app's **Scan → Pair & connect**) ready on your PC.
+2. Plug the adapter's **USB** port into the target. For **15 s** after it powers up it accepts a new pairing,
+   even if it was paired before, so start pairing right away. The LED is meant to blink blue fast while it offers
+   to pair (the LED is not yet verified on hardware; the boot log over the COM port is the reliable signal).
+3. Missed it? Press **BOOT** briefly: that opens the window for 5 minutes. Physical presence (plugging in, or the
+   button) is the whole authentication, so this is deliberate.
 
 From then on the app reconnects by itself whenever the adapter is in range.
 

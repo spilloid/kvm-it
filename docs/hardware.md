@@ -31,11 +31,13 @@ COM port. The silkscreen names above are from the board vendor's documentation; 
 ### Buttons
 
 - **BOOT** (GPIO0, read by the firmware at run time):
-  - short press (< 3 s): open the **pairing window** for 300 s;
+  - short press (< 3 s): open the **pairing window** for 300 s (a 15 s window also opens by itself at every
+    power-on or RESET; with a bond stored, crash/watchdog reboots do not open it);
   - hold 10 s: **erase the bonded controller** and reopen the window (LED shows progress, below);
   - hold it while pressing RESET: ROM download mode (hardware behaviour, unchanged).
 - **RESET** (EN): reboots the chip; the USB device re-enumerates on the target and the adapter comes back
-  with its last configuration (name and bond are stored in flash). Software cannot see this button.
+  with its last configuration (name and bond are stored in flash). Like a plug-in, it opens the 15 s pairing
+  window.
 
 ### Status LED (on-board RGB, GPIO48 per the vendor — **not yet verified on this board; set
 `CONFIG_KVMIT_LED_GPIO` to -1 or another pin if it stays dark**)
@@ -111,7 +113,7 @@ Still unverified on hardware until you report:
 1. **Boot log** over COM: `BLE ready, trusted controller none`, `pairing window open for 300 s`, `advertising`.
    *(Verified.)*
 2. **LED** behaves per the table above (fast blue while pairing). If dark, GPIO48 is wrong for this board.
-3. **Pair**: `kvmit pair` on a Linux controller (press BOOT first if the window has closed) → "paired and
+3. **Pair**: `kvmit pair` on a Linux controller within 15 s of power-on (or after a BOOT press) → "paired and
    connected". *(Verified.)*
 4. **Status**: `kvmit status` shows target USB enumerated, a round trip time, firmware 0.1.0. *(Verified
    except target USB, which needs the USB port on a target.)*
@@ -128,8 +130,8 @@ Still unverified on hardware until you report:
 
 ## BLE troubleshooting
 
-- **Opening the COM port resets the board** (the CH343's DTR/RTS lines drive EN/IO0). The reset closes any open
-  pairing window, so open the serial monitor *first*, then press BOOT, then pair.
+- **Opening the COM port resets the board** (the CH343's DTR/RTS lines drive EN/IO0). That reset closes a BOOT
+  window but opens the 15 s power-on window, so pair right after opening the serial monitor, or press BOOT.
 - **The controller PC can't see the adapter** (`kvmit scan` empty, phone sees it): check the PC's scanner
   before the firmware. Run `sudo btmon -w /tmp/bt.log` during `bluetoothctl --timeout 20 scan le` and count
   `LE Advertising Report`s with `btmon -r /tmp/bt.log`. A healthy scan in a normal room gets hundreds in 20 s.

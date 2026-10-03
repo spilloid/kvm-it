@@ -4,6 +4,7 @@
 
 #include "esp_bt.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -32,11 +33,12 @@ static const ble_uuid128_t tx_uuid = BLE_UUID128_INIT(0x01, 0x74, 0x69, 0x6d, 0x
 /* ---- shared state ---- */
 static volatile uint16_t g_conn = BLE_HS_CONN_HANDLE_NONE;
 static volatile bool g_encrypted;
+static bool g_new_pairing;  /* host task: the current link is pairing a new bond (not re-encrypting a stored one) */
 static volatile bool g_handshaken;
 static volatile bool g_adv_active;
 static volatile bool g_started;
 static volatile bool g_fault;
-static volatile int64_t g_window_until_us;  /* >now: pairing window open */
+static volatile int64_t g_window_until_us;  /* nonzero: pairing window open; value = when the timer asks to close it */
 static volatile uint32_t g_activity;
 static uint8_t g_own_addr_type;
 static uint16_t g_tx_handle;
@@ -50,15 +52,19 @@ static volatile uint32_t g_gen;
 static QueueHandle_t g_queue;
 static proto_dev_t g_dev;
 
-static bool window_open(void) { return g_window_until_us > esp_timer_get_time(); }
+/* The window is host-task state: open from open_window() until ev_close()/pairing runs set_window(0) on the host
+ * task, which is also when sm_bonding changes. So "window open" and "bonding allowed" can never disagree, even if
+ * the deadline has passed and the close request is still queued behind other host work. */
+static bool window_open(void) { return g_window_until_us != 0; }
 
 /* NimBLE accepts SMP pairing as soon as a link exists, which can be before our CONNECT event, so the window must
  * also gate bonding inside the stack: outside it our side does not set the bonding flag, no keys are persisted,
- * and ENC_CHANGE (not bonded) disconnects the peer. Re-encrypting an existing bond is unaffected. */
+ * and ENC_CHANGE (not bonded) disconnects the peer. Re-encrypting an existing bond is unaffected.
+ * Host task only (see "host-task requests"): SMP reads sm_bonding on the same task, so they cannot interleave. */
 static void set_window(int64_t until_us)
 {
     g_window_until_us = until_us;
-    ble_hs_cfg.sm_bonding = until_us > esp_timer_get_time();
+    ble_hs_cfg.sm_bonding = until_us != 0;
 }
 
 static void terminate(uint16_t conn)
@@ -132,16 +138,21 @@ static void adv_restart(void)
     adv_start();
 }
 
-static void window_expired(void *arg)
+/* ---- host-task requests ----
+ * The pairing window, sm_bonding and advertising are changed only on the NimBLE host task, the same task that runs
+ * GAP events and SMP. Other tasks (BOOT button, esp_timer, worker) post an event instead of acting, so no policy
+ * check can be interleaved with a window change or a pairing. */
+static struct ble_npl_event g_ev_open, g_ev_close, g_ev_reset, g_ev_reconcile;
+static volatile bool g_events_ready;
+static volatile uint32_t g_open_req_s;
+
+static void post(struct ble_npl_event *ev)
 {
-    (void)arg;
-    ESP_LOGI(TAG, "pairing window closed");
-    set_window(0);
-    /* Not connected + no bond: go quiet. Connected pairing in progress is left to finish. */
-    if (g_conn == BLE_HS_CONN_HANDLE_NONE) adv_restart();
+    if (g_events_ready) ble_npl_eventq_put(nimble_port_get_dflt_eventq(), ev);
+    else ESP_LOGW(TAG, "BLE not started yet: request ignored");
 }
 
-void ble_link_open_pairing(uint32_t seconds)
+static void open_window(uint32_t seconds)
 {
     set_window(esp_timer_get_time() + (int64_t)seconds * 1000000);
     esp_timer_stop(g_window_timer);
@@ -150,12 +161,54 @@ void ble_link_open_pairing(uint32_t seconds)
     if (g_started && g_conn == BLE_HS_CONN_HANDLE_NONE) adv_restart();
 }
 
-void ble_link_trust_reset(void)
+static void ev_open(struct ble_npl_event *ev) { (void)ev; open_window(g_open_req_s); }
+
+static void ev_close(struct ble_npl_event *ev)
 {
+    (void)ev;
+    if (!window_open()) return;  /* already closed (paired) */
+    if (esp_timer_get_time() < g_window_until_us) return;  /* reopened since the timer fired */
+    ESP_LOGI(TAG, "pairing window closed");
+    set_window(0);
+    /* Not connected + no bond: go quiet. A pairing already admitted keeps its bonding decision. */
+    if (g_conn == BLE_HS_CONN_HANDLE_NONE) adv_restart();
+}
+
+static void ev_reset(struct ble_npl_event *ev)
+{
+    (void)ev;
     ble_store_clear();
     if (g_conn != BLE_HS_CONN_HANDLE_NONE) terminate(g_conn);
-    ble_link_open_pairing(CONFIG_KVMIT_PAIRING_WINDOW_S);
+    open_window(CONFIG_KVMIT_PAIRING_WINDOW_S);
 }
+
+/* Advertising should be on exactly when started, idle, and (window open or a bond to reconnect). Repairs the case
+ * NimBLE never reports (a link lost before CONNECT: no DISCONNECT) and stops advertising policy no longer allows. */
+static void ev_reconcile(struct ble_npl_event *ev)
+{
+    (void)ev;
+    if (!g_started || g_conn != BLE_HS_CONN_HANDLE_NONE) return;
+    bool want = window_open() || have_bond();
+    bool on = ble_gap_adv_active();
+    if (want && !on) {
+        g_adv_active = false;
+        adv_start();
+    } else if (!want && on) {
+        ble_gap_adv_stop();
+        g_adv_active = false;
+        ESP_LOGI(TAG, "advertising stopped: no trusted controller and pairing window closed");
+    }
+}
+
+static void window_expired(void *arg) { (void)arg; post(&g_ev_close); }
+
+void ble_link_open_pairing(uint32_t seconds)
+{
+    g_open_req_s = seconds;
+    post(&g_ev_open);
+}
+
+void ble_link_trust_reset(void) { post(&g_ev_reset); }
 
 /* Keep exactly one bond: after a successful new pairing, drop every other peer. */
 static void keep_only(const ble_addr_t *keep)
@@ -188,6 +241,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             k.peer_addr = id;
             struct ble_store_value_sec v;
             bool bonded = ble_store_read_peer_sec(&k, &v) == 0;
+            g_new_pairing = !bonded;
             if (!bonded && !window_open()) {
                 ESP_LOGW(TAG, "unbonded peer outside pairing window: disconnecting");
                 terminate(g_conn);
@@ -203,6 +257,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         ESP_LOGI(TAG, "disconnected (reason 0x%x)", ev->disconnect.reason);
         g_conn = BLE_HS_CONN_HANDLE_NONE;
         g_encrypted = false;
+        g_new_pairing = false;
         g_handshaken = false;
         g_gen++;  /* worker releases all input for the old session */
         adv_start();
@@ -218,9 +273,13 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             g_encrypted = true;
             /* Exactly one trusted controller, regardless of whether the window expired mid-pairing. */
             keep_only(&d.peer_id_addr);
-            if (window_open()) {
-                set_window(0);  /* paired: close the window */
+            /* A new pairing uses up the window. The trusted controller merely reconnecting does not, so an app that
+             * auto-reconnects at power-on leaves the power-on window available for pairing a new controller. If
+             * encryption completed before CONNECT was delivered we cannot tell, so close it to be safe. */
+            if (window_open() && (g_new_pairing || g_conn == BLE_HS_CONN_HANDLE_NONE)) {
+                set_window(0);
                 esp_timer_stop(g_window_timer);
+                ESP_LOGI(TAG, "paired: pairing window closed");
             }
             ESP_LOGI(TAG, "link encrypted and bonded");
         } else if (ev->enc_change.status != 0) {
@@ -232,6 +291,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         /* Peer lost its bond. Only replace ours while the physical window is open. */
         if (!window_open()) return BLE_GAP_REPEAT_PAIRING_IGNORE;
         if (ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d) == 0) ble_store_util_delete_peer(&d.peer_id_addr);
+        g_new_pairing = true;
         return BLE_GAP_REPEAT_PAIRING_RETRY;
     case BLE_GAP_EVENT_ADV_COMPLETE:
         g_adv_active = false;
@@ -323,13 +383,7 @@ static void worker(void *arg)
         if ((uint32_t)(ms() - last_tick) >= 250) {
             last_tick = ms();
             if (proto_dev_tick(&g_dev, last_tick)) ESP_LOGW(TAG, "keepalive timeout: released all input");
-            /* NimBLE suppresses DISCONNECT for a link that dropped before CONNECT was delivered, leaving advertising
-             * stopped with nothing to restart it. Reconcile: idle radio that should be advertising -> advertise. */
-            if (g_started && g_conn == BLE_HS_CONN_HANDLE_NONE && !ble_gap_adv_active() &&
-                (window_open() || have_bond())) {
-                g_adv_active = false;
-                adv_start();
-            }
+            post(&g_ev_reconcile);  /* advertising matches policy; runs on the host task */
         }
         if (got != pdTRUE || it.gen != seen_gen) continue;
         uint16_t conn = g_conn;
@@ -353,9 +407,18 @@ static void worker(void *arg)
 static void start_link(void)
 {
     g_started = true;
-    /* Plug-in is physical presence: with no bond, offer pairing straight away. */
-    if (!have_bond()) ble_link_open_pairing(CONFIG_KVMIT_PAIRING_WINDOW_S);
-    else adv_start();
+    /* Plug-in is physical presence: a power-on offers a short pairing window, bonded or not, so a new controller
+     * needs no BOOT press. With a bond stored, only a physical reset counts (power-on/plug-in, or the EN/RESET pin,
+     * which the COM port's auto-reset also drives): a crash or watchdog reboot must not reopen pairing, or anyone
+     * able to crash the adapter could. A bonded controller reconnects during or after the window as usual. */
+    esp_reset_reason_t why = esp_reset_reason();
+    bool physical = why == ESP_RST_POWERON || why == ESP_RST_EXT;
+    if (CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S > 0 && (physical || !have_bond())) {
+        open_window(CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S);
+    } else {
+        if (!physical) ESP_LOGI(TAG, "reset reason %d is not a power-on: no pairing window (press BOOT to pair)", why);
+        adv_start();
+    }
 }
 
 static void on_sync(void)
@@ -396,6 +459,11 @@ esp_err_t ble_link_start(void)
 
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) { g_fault = true; return err; }
+    ble_npl_event_init(&g_ev_open, ev_open, NULL);
+    ble_npl_event_init(&g_ev_close, ev_close, NULL);
+    ble_npl_event_init(&g_ev_reset, ev_reset, NULL);
+    ble_npl_event_init(&g_ev_reconcile, ev_reconcile, NULL);
+    g_events_ready = true;
     /* Laptops with weak LE scanning (observed: Surface Laptop 4) miss low-power adverts; use full power. */
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_P9);
     esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);

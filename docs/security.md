@@ -24,18 +24,23 @@ Linux/BlueZ; the refusal paths below are built and reviewed but not exercised on
 
 - **LE Secure Connections bonding is required, and both GATT characteristics need an encrypted link.** An
   unbonded peer can never reach the protocol.
-- **Physical presence gates pairing.** Pairing is accepted only inside a *pairing window*, which opens (a) at
-  boot when no controller is bonded (plug-in is presence), and (b) on a BOOT short press. It lasts
-  `CONFIG_KVMIT_PAIRING_WINDOW_S` (300 s) and closes as soon as a pairing succeeds. Outside the window, an
+- **Physical presence gates pairing.** Pairing is accepted only inside a *pairing window*, which opens (a) for
+  15 s after a power-on or RESET-pin reset, bonded or not (plug-in is presence;
+  `CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S`, 0 disables it), and (b) for 300 s on a BOOT short press
+  (`CONFIG_KVMIT_PAIRING_WINDOW_S`). With a bond stored, a crash/watchdog/software reboot does **not** open
+  the window, so a remotely triggered crash cannot reopen pairing. With no bond, any boot opens it. It closes as soon as a pairing
+  succeeds. Outside the window, an
   unbonded peer that connects is disconnected immediately and a re-pairing attempt from a bonded address is
   ignored.
 - **One link at a time, enforced by NimBLE.** The host has a single connection slot, and NimBLE will not start
   connectable advertising while it is in use, so a second controller cannot connect at all. (This depends on
   `firmware/patches/esp-idf-v5.5-nimble-conn-handle-index.patch`; see `docs/dev-process.md`, 2026-10-03.)
 - **One trusted controller.** A new pairing replaces the old bond. A 10 s BOOT hold erases all bonds and
-  reopens the window. RESET (the EN line) only reboots; it cannot be observed by software.
-- With a bond stored, the adapter advertises only to be found by that controller (slow interval) and never
-  opens pairing on its own.
+  reopens the window. RESET (the EN line) reboots, which counts as a power-on: it opens the 15 s window.
+- Outside a window, with a bond stored, the adapter advertises only to be found by that controller (slow interval).
+- **Trade-off of the power-on window:** whenever the adapter regains power (re-plugged, or the target reboots and
+  cuts USB power), anyone in radio range during those 15 s could pair and replace the bond, exactly as during a
+  BOOT window. Set `CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S=0` to require BOOT for every new pairing.
 - **Residual risk, stated plainly:** Just Works is not MITM-protected. An attacker in radio range *during the
   pairing window* could pair instead of you. The window is short, physically triggered and closes on first
   success; the LED blinks blue fast while it is open so you can see it. A per-connection challenge-response on

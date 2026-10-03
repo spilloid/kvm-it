@@ -143,8 +143,46 @@ lifecycle issues the earlier rounds had not reached:
 
 Also from 3c: the patch now sets `data_len_chg.conn_handle` (upstream left it 0), and docs no longer claim "no
 second link on any path" beyond the configuration used (extended advertising is disabled; its start path does not
-recheck capacity). **3d (verification of these fixes) was not run:** the reviewer's usage limit was reached. Recorded
-here so the gap is visible; re-run before the release tag.
+recheck capacity).
+
+**3d: verification of the 3c fixes** (run after a reviewer usage-limit delay). Confirmed sound: NimBLE (`cc3ac541`)
+reads `sm_bonding` when building the responder's pairing response and persists keys only if both sides bond;
+bonded re-encryption does not depend on it; delayed-`CONNECT` adoption; advertising recovery; chord error paths;
+patch hunks and the CMake guard. 6 findings, all accepted:
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | High | Window deadline and `sm_bonding` were written from three tasks (BOOT, esp_timer, host) without synchronisation; an interleaving could leave "window closed, bonding enabled" | Every window/bonding/advertising change now runs on the NimBLE host task (the task that runs SMP): BOOT, the window timer, trust reset and the worker tick only post `ble_npl_event`s (`ev_open`, `ev_close`, `ev_reset`, `ev_reconcile`) |
+| 2 | Med | The advertising-recovery tick could race window expiry and leave forbidden advertising running | `ev_reconcile` on the host task both starts **and stops** advertising to match policy |
+| 3 | Med | During capture, Tab/Enter could still drive other sidebar widgets (Type, Disconnect, Release all) | The whole sidebar is disabled while capturing |
+| 4 | Med | `chord_busy` did not cover capture's queued keys/RELEASE_ALL draining, overlapping script starts, or Release all vs a pending chord | Chords and Release all now run **inside** the ordered input pump; a pending counter (`InputTx`) tracks queued + in-flight items; `input_idle()` (no capture, no run, nothing pending) gates chords, Type and `start_run` |
+| 5 | Med | If a chord's key-up and the follow-up RELEASE_ALL both failed, keepalives kept the held key alive | The pump then closes the session (`shutdown`), so the adapter's link-drop/keepalive release applies |
+| 6 | Low | Type cleared its text before a busy rejection | Type is disabled unless input is idle, so `start_run` cannot reject it |
+
+**3e: verification of the 3d fixes.** Confirmed sound: host-task ownership removes the BOOT/ENC_CHANGE interleaving
+and the advertising check/start race; reconcile stops forbidden advertising; event init precedes the BOOT task's
+first post; disabled sidebar cannot be re-enabled by nested widgets; one healthy pump orders chords, capture and
+RELEASE_ALL. 3 findings, all accepted:
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | High | After the deadline passed, `sm_bonding` stayed 1 until the queued `ev_close` ran, so a pairing admitted in that gap bonded after "expiry" | The window is now host-task state: open until `set_window(0)` runs on the host task, the same step that clears `sm_bonding`; the timer only requests the close. "Window open" and "bonding allowed" can no longer disagree |
+| 2 | Med | Resetting a shared pending counter when replacing the pump let the old pump's late completions corrupt (and wrap) it | Each pump owns its counter (`InputTx::pending`); `input_idle()` reads the current pump's |
+| 3 | Med | After an automatic reconnect the GUI kept using the pump bound to the closed `Device` | Pumps are keyed by connection session (`Device::same_session`, `Arc::ptr_eq`), not adapter id |
+
+## 2026-10-03 — Pairing window at every power-on
+
+- Asked (maintainer): advertise for pairing by default at power-on, BOOT only if that first 15 s is missed.
+- Implemented: `CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S` (default 15, 0 = off) opens the window at power-on, bonded or
+  not. With a bond stored it opens only for a **physical** reset (`ESP_RST_POWERON`/`ESP_RST_EXT`), so a remotely
+  triggered crash or watchdog reboot cannot reopen pairing. The window now closes on a **new** pairing only; the
+  trusted controller reconnecting no longer uses it up (previously any bonded encryption closed it).
+- Trade-off (docs/security.md): a power loss and return opens a 15 s window in which anyone in range could pair.
+- Hardware-verified (release build, Linux controller): reset → "pairing window open for 15 s"; `kvmit pair` with no
+  BOOT press at ~1.4 s → paired, window closed by the pairing; bonded reconnect at ~1.3 s left the window open, the
+  timer closed it at 15.6 s and advertising went to "known controller only"; pairing after the window refused (0x205).
+- Not verified: the non-physical-reset path (no crash/watchdog reset was induced).
+
 
 - Hardware-verified (patched **diagnostic** build, whose boot scan occupies a controller slot so links land on
   handle 2, the case that used to panic): BOOT short press → `kvmit pair` "paired and connected" (in-window
