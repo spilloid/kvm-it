@@ -1,0 +1,20 @@
+[package]
+name = "kvmit-ble"
+description = "Controller side of the kvm-it link: protocol client (ack/retry/keepalive) and BLE transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kvmit-hid = { path = "../kvmit-hid" }
+kvmit-protocol = { path = "../kvmit-protocol" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+btleplug = "0.11"
+futures = "0.3"
+uuid = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = { version = "0.17", features = ["bluetoothd"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }

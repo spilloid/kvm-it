@@ -1,0 +1,16 @@
+name = "Demo: Notepad hello"
+format = 1
+description = "Windows only. Win+R, open Notepad, type a line. A harmless first run to see the adapter work."
+
+[[steps]]
+chord = ["GUI", "R"]
+[[steps]]
+delay = "800ms"
+[[steps]]
+text = "notepad"
+[[steps]]
+key = "ENTER"
+[[steps]]
+delay = "1500ms"
+[[steps]]
+text = "Hello from kvm-it"

@@ -1,0 +1,248 @@
+{
+  "spec": "protocol/SPEC.md",
+  "crc16_check": {
+    "ascii": "123456789",
+    "crc": 10673,
+    "max_payload": 240
+  },
+  "valid": [
+    {
+      "name": "hello",
+      "hex": "0101000002000100d510",
+      "ver": 1,
+      "type": 1,
+      "flags": 0,
+      "seq": 0,
+      "payload": "0100"
+    },
+    {
+      "name": "hello_ack",
+      "hex": "010102002000010007000000000100a0a1a2a3a4a5a6a7a8a9aaabacadaeaf066b766d2d69743485",
+      "ver": 1,
+      "type": 1,
+      "flags": 2,
+      "seq": 0,
+      "payload": "010007000000000100a0a1a2a3a4a5a6a7a8a9aaabacadaeaf066b766d2d6974"
+    },
+    {
+      "name": "key_down_a_ack",
+      "hex": "011001010100047af8",
+      "ver": 1,
+      "type": 16,
+      "flags": 1,
+      "seq": 1,
+      "payload": "04"
+    },
+    {
+      "name": "key_up_a_ack",
+      "hex": "011101020100040626",
+      "ver": 1,
+      "type": 17,
+      "flags": 1,
+      "seq": 2,
+      "payload": "04"
+    },
+    {
+      "name": "key_tap_enter",
+      "hex": "01120103010028bc7b",
+      "ver": 1,
+      "type": 18,
+      "flags": 1,
+      "seq": 3,
+      "payload": "28"
+    },
+    {
+      "name": "key_down_left_shift",
+      "hex": "011001040100e1b4e9",
+      "ver": 1,
+      "type": 16,
+      "flags": 1,
+      "seq": 4,
+      "payload": "e1"
+    },
+    {
+      "name": "key_down_ack_response",
+      "hex": "011002010000b295",
+      "ver": 1,
+      "type": 16,
+      "flags": 2,
+      "seq": 1,
+      "payload": ""
+    },
+    {
+      "name": "mouse_move_neg",
+      "hex": "012000fa0400fbff2c016cee",
+      "ver": 1,
+      "type": 32,
+      "flags": 0,
+      "seq": 250,
+      "payload": "fbff2c01"
+    },
+    {
+      "name": "mouse_move_extremes",
+      "hex": "0120000004000080ff7ffc98",
+      "ver": 1,
+      "type": 32,
+      "flags": 0,
+      "seq": 0,
+      "payload": "0080ff7f"
+    },
+    {
+      "name": "mouse_button_down_left",
+      "hex": "012101050100010208",
+      "ver": 1,
+      "type": 33,
+      "flags": 1,
+      "seq": 5,
+      "payload": "01"
+    },
+    {
+      "name": "mouse_button_up_all",
+      "hex": "01220106010007f83d",
+      "ver": 1,
+      "type": 34,
+      "flags": 1,
+      "seq": 6,
+      "payload": "07"
+    },
+    {
+      "name": "scroll",
+      "hex": "012301070200ff03193c",
+      "ver": 1,
+      "type": 35,
+      "flags": 1,
+      "seq": 7,
+      "payload": "ff03"
+    },
+    {
+      "name": "release_all",
+      "hex": "013001ff000089fe",
+      "ver": 1,
+      "type": 48,
+      "flags": 1,
+      "seq": 255,
+      "payload": ""
+    },
+    {
+      "name": "ping_echo_payload",
+      "hex": "0140000908000102030405060708fbce",
+      "ver": 1,
+      "type": 64,
+      "flags": 0,
+      "seq": 9,
+      "payload": "0102030405060708"
+    },
+    {
+      "name": "ping_empty",
+      "hex": "0140000a0000199d",
+      "ver": 1,
+      "type": 64,
+      "flags": 0,
+      "seq": 10,
+      "payload": ""
+    },
+    {
+      "name": "status_response",
+      "hex": "0150020b0b000102010700000003000000e626",
+      "ver": 1,
+      "type": 80,
+      "flags": 2,
+      "seq": 11,
+      "payload": "0102010700000003000000"
+    },
+    {
+      "name": "set_name",
+      "hex": "0160010c0500046465736b1b2e",
+      "ver": 1,
+      "type": 96,
+      "flags": 1,
+      "seq": 12,
+      "payload": "046465736b"
+    },
+    {
+      "name": "error_unsupported",
+      "hex": "017f020d02000199961e",
+      "ver": 1,
+      "type": 127,
+      "flags": 2,
+      "seq": 13,
+      "payload": "0199"
+    },
+    {
+      "name": "max_payload",
+      "hex": "0140000ef000000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff8e2",
+      "ver": 1,
+      "type": 64,
+      "flags": 0,
+      "seq": 14,
+      "payload": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "empty",
+      "hex": "",
+      "error": "Truncated"
+    },
+    {
+      "name": "seven_bytes",
+      "hex": "01100101010004",
+      "error": "Truncated"
+    },
+    {
+      "name": "missing_crc_byte",
+      "hex": "011001010100047a",
+      "error": "LengthMismatch"
+    },
+    {
+      "name": "extra_trailing_byte",
+      "hex": "011001010100047af800",
+      "error": "LengthMismatch"
+    },
+    {
+      "name": "len_field_too_big",
+      "hex": "01100101050004ba24",
+      "error": "LengthMismatch"
+    },
+    {
+      "name": "payload_over_max",
+      "hex": "01400001f10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a194",
+      "error": "PayloadTooLong"
+    },
+    {
+      "name": "flipped_payload_bit",
+      "hex": "011001010100057af8",
+      "error": "BadCrc"
+    },
+    {
+      "name": "flipped_crc",
+      "hex": "011001010100047a07",
+      "error": "BadCrc"
+    },
+    {
+      "name": "unknown_major",
+      "hex": "02100101010004f820",
+      "error": "BadVersion"
+    },
+    {
+      "name": "version_zero",
+      "hex": "001001010100041b40",
+      "error": "BadVersion"
+    },
+    {
+      "name": "reserved_flag_bit2",
+      "hex": "011004010100042ddb",
+      "error": "BadFlags"
+    },
+    {
+      "name": "reserved_flag_bit7",
+      "hex": "01108001010004fb70",
+      "error": "BadFlags"
+    },
+    {
+      "name": "unknown_type",
+      "hex": "015500010000e54a",
+      "error": "UnknownType"
+    }
+  ]
+}

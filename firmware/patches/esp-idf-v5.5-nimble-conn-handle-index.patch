@@ -1,0 +1,152 @@
+--- a/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_conn_priv.h	2026-10-03 20:02:27.745083447 +0000
++++ b/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_conn_priv.h	2026-10-03 20:02:27.760774155 +0000
+@@ -58,6 +58,14 @@
+     ble_addr_t bhc_our_rpa_addr;
+     ble_addr_t bhc_peer_rpa_addr;
+ 
++    /* kvm-it patch: per-link state that ble_gap.c kept in arrays indexed by the raw HCI connection handle
++     * (sized BLE_MAX_CONNECTIONS + 1, while the ESP32-S3 controller hands out larger handles). */
++    uint8_t bhc_slave_conn_sent;   /* peripheral: CONNECT event delivered to the application */
++    uint16_t bhc_max_tx_time;
++    uint16_t bhc_max_rx_time;
++    uint16_t bhc_max_tx_octets;
++    uint16_t bhc_max_rx_octets;
++
+     uint16_t bhc_itvl;
+     uint16_t bhc_latency;
+     uint16_t bhc_supervision_timeout;
+--- a/components/bt/host/nimble/nimble/nimble/host/src/ble_gap.c	2026-10-03 20:02:27.747083431 +0000
++++ b/components/bt/host/nimble/nimble/nimble/host/src/ble_gap.c	2026-10-03 20:02:27.762399382 +0000
+@@ -293,7 +293,6 @@
+ static uint16_t pawr_sync_handle;
+ #endif
+ 
+-int slave_conn[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
+ static void ble_gap_update_entry_free(struct ble_gap_update_entry *entry);
+ 
+ #if NIMBLE_BLE_CONNECT
+@@ -320,10 +319,6 @@
+ static int ble_gap_disc_enable_tx(int enable, int filter_duplicates);
+ #endif
+ 
+-uint16_t g_max_tx_time[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
+-uint16_t g_max_rx_time[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1 ];
+-uint16_t g_max_tx_octets[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
+-uint16_t g_max_rx_octets[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
+ 
+ STATS_SECT_DECL(ble_gap_stats) ble_gap_stats;
+ STATS_NAME_START(ble_gap_stats)
+@@ -1607,8 +1602,8 @@
+ 
+     // Send disconnect event in slave role if connect was sent
+     if ((conn != NULL) &&  !(conn->bhc_flags & BLE_HS_CONN_F_MASTER)) {
+-        if (slave_conn[conn_handle]) {
+-            slave_conn[conn_handle] = 0;
++        if (conn->bhc_slave_conn_sent) {
++            conn->bhc_slave_conn_sent = 0;
+ 	} else {
+ 	    send = 0;
+ 	}
+@@ -1616,11 +1611,6 @@
+ 
+     ble_hs_atomic_conn_delete(conn_handle);
+ 
+-    g_max_tx_time[conn_handle] = 0;
+-    g_max_rx_time[conn_handle] = 0;
+-    g_max_tx_octets[conn_handle] = 0;
+-    g_max_rx_octets[conn_handle] = 0;
+-
+     event.type = BLE_GAP_EVENT_DISCONNECT;
+     event.disconnect.reason = reason;
+ 
+@@ -2863,7 +2853,7 @@
+ 
+ 	if (conn != NULL) {
+             ble_gap_event_connect_call(ev->conn_handle, ev->status);
+-            slave_conn[ev->conn_handle] = 1;
++            conn->bhc_slave_conn_sent = 1;
+         }
+     }
+ #endif
+@@ -2939,19 +2929,26 @@
+ {
+ #if NIMBLE_BLE_CONNECT
+     struct ble_gap_event event;
++    struct ble_hs_conn *conn;
+     uint16_t conn_handle = le16toh(ev->conn_handle);
+ 
+     memset(&event, 0, sizeof event);
+     event.type = BLE_GAP_EVENT_DATA_LEN_CHG;
++    event.data_len_chg.conn_handle = conn_handle;  /* kvm-it patch: upstream left this 0 */
+     event.data_len_chg.max_tx_octets = le16toh(ev->max_tx_octets);
+     event.data_len_chg.max_rx_octets = le16toh(ev->max_rx_octets);
+     event.data_len_chg.max_tx_time = le16toh(ev->max_tx_time);
+     event.data_len_chg.max_rx_time = le16toh(ev->max_rx_time);
+ 
+-    g_max_tx_octets[conn_handle] = event.data_len_chg.max_tx_octets;
+-    g_max_rx_octets[conn_handle] = event.data_len_chg.max_rx_octets;
+-    g_max_tx_time[conn_handle] = event.data_len_chg.max_tx_time;
+-    g_max_rx_time[conn_handle] = event.data_len_chg.max_rx_time;
++    ble_hs_lock();
++    conn = ble_hs_conn_find(conn_handle);
++    if (conn != NULL) {
++        conn->bhc_max_tx_octets = event.data_len_chg.max_tx_octets;
++        conn->bhc_max_rx_octets = event.data_len_chg.max_rx_octets;
++        conn->bhc_max_tx_time = event.data_len_chg.max_tx_time;
++        conn->bhc_max_rx_time = event.data_len_chg.max_rx_time;
++    }
++    ble_hs_unlock();
+  
+     ble_gap_event_listener_call(&event);
+     ble_gap_call_conn_event_cb(&event, conn_handle);
+@@ -8070,16 +8067,24 @@
+      * If yes, then just return event to host indicating success
+      * since controller will not send any event in this scenario
+      */
+-    if (g_max_tx_time[conn_handle] == tx_time && g_max_tx_octets[conn_handle] == tx_octets) {
++    struct ble_hs_conn *conn;
++    struct ble_gap_event event;
++    int same = 0;
+ 
+-        struct ble_gap_event event;
++    memset(&event, 0, sizeof event);
++    ble_hs_lock();
++    conn = ble_hs_conn_find(conn_handle);
++    if (conn != NULL && conn->bhc_max_tx_time == tx_time && conn->bhc_max_tx_octets == tx_octets) {
++        same = 1;
++        event.data_len_chg.max_tx_octets = conn->bhc_max_tx_octets;
++        event.data_len_chg.max_rx_octets = conn->bhc_max_rx_octets;
++        event.data_len_chg.max_tx_time = conn->bhc_max_tx_time;
++        event.data_len_chg.max_rx_time = conn->bhc_max_rx_time;
++    }
++    ble_hs_unlock();
+ 
+-        memset(&event, 0, sizeof event);
++    if (same) {
+         event.type = BLE_GAP_EVENT_DATA_LEN_CHG;
+-        event.data_len_chg.max_tx_octets = g_max_tx_octets[conn_handle];
+-        event.data_len_chg.max_rx_octets = g_max_rx_octets[conn_handle];
+-        event.data_len_chg.max_tx_time = g_max_tx_time[conn_handle];
+-        event.data_len_chg.max_rx_time = g_max_rx_time[conn_handle];
+         event.data_len_chg.conn_handle = conn_handle;
+ 
+         ble_gap_event_listener_call(&event);
+--- a/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci_evt.c	2026-10-03 20:02:27.748083423 +0000
++++ b/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci_evt.c	2026-10-03 20:02:27.763075481 +0000
+@@ -35,7 +35,6 @@
+ 
+ extern int ble_gap_master_connect_reattempt(uint16_t conn_handle);
+ extern int ble_gap_slave_adv_reattempt(void);
+-extern int slave_conn[MYNEWT_VAL(BLE_MAX_CONNECTIONS) + 1];
+ #endif
+ 
+ #if MYNEWT_VAL(BLE_QUEUE_CONG_CHECK)
+@@ -283,7 +282,7 @@
+ 	}
+ 	else if (!(conn->bhc_flags & BLE_HS_CONN_F_MASTER) && \
+ 		((ev->reason == BLE_ERR_CONN_ESTABLISHMENT) || \
+-		(!slave_conn[ev->conn_handle] && ev->reason == BLE_ERR_CONN_SPVN_TMO))) { //slave
++		(!conn->bhc_slave_conn_sent && ev->reason == BLE_ERR_CONN_SPVN_TMO))) { //slave
+ 
+ 	    BLE_HS_LOG(INFO, "Reattempt advertising; reason: 0x%x, status = %x",
+                              ev->reason, ev->status);

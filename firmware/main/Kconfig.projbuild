@@ -1,0 +1,48 @@
+menu "kvm-it"
+
+    config KVMIT_LED_GPIO
+        int "Status LED GPIO (WS2812)"
+        default 48
+        help
+            YD-ESP32-23 rev 2022-v1.3: the on-board RGB LED is documented by the vendor on GPIO48.
+            Not yet verified on this exact board; some ESP32-S3 boards use GPIO38. Set -1 to disable.
+
+    config KVMIT_BOOT_GPIO
+        int "BOOT button GPIO"
+        default 0
+
+    config KVMIT_PAIRING_WINDOW_S
+        int "Pairing window length (seconds)"
+        default 300
+        help
+            How long a BOOT short-press allows a new controller
+            to pair. Physical presence gates pairing; see docs/security.md.
+
+    config KVMIT_BOOT_PAIRING_WINDOW_S
+        int "Pairing window at power-on (seconds, 0 = none)"
+        range 0 300
+        default 15
+        help
+            Every power-on (plug-in) opens a short pairing window, bonded or not, so a new controller can pair
+            without pressing BOOT. Plug-in counts as physical presence. After it closes, BOOT short-press opens
+            the full KVMIT_PAIRING_WINDOW_S window. See docs/security.md for the trade-off.
+
+    config KVMIT_SELFTEST
+        bool "Run the M2 HID self-test at boot (types into the target!)"
+        default n
+
+    config KVMIT_RADIO_DIAG
+        bool "Radio diagnostics at boot (diagnostic builds only)"
+        default n
+        depends on BT_NIMBLE_ROLE_OBSERVER
+        help
+            Logs stored bonds and runs a passive scan before advertising, printing every advertiser with
+            min/avg/max RSSI. Enabled by sdkconfig.diag (scripts/fw.sh build-diag); never in release builds.
+
+    config KVMIT_RADIO_DIAG_SCAN_S
+        int "Radio diagnostic scan length (seconds)"
+        range 1 300
+        default 15
+        depends on KVMIT_RADIO_DIAG
+
+endmenu

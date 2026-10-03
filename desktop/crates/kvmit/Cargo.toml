@@ -1,0 +1,27 @@
+[package]
+name = "kvmit"
+description = "kvm-it controller: CLI and GUI for the ESP32-S3 USB-HID + HDMI-capture KVM"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kvmit"
+path = "src/main.rs"
+
+[dependencies]
+kvmit-hid = { path = "../kvmit-hid" }
+kvmit-layout = { path = "../kvmit-layout" }
+kvmit-protocol = { path = "../kvmit-protocol" }
+kvmit-ble = { path = "../kvmit-ble" }
+kvmit-script = { path = "../kvmit-script" }
+kvmit-video = { path = "../kvmit-video" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+rpassword = "7"
+ctrlc = "3"
+eframe = { version = "0.32", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+egui = "0.32"

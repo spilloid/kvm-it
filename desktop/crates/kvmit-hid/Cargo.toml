@@ -1,0 +1,6 @@
+[package]
+name = "kvmit-hid"
+description = "USB HID keyboard usage codes, key names and mouse buttons"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
