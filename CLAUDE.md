@@ -13,7 +13,6 @@ controlled over BLE from a Rust desktop app. Read `README.md`, then `docs/archit
 - **Target-facing input is USB HID only.** Bluetooth is solely controller↔ESP32.
 - **Firmware knows usage codes, not text.** Layouts, macros and text→keys live in the desktop app.
 - **No secrets persisted by default.**
-- No competitive/market-positioning content in this public repo; strategy lives privately elsewhere.
 - Adversarially review non-trivial diffs with a different model (astra); reproduce findings before
   accepting; log rounds in `docs/dev-process.md` (company standard STD-001).
 
