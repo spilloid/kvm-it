@@ -31,7 +31,7 @@ COM port. The silkscreen names above are from the board vendor's documentation; 
 ### Buttons
 
 - **BOOT** (GPIO0, read by the firmware at run time):
-  - short press (< 3 s): open the **pairing window** for 120 s;
+  - short press (< 3 s): open the **pairing window** for 300 s;
   - hold 10 s: **erase the bonded controller** and reopen the window (LED shows progress, below);
   - hold it while pressing RESET: ROM download mode (hardware behaviour, unchanged).
 - **RESET** (EN): reboots the chip; the USB device re-enumerates on the target and the adapter comes back
@@ -103,7 +103,7 @@ boot HID); the old M2 self-test typed. The 0.1.0 firmware **no longer types at b
 
 New in 0.1.0, all unverified on hardware until you report:
 
-1. **Boot log** over COM: `BLE ready, trusted controller none`, `pairing window open for 120 s`, `advertising`.
+1. **Boot log** over COM: `BLE ready, trusted controller none`, `pairing window open for 300 s`, `advertising`.
 2. **LED** behaves per the table above (fast blue while pairing). If dark, GPIO48 is wrong for this board.
 3. **Pair**: `kvmit pair` on a Linux controller (press BOOT first if the window has closed) → "paired and connected".
 4. **Status**: `kvmit status` shows target USB enumerated, a round trip time, firmware 0.1.0.

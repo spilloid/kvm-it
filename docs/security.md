@@ -25,7 +25,7 @@ Decision, as implemented in 0.1.0 (built and host-tested; **not yet hardware-ver
   unbonded peer can never reach the protocol.
 - **Physical presence gates pairing.** Pairing is accepted only inside a *pairing window*, which opens (a) at
   boot when no controller is bonded (plug-in is presence), and (b) on a BOOT short press. It lasts
-  `CONFIG_KVMIT_PAIRING_WINDOW_S` (120 s) and closes as soon as a pairing succeeds. Outside the window, an
+  `CONFIG_KVMIT_PAIRING_WINDOW_S` (300 s) and closes as soon as a pairing succeeds. Outside the window, an
   unbonded peer that connects is disconnected immediately and a re-pairing attempt from a bonded address is
   ignored.
 - **One trusted controller.** A new pairing replaces the old bond. A 10 s BOOT hold erases all bonds and
