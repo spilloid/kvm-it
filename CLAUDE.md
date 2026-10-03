@@ -41,7 +41,7 @@ self-test types into the machine it is plugged into.
 
 - 2026-10-03: "COM = CH343 UART, USB = native" port labelling is vendor-documented and consistent with
   `lsusb 1a86:55d3` on COM, but not checked against this board's silkscreen.
-- 2026-10-03: LED GPIO48 and Windows are unverified on hardware (see README table). BLE pairing + GATT and HDMI
+- 2026-10-03: Windows (as controller) is unverified on hardware (see README table); LED GPIO48 verified. BLE pairing + GATT and HDMI
   capture (one MacroSilicon card) were hardware-verified the same day on Linux.
 - 2026-10-03: 5-byte mouse report acceptance by BIOS boot protocol — unverified.
 - 2026-10-03: egui/eframe 1080p60 latency — unmeasured.

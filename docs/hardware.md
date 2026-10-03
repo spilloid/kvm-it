@@ -39,8 +39,8 @@ COM port. The silkscreen names above are from the board vendor's documentation; 
   with its last configuration (name and bond are stored in flash). Like a plug-in, it opens the 15 s pairing
   window.
 
-### Status LED (on-board RGB, GPIO48 per the vendor — **not yet verified on this board; set
-`CONFIG_KVMIT_LED_GPIO` to -1 or another pin if it stays dark**)
+### Status LED (on-board RGB, GPIO48 — verified on this board 2026-10-03; set
+`CONFIG_KVMIT_LED_GPIO` to -1 or another pin if a different board stays dark)
 
 | LED | Meaning |
 |---|---|
@@ -113,6 +113,8 @@ Still unverified on hardware until you report:
 1. **Boot log** over COM: `BLE ready, trusted controller none`, `pairing window open for 300 s`, `advertising`.
    *(Verified.)*
 2. **LED** behaves per the table above (fast blue while pairing). If dark, GPIO48 is wrong for this board.
+   *(Verified 2026-10-03: fast blue in the pairing window; the trust-reset sequence below. Other states not
+   individually checked.)*
 3. **Pair**: `kvmit pair` on a Linux controller within 15 s of power-on (or after a BOOT press) → "paired and
    connected". *(Verified.)*
 4. **Status**: `kvmit status` shows target USB enumerated, a round trip time, firmware 0.1.0. *(Verified
@@ -121,10 +123,13 @@ Still unverified on hardware until you report:
    *(Verified 2026-10-03 into a Windows 11 target: every printable US-ASCII character, chords Win+R and Ctrl+N,
    Enter/Escape; Ctrl+Alt+Del not sent. Read back through the capture card. If the target sleeps or locks
    mid-test, keys go to the lock screen: disable sleep on the target first.)*
-6. **Reconnect**: unplug/replug the adapter; `kvmit status` reconnects with no pairing step.
+6. **Reconnect**: unplug/replug the adapter; `kvmit status` reconnects with no pairing step. *(Verified 2026-10-03:
+   physical replug and many COM-triggered power-on resets.)*
 7. **Stuck keys**: hold a key via the GUI capture then kill the app (`kill -9`): within ~5 s the target's key
    releases. Disconnecting Bluetooth releases immediately.
 8. **Trust reset**: hold BOOT 10 s → LED yellow ramp, three red flashes, fast blue; a second controller can now pair.
+   *(Verified 2026-10-03: LED sequence as described; log `erasing BLE trust`, 300 s window; the controller's old
+   keys are then rejected (0x205) and it pairs afresh.)*
 9. **BIOS/UEFI** (if available): keyboard works, and report whether the 5-byte mouse report is accepted.
 10. **GUI** (`kvmit`): connect, capture keyboard/mouse, Ctrl+Alt+Esc releases; with a capture card, video shows.
 

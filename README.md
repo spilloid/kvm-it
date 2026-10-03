@@ -68,7 +68,7 @@ Labels are strict: **built** = compiles; **host-tested** = automated tests pass 
 | Firmware: USB keyboard + mouse (boot HID) | **hardware-verified** (enumeration via `lsusb`; self-test typed) |
 | Firmware: protocol dispatcher, dedup, keepalive, LED language, BOOT gestures | host-tested |
 | Firmware: BLE (bonding, pairing window, GATT), BOOT GPIO | **hardware-verified** (BOOT opens the window; LE SC bond; HELLO/STATUS over GATT; bonded reconnect) |
-| Firmware: LED driver (GPIO48) | built, **not hardware-verified** |
+| Firmware: LED driver (GPIO48), BOOT gestures | **hardware-verified** (fast blue while pairing; 10 s BOOT hold: yellow ramp, three red flashes, fast blue, bond erased) |
 | Protocol v1 spec + shared vectors (C and Rust) | host-tested |
 | Desktop: client (ack/retry/keepalive), script engine, DuckyScript import, layout | host-tested |
 | Desktop: BLE transport + BlueZ pairing | **hardware-verified** on Linux/BlueZ (Intel AX201): `scan`, `pair`, `status` (90 ms RTT); `type`/`key` **hardware-verified** into a Windows 11 target (every printable US-ASCII character, checked on screen through the capture card) |

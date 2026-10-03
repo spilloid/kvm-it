@@ -226,3 +226,13 @@ Hardware-verified after 3f (release build): reset, wait past 15 s, `kvmit pair` 
   - `kvmit video snap` grabs the first frame; this capture card needs a few seconds of streaming (and sometimes a USB
     reset) before it shows the source, so snapshots took 1-8 retries.
 
+## 2026-10-03 — LED, trust reset, replug
+
+- Hardware-verified (maintainer observing the LED, serial log on COM): physical unplug/replug → `kvmit status`
+  reconnects without pairing; 10 s BOOT hold → yellow ramp, three red flashes, fast blue; log `BOOT held 10 s:
+  erasing BLE trust`, `pairing window open for 300 s`; the laptop's old keys are then refused (`new peer`, 0x205)
+  and `kvmit pair` pairs afresh (`status` 91 ms). LED GPIO48 is correct for this board.
+- Open (minor, desktop): the first `kvmit pair` after the trust reset failed while BlueZ still held an unpaired
+  connection from the failed `status` ("Connected: yes, Paired: no"); a retry paired. `pair` should drop a stale
+  link (or retry once) before pairing.
+
