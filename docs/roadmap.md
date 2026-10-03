@@ -9,7 +9,7 @@ Status key: done = built and software-verified; **hw?** = built, awaiting verifi
 | 2 | Self-test: `HELLO FROM KVM`, Enter, mouse nudge | done — maintainer-reported working (2026-10-03) |
 | 3 | Protocol v1 spec/vectors, codecs | done — host-tested |
 | 3b | BLE discovery, bonding, desktop connects | done — hardware-verified on Linux/BlueZ (2026-10-03) |
-| 4 | BLE key events → USB keyboard (dispatcher, dedup, keepalive) | done — typing hardware-verified into a Windows 11 target; keepalive release on a killed app not yet shown deterministically |
+| 4 | BLE key events → USB keyboard (dispatcher, dedup, keepalive) | done — typing and keepalive release of a held key after `kill -9` hardware-verified into a Windows 11 target |
 | 5 | Mouse move/buttons/scroll over BLE | host-tested; **hw?** |
 | 6 | Text injection, US layout (desktop-side) | host-tested |
 | 7 | UVC capture (V4L2) | done — hardware-verified with an HDMI capture card (MacroSilicon `345f:2109`) |

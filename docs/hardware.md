@@ -126,7 +126,9 @@ Still unverified on hardware until you report:
 6. **Reconnect**: unplug/replug the adapter; `kvmit status` reconnects with no pairing step. *(Verified 2026-10-03:
    physical replug and many COM-triggered power-on resets.)*
 7. **Stuck keys**: hold a key via the GUI capture then kill the app (`kill -9`): within ~5 s the target's key
-   releases. Disconnecting Bluetooth releases immediately.
+   releases. Disconnecting Bluetooth releases immediately. *(Verified 2026-10-03 with `kvmit key --hold 60s k`
+   killed by `kill -9` after 2 s, BLE link left up: autorepeat into Notepad stopped ~3.2 s after the kill (146
+   characters at the measured 31/s), count unchanged at +8.6 s and +21.5 s, i.e. the firmware keepalive released it.)*
 8. **Trust reset**: hold BOOT 10 s → LED yellow ramp, three red flashes, fast blue; a second controller can now pair.
    *(Verified 2026-10-03: LED sequence as described; log `erasing BLE trust`, 300 s window; the controller's old
    keys are then rejected (0x205) and it pairs afresh.)*

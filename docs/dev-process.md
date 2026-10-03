@@ -236,3 +236,12 @@ Hardware-verified after 3f (release build): reset, wait past 15 s, `kvmit pair` 
   connection from the failed `status` ("Connected: yes, Paired: no"); a retry paired. `pair` should drop a stale
   link (or retry once) before pairing.
 
+## 2026-10-03 — Keepalive release of a held key (deterministic)
+
+- Added `kvmit key --hold <dur>` (also a user feature: hold F12/Del while a target boots). `kvmit type`/`key` no
+  longer open a capture device unless the script waits on the screen (they held `/dev/video5` and blocked `snap`).
+- Calibration: `--hold 3s j` → 80 characters in Notepad (Windows repeat ≈ 31/s after 0.5 s).
+- Test: `--hold 60s k`, `kill -9` after 2 s, BLE link stayed connected (BlueZ keeps it). Notepad gained 146 `k`
+  (≈ 5.2 s held, so released ≈ 3.2 s after the kill, consistent with the 5 s timeout from the last 1 s keepalive),
+  then stayed at 226 characters from +8.6 s to +21.5 s. Read back through the capture card.
+

@@ -21,6 +21,10 @@ are hardware-verified. The Windows controller app is out of scope for 0.1.0 (cro
   DuckyScript import); V4L2 capture; built-in example scripts; Windows cross-compile.
 - `scripts/rs.sh` (containerised Rust build/test/clippy/Windows cross-build).
 
+### Added (CLI)
+- `kvmit key --hold <duration> <keys>`: press and hold a key or chord (e.g. `--hold 15s f12` while the target
+  boots); Ctrl+C releases early.
+
 ### Changed (pairing)
 - Every power-on (plug-in or RESET) opens a 15 s pairing window, bonded or not, so a new controller pairs
   without pressing BOOT (`CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S`, 0 disables). With a bond stored, crash/watchdog

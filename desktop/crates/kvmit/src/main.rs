@@ -43,8 +43,13 @@ enum Cmd {
         #[arg(long)]
         secret: bool,
     },
-    /// Press a key or chord, e.g. `kvmit key ctrl alt delete`
-    Key { keys: Vec<String> },
+    /// Press a key or chord, e.g. `kvmit key ctrl alt delete`. With --hold, keep it pressed for that long
+    /// (e.g. `kvmit key --hold 15s f12` while the target boots); Ctrl+C releases early.
+    Key {
+        keys: Vec<String>,
+        #[arg(long, value_parser = kvmit_script::parse_duration)]
+        hold: Option<Duration>,
+    },
     /// Run a script file
     Run {
         file: PathBuf,
@@ -165,12 +170,41 @@ fn real_main(cli: Cli) -> R<()> {
             let vars: Vars = [("t".to_string(), text)].into();
             execute(cli.device, cfg, script, PathBuf::from("."), vars, false, true)
         }
-        Cmd::Key { keys } => {
+        Cmd::Key { keys, hold } => {
             if keys.is_empty() {
                 return Err("give at least one key name, e.g. `kvmit key enter`".into());
             }
             for k in &keys {
                 parse_key(k).ok_or_else(|| format!("unknown key {k:?}"))?;
+            }
+            if let Some(hold) = hold {
+                let ks: Vec<kvmit_hid::Key> = keys.iter().filter_map(|k| parse_key(k)).collect();
+                let cancel = Arc::new(AtomicBool::new(false));
+                let c2 = cancel.clone();
+                ctrlc::set_handler(move || c2.store(true, Ordering::SeqCst)).ok();
+                return with_device(cli.device, cfg, |rt, dev| {
+                    rt.block_on(async {
+                        let mut r = Ok(());
+                        for k in &ks {
+                            if let Err(e) = dev.key_down(*k).await {
+                                r = Err(e);
+                                break;
+                            }
+                        }
+                        if r.is_ok() {
+                            println!("holding {} for {hold:?} (Ctrl+C releases)", keys.join("+"));
+                            let end = tokio::time::Instant::now() + hold;
+                            while tokio::time::Instant::now() < end && !cancel.load(Ordering::SeqCst) {
+                                tokio::time::sleep(Duration::from_millis(50)).await;
+                            }
+                        }
+                        // Release even after an error; with_device's shutdown also sends RELEASE_ALL.
+                        for k in ks.iter().rev() {
+                            let _ = dev.key_up(*k).await;
+                        }
+                        r.map_err(|e| e.to_string().into())
+                    })
+                });
             }
             let mut script = Script::default();
             script.steps.push(if keys.len() == 1 { Step::Key(keys[0].clone()) } else { Step::Chord(keys) });
@@ -306,9 +340,11 @@ fn execute(id: Option<String>, cfg: Config, script: Script, base: PathBuf, vars:
     let cancel = Arc::new(AtomicBool::new(false));
     let c2 = cancel.clone();
     ctrlc::set_handler(move || c2.store(true, Ordering::SeqCst)).ok();
-    let video = kvmit_video::list_devices().first().and_then(|d| kvmit_video::Capture::open(&d.path).ok());
-    let capture = Arc::new(std::sync::Mutex::new(video));
+    // Only open a capture device when the script waits on the screen: holding it otherwise blocks other users of
+    // the card (e.g. `kvmit video snap`) for no reason.
     let needs_video = ops.iter().any(|(_, o)| matches!(o, kvmit_script::Op::Wait(_)));
+    let video = if needs_video { kvmit_video::list_devices().first().and_then(|d| kvmit_video::Capture::open(&d.path).ok()) } else { None };
+    let capture = Arc::new(std::sync::Mutex::new(video));
     if needs_video && capture.lock().unwrap().is_none() {
         eprintln!("note: this script waits on the screen but no capture device could be opened");
     }
