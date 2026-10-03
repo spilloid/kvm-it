@@ -13,7 +13,7 @@ use kvmit_protocol::message::StatusInfo;
 use kvmit_script::{compile, preview, run, Preview, RunEvent, RunOptions, Script, Step, Vars};
 use kvmit_video::{Capture, DeviceInfo};
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -39,6 +39,29 @@ enum Input {
     Button(u8, bool),
     Scroll(i8),
     ReleaseAll,
+    /// A "Send keys" chord: all downs, then ups in reverse. Runs inside the pump so it can never interleave
+    /// with captured input, a capture's closing RELEASE_ALL, or the Release all button.
+    Chord(&'static str, Vec<Key>),
+}
+
+/// Sender into the ordered input pump. Every queued item is counted until the pump has finished it, so the UI
+/// can tell when input is fully idle (nothing queued, nothing in flight) before starting another producer.
+#[derive(Clone)]
+struct InputTx {
+    tx: mpsc::UnboundedSender<Input>,
+    pending: Arc<AtomicUsize>,
+}
+
+impl InputTx {
+    fn send(&self, i: Input) -> Result<(), ()> {
+        self.pending.fetch_add(1, Ordering::SeqCst);
+        self.tx.send(i).map_err(|_| {
+            self.pending.fetch_sub(1, Ordering::SeqCst);
+        })
+    }
+    fn is_closed(&self) -> bool {
+        self.tx.is_closed()
+    }
 }
 
 type ConfirmSlot = Arc<Mutex<Option<(String, std_mpsc::Sender<bool>)>>>;
@@ -58,11 +81,10 @@ pub struct App {
     scan: Arc<Mutex<Scan>>,
     status: Arc<Mutex<Option<StatusInfo>>>,
     notice: Arc<Mutex<String>>,
-    input_tx: Option<mpsc::UnboundedSender<Input>>,
-    input_for: Option<String>,
+    input_tx: Option<InputTx>,
+    /// The connection session the current pump drives; a reconnect gets a new pump.
+    input_for: Option<Device>,
     capturing: bool,
-    /// A "Send keys" chord is in flight; nothing else may send input until it has fully released.
-    chord_busy: Arc<AtomicBool>,
     prev_mods: Vec<Key>,
     video_devices: Vec<DeviceInfo>,
     video_sel: usize,
@@ -98,7 +120,6 @@ impl App {
             input_tx: None,
             input_for: None,
             capturing: false,
-            chord_busy: Arc::default(),
             prev_mods: Vec::new(),
             video_sel: cfg.last_video.as_ref().and_then(|p| video_devices.iter().position(|d| &d.path == p)).unwrap_or(0),
             video_devices,
@@ -143,7 +164,7 @@ impl App {
                 *link.lock().unwrap() = Link::Connecting(id.clone());
                 ctx.request_repaint();
                 if let Err(e) = backend::pair(&id).await {
-                    *notice.lock().unwrap() = format!("Pairing failed: {e}. Press BOOT briefly on the adapter to open its pairing window and try again.");
+                    *notice.lock().unwrap() = format!("Pairing failed: {e}. Re-plug the adapter (15 s pairing window) or press BOOT briefly on it, then try again.");
                     *link.lock().unwrap() = Link::Disconnected;
                     ctx.request_repaint();
                     return;
@@ -203,17 +224,30 @@ impl App {
     }
 
     /// Ordered input pump: keystrokes must reach the adapter in the order they happened.
-    fn pump(&mut self) -> Option<mpsc::UnboundedSender<Input>> {
-        let (dev, id) = match &*self.link.lock().unwrap() {
-            Link::Connected { dev, id, .. } if dev.is_connected() => (dev.clone(), id.clone()),
+    /// True when no input producer is active: not capturing, no script/Type run, nothing queued in the pump.
+    fn input_idle(&self) -> bool {
+        !self.capturing
+            && self.run_handle.as_ref().is_none_or(|r| r.done.load(Ordering::SeqCst))
+            && self.input_tx.as_ref().is_none_or(|t| t.pending.load(Ordering::SeqCst) == 0)
+    }
+
+    fn pump(&mut self) -> Option<InputTx> {
+        let dev = match &*self.link.lock().unwrap() {
+            Link::Connected { dev, .. } if dev.is_connected() => dev.clone(),
             _ => {
                 self.input_tx = None;
+                self.input_for = None;
                 return None;
             }
         };
-        if self.input_for.as_deref() != Some(&id) || self.input_tx.as_ref().is_none_or(|t| t.is_closed()) {
+        // One pump per connection session: after a reconnect (same adapter, new session) the old pump still holds
+        // the closed device, so it is retired and a fresh pump with its own pending counter takes over.
+        if self.input_for.as_ref().is_none_or(|d| !d.same_session(&dev)) || self.input_tx.as_ref().is_none_or(|t| t.is_closed()) {
+            self.input_for = Some(dev.clone());
             let (tx, mut rx) = mpsc::unbounded_channel::<Input>();
             let notice = self.notice.clone();
+            let pending = Arc::new(AtomicUsize::new(0));
+            let done = pending.clone();
             self.rt.spawn(async move {
                 while let Some(ev) = rx.recv().await {
                     let r = match ev {
@@ -222,14 +256,38 @@ impl App {
                         Input::Button(m, d) => dev.button(m, d).await,
                         Input::Scroll(v) => dev.scroll(v, 0).await,
                         Input::ReleaseAll => dev.release_all().await,
+                        Input::Chord(label, ks) => {
+                            let mut ok = true;
+                            for k in &ks {
+                                if dev.key_down(*k).await.is_err() {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                            for k in ks.iter().rev() {
+                                ok &= dev.key_up(*k).await.is_ok();
+                            }
+                            if !ok {
+                                // A failed key-up leaves the key held on the target. Release everything; if even
+                                // that fails, close the session so the adapter's link-drop/keepalive release takes
+                                // over (our keepalives would otherwise keep the held key alive).
+                                *notice.lock().unwrap() = if dev.release_all().await.is_ok() {
+                                    format!("{label} was not delivered cleanly; all keys released.")
+                                } else {
+                                    dev.shutdown().await;
+                                    format!("{label} failed and keys could not be released: disconnected so the adapter releases them.")
+                                };
+                            }
+                            Ok(())
+                        }
                     };
                     if let Err(e) = r {
                         *notice.lock().unwrap() = format!("input not delivered: {e}");
                     }
+                    done.fetch_sub(1, Ordering::SeqCst);
                 }
             });
-            self.input_tx = Some(tx);
-            self.input_for = Some(id);
+            self.input_tx = Some(InputTx { tx, pending });
         }
         self.input_tx.clone()
     }
@@ -259,10 +317,7 @@ impl App {
     }
 
     fn begin_capture(&mut self, ctx: &egui::Context) {
-        if self.run_handle.as_ref().is_some_and(|r| !r.done.load(Ordering::SeqCst))
-            || self.chord_busy.load(Ordering::SeqCst)
-            || self.pump().is_none()
-        {
+        if self.run_handle.as_ref().is_some_and(|r| !r.done.load(Ordering::SeqCst)) || self.pump().is_none() {
             return;
         }
         self.capturing = true;
@@ -336,7 +391,7 @@ impl App {
         }
     }
 
-    fn sync_mods(&mut self, tx: &mpsc::UnboundedSender<Input>, m: &egui::Modifiers) {
+    fn sync_mods(&mut self, tx: &InputTx, m: &egui::Modifiers) {
         let now = keymap::modifier_keys(m);
         for k in &self.prev_mods {
             if !now.contains(k) {
@@ -375,8 +430,8 @@ impl App {
     }
 
     fn start_run(&mut self, script: Script, base_dir: std::path::PathBuf, vars: Vars, dry: bool, ctx: egui::Context) {
-        if self.chord_busy.load(Ordering::SeqCst) {
-            self.set_notice("Wait for the key chord to finish.");
+        if !self.input_idle() {
+            self.set_notice("Input is busy (capture, a running script, or queued keys): wait for it to finish.");
             return;
         }
         let Some(dev) = self.device() else {
@@ -520,7 +575,9 @@ impl eframe::App for App {
         }
 
         egui::SidePanel::left("controls").default_width(320.0).show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.controls(ui, ctx, &link));
+            // While capturing, every key belongs to the target: local controls must not react to Tab/Enter/Space.
+            let enabled = !self.capturing;
+            egui::ScrollArea::vertical().show(ui, |ui| ui.add_enabled_ui(enabled, |ui| self.controls(ui, ctx, &link)));
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -572,8 +629,9 @@ impl App {
                     ui.label(format!("{name}\n{id}"));
                     ui.horizontal(|ui| {
                         if ui.button("Release all keys").clicked() {
-                            if let Some(d) = self.device() {
-                                self.rt.spawn(async move { let _ = d.release_all().await; });
+                            // Through the pump, so it lands after (not between) anything already queued.
+                            if let Some(tx) = self.pump() {
+                                let _ = tx.send(Input::ReleaseAll);
                             }
                         }
                         if ui.button("Disconnect").clicked() {
@@ -598,7 +656,7 @@ impl App {
                     let mut chosen: Option<(String, bool)> = None;
                     match &*self.scan.lock().unwrap() {
                         Scan::Done(list) if list.is_empty() => {
-                            ui.label("None found. New adapter? Press BOOT briefly to open its pairing window, then scan again.");
+                            ui.label("None found. New adapter? Re-plug it (it can pair for 15 s) or press BOOT briefly, then scan again.");
                         }
                         Scan::Done(list) => {
                             for f in list {
@@ -652,9 +710,8 @@ impl App {
 
         egui::CollapsingHeader::new("Send keys").show(ui, |ui| {
             ui.small("Keys your own OS would intercept, or that the capture view can't see.");
-            let running = self.run_handle.as_ref().is_some_and(|r| !r.done.load(Ordering::SeqCst));
-            // One input producer at a time: no chords during capture, a script, or another chord.
-            let on = self.device().is_some() && !self.capturing && !running && !self.chord_busy.load(Ordering::SeqCst);
+            // One input producer at a time: no chords during capture, a script, or while the pump is busy.
+            let on = self.device().is_some() && self.input_idle();
             const CHORDS: &[(&str, &[&str])] = &[
                 ("Ctrl+Alt+Del", &["CTRL", "ALT", "DEL"]),
                 ("Win", &["WIN"]),
@@ -672,31 +729,9 @@ impl App {
             ui.horizontal_wrapped(|ui| {
                 for (label, keys) in CHORDS {
                     if ui.add_enabled(on, egui::Button::new(*label)).clicked() {
-                        if let Some(d) = self.device() {
-                            let ks: Vec<Key> = keys.iter().filter_map(|n| kvmit_hid::parse_key(n)).collect();
-                            let (busy, notice, label) = (self.chord_busy.clone(), self.notice.clone(), *label);
-                            busy.store(true, Ordering::SeqCst);
-                            self.rt.spawn(async move {
-                                let mut ok = true;
-                                for k in &ks {
-                                    if d.key_down(*k).await.is_err() {
-                                        ok = false;
-                                        break;
-                                    }
-                                }
-                                for k in ks.iter().rev() {
-                                    ok &= d.key_up(*k).await.is_ok();
-                                }
-                                if !ok {
-                                    // A failed key-up leaves the key held on the target: release everything.
-                                    let released = d.release_all().await.is_ok();
-                                    *notice.lock().unwrap() = format!(
-                                        "{label} was not delivered cleanly; {}",
-                                        if released { "all keys released." } else { "release failed: check the adapter link." }
-                                    );
-                                }
-                                busy.store(false, Ordering::SeqCst);
-                            });
+                        let ks: Vec<Key> = keys.iter().filter_map(|n| kvmit_hid::parse_key(n)).collect();
+                        if let Some(tx) = self.pump() {
+                            let _ = tx.send(Input::Chord(label, ks));
                         }
                     }
                 }
@@ -706,7 +741,7 @@ impl App {
         egui::CollapsingHeader::new("Type text").show(ui, |ui| {
             ui.add(egui::TextEdit::singleline(&mut self.type_text).password(self.type_secret).hint_text("text to type on the target"));
             ui.checkbox(&mut self.type_secret, "Secret (masked, never logged)");
-            if ui.add_enabled(self.device().is_some() && !self.type_text.is_empty(), egui::Button::new("Type")).clicked() {
+            if ui.add_enabled(self.device().is_some() && !self.type_text.is_empty() && self.input_idle(), egui::Button::new("Type")).clicked() {
                 let mut s = Script::default();
                 s.vars.insert("t".into(), kvmit_script::VarDef { secret: self.type_secret, ..Default::default() });
                 s.steps.push(if self.type_secret { Step::SecretText("{{t}}".into()) } else { Step::Text("{{t}}".into()) });

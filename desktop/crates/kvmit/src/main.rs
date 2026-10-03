@@ -31,7 +31,7 @@ enum Cmd {
         #[arg(long, default_value_t = 5)]
         seconds: u64,
     },
-    /// Pair with an adapter (press BOOT briefly on it first, unless it has never been paired)
+    /// Pair with an adapter (within 15 s of plugging it in, or after a brief BOOT press)
     Pair,
     /// Remove the OS pairing for an adapter (also hold BOOT 10 s on the adapter to erase its side)
     Unpair,
@@ -120,7 +120,7 @@ fn real_main(cli: Cli) -> R<()> {
         }),
         Cmd::Pair => rt().block_on(async {
             let id = session::resolve(cli.device, None).await?;
-            println!("pairing with {id} (the adapter must be in its pairing window: BOOT short press)…");
+            println!("pairing with {id} (the adapter must be in its pairing window: first 15 s after plug-in, or BOOT short press)…");
             backend::pair(&id).await?;
             let mut c = cfg;
             c.last_device = Some(id.clone());

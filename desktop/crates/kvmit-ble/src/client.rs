@@ -147,6 +147,11 @@ pub struct Device {
 }
 
 impl Device {
+    /// True if both handles belong to the same connection session (not merely the same adapter).
+    pub fn same_session(&self, other: &Device) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Handshake (HELLO) and clear any held input (RELEASE_ALL), then start keepalive and motion tasks.
     pub async fn connect(io: LinkIo) -> Result<Device, LinkError> {
         let LinkIo { tx, mut rx } = io;
