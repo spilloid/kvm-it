@@ -6,6 +6,21 @@ GATT write/notification; a frame never spans writes. Golden vectors: [vectors.js
 by [gen_vectors.py](gen_vectors.py) (independent of both implementations) and consumed by the C firmware
 tests and the Rust `kvmit-protocol` tests.
 
+## Transport (BLE GATT)
+
+| Item | UUID / value |
+|---|---|
+| Service | `7a1e0000-4b49-4d54-8000-6b766d697401` (advertised, so controllers can scan by service) |
+| RX characteristic (controller → device) | `7a1e0001-…` write / write-without-response, **encryption required** |
+| TX characteristic (device → controller) | `7a1e0002-…` notify |
+
+- The device is the GATT peripheral; one connection at a time. The device name is the user-set name
+  (default `kvm-it-XXXX`, last two bytes of the BT MAC) and is in the scan response.
+- Security: LE Secure Connections bonding (Just Works). Unbonded peers cannot use RX; they are disconnected
+  unless the device's physical pairing window is open. See [../docs/security.md](../docs/security.md).
+- ATT MTU: the device asks for 247. Responses are limited to `ATT_MTU - 3`; a `HELLO` response truncates the
+  name to fit rather than failing.
+
 ## Frame
 
 All multi-byte integers are little-endian.
@@ -70,14 +85,22 @@ the same `type` and `seq`.
   `6 HID_NOT_MOUNTED` (target not enumerated us), `7 BUSY`, `8 REFUSED` (e.g. 7th simultaneous key).
   `ERROR` carries the `seq` of the offending frame.
 
+## Timing (reference controller behaviour)
+
+- Retry an unanswered `ACK_REQ` frame after 350 ms, up to 4 transmissions, same `seq`.
+- Send `PING` every 1 s. **While a key or button is held the device releases everything if no valid frame
+  arrived for 5000 ms**, so a crashed controller cannot leave a key down. Any valid frame counts.
+- Motion deltas are accumulated and flushed every ~8 ms as one `MOUSE_MOVE` (clamped to i16, remainder carried).
+- On connect: `HELLO`, then `RELEASE_ALL`. On link loss the device releases everything itself.
+
 ## Reliability
 
 - `ACK_REQ` frames are retried by the controller with the **same `seq`**; the device keeps the last
   response per `seq` window and replays it for duplicates without re-applying the action. HID state is also
   idempotent, so a missed dedup cannot double-press.
 - `MOUSE_MOVE` is unacknowledged; the controller accumulates deltas so loss is lag, not a missed click.
-- Stuck-key defences (RELEASE_ALL on controller events, device release on link drop, keepalive timeout)
-  are unchanged from [../docs/protocol.md](../docs/protocol.md); items marked M4 there are not implemented.
+- Stuck-key defences: controller sends `RELEASE_ALL` on capture exit/focus loss/reconnect/close (implemented in
+  the app); the device releases on link drop and on keepalive timeout (implemented, host-tested).
 
 ## Evolution
 

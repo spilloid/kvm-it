@@ -24,9 +24,10 @@ controlled over BLE from a Rust desktop app. Read `README.md`, then `docs/archit
 | `firmware/main/hid_state.*` | pure-C HID state machine (host-tested) |
 | `firmware/main/usb_hid.*` | TinyUSB descriptors + senders |
 | `firmware/test/host/` | host unit tests |
-| `firmware/main/proto_frame.*` | pure-C protocol framing (host-tested against `protocol/vectors.txt`) |
+| `firmware/main/proto_*`, `led_pattern.*`, `button_logic.*` | pure-C protocol framing/dispatcher, LED language, BOOT gestures (host-tested) |
+| `firmware/main/ble_link.c`, `led.c`, `buttons.c`, `kvm_config.c` | hardware glue: NimBLE, LED driver, GPIO, NVS (hardware-only) |
 | `protocol/` | SPEC.md + generated golden vectors shared by C and Rust tests |
-| `desktop/` | Rust workspace; `scripts/rs.sh test` (container) |
+| `desktop/` | Rust workspace (`kvmit` app + crates); `scripts/rs.sh test\|clippy\|build\|windows` (container) |
 | `scripts/fw.sh` | test/build/flash via the ESP-IDF container |
 | `docs/` | architecture, hardware, security, protocol draft, roadmap, dev-process log |
 
@@ -41,5 +42,6 @@ self-test types into the machine it is plugged into.
 
 - 2026-10-03: "COM = CH343 UART, USB = native" port labelling is vendor-documented and consistent with
   `lsusb 1a86:55d3` on COM, but not checked against this board's silkscreen.
+- 2026-10-03: BLE pairing, LED GPIO48, the GUI and HDMI capture cards are unverified on hardware (see README table).
 - 2026-10-03: 5-byte mouse report acceptance by BIOS boot protocol — unverified.
 - 2026-10-03: egui/eframe 1080p60 latency — unmeasured.

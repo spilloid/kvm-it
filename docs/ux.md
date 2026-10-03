@@ -91,6 +91,13 @@ selected keyboard layout abstraction, not the payload's assumptions.
 - **Recorder (later):** capture a live session into a script, with secrets automatically turned into
   prompted variables.
 
+## Status (0.1.0)
+
+Built and host-tested: native format, variables, `text`/`secret_text`/`key`/`chord`/`delay`/`repeat`/`click`/
+`move`/`confirm`, `wait_for` (reference image or screen-stable), DuckyScript import, dry-run, preview with
+command warnings, abort-releases-everything. Built-in scripts are templates; **none has been run against a
+real OOBE**. Screen matching has only been tested on synthetic frames.
+
 ## Milestone placement
 
 Native step engine and text/key/chord/delay/repeat land with the macro system (Milestone 10); the

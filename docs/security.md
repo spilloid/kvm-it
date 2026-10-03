@@ -19,18 +19,25 @@ BLE LE Secure Connections bonding gives encryption and authentication *if* confi
 pairing. This board has no display or keypad, so pairing would fall back to "Just Works", which is
 **not MITM-protected**: an attacker present during first pairing could bond.
 
-Decision (to be implemented in Milestone 11, recorded now so Milestones 3-10 do not assume otherwise):
+Decision, as implemented in 0.1.0 (built and host-tested; **not yet hardware-verified**):
 
-- Require LE Secure Connections + bonding, and reject any characteristic access from unbonded peers.
-- Add an **application-level authenticated handshake** on top, because Just Works bonding alone does not
-  authenticate the human intent: provisioning mode (entered after trust reset, indicated physically) accepts
-  a controller only when a **pairing code printed/logged on the COM serial console or derived from a
-  physical BOOT-button press window** is confirmed in the app. After provisioning, each connection performs
-  a challenge-response using a key established during provisioning and stored in NVS.
-- One trusted controller initially; trust reset by holding BOOT ~10 s erases only BLE trust data.
-
-Until Milestone 11 the development firmware has **no BLE and no remote input at all**; the first BLE
-milestones will be explicitly marked insecure/dev-only in README and firmware logs.
+- **LE Secure Connections bonding is required, and both GATT characteristics need an encrypted link.** An
+  unbonded peer can never reach the protocol.
+- **Physical presence gates pairing.** Pairing is accepted only inside a *pairing window*, which opens (a) at
+  boot when no controller is bonded (plug-in is presence), and (b) on a BOOT short press. It lasts
+  `CONFIG_KVMIT_PAIRING_WINDOW_S` (120 s) and closes as soon as a pairing succeeds. Outside the window, an
+  unbonded peer that connects is disconnected immediately and a re-pairing attempt from a bonded address is
+  ignored.
+- **One trusted controller.** A new pairing replaces the old bond. A 10 s BOOT hold erases all bonds and
+  reopens the window. RESET (the EN line) only reboots; it cannot be observed by software.
+- With a bond stored, the adapter advertises only to be found by that controller (slow interval) and never
+  opens pairing on its own.
+- **Residual risk, stated plainly:** Just Works is not MITM-protected. An attacker in radio range *during the
+  pairing window* could pair instead of you. The window is short, physically triggered and closes on first
+  success; the LED blinks blue fast while it is open so you can see it. A per-connection challenge-response on
+  top (the earlier plan) was dropped: the bond's encrypted link already provides it, and there is no display
+  to confirm a code on.
+- The earlier plan to show a pairing code on the serial console was dropped for the same reason.
 
 ## Secrets in the controller
 

@@ -1,7 +1,7 @@
 # Architecture
 
-Status: design for the whole product; only the firmware HID layer exists (v0.1.0). Where a choice below is
-unproven it says so.
+Status: v0.1.0 implements everything below except where a section says otherwise; see the README status table
+for what is hardware-verified. Where a choice is unproven it says so.
 
 ## Repository layout
 
@@ -31,9 +31,8 @@ layouts to firmware, makes secrets live in firmware logs/buffers longer, forces 
 Boot order (matches the product requirement that the target always sees a working HID):
 
 1. `usb_hid_init()` — TinyUSB, two boot-protocol HID interfaces (keyboard, mouse+wheel).
-2. BLE init *(M3)*.
-3. Trusted-controller discovery/provisioning from NVS *(M11)*.
-4. Command loop: protocol frame → `hid_state` → USB report *(M4+)*.
+2. BLE init: reconnect to the bonded controller, or open the pairing window if none is bonded.
+3. Command loop: GATT write → queue → dispatcher (worker task) → `hid_state` → USB report; the BLE host task never blocks on USB.
 
 Modules in `firmware/main/`:
 
@@ -43,6 +42,11 @@ Modules in `firmware/main/`:
 | `ascii_us.[ch]` | ASCII→usage, self-test only | yes |
 | `usb_hid.[ch]` | descriptors, TinyUSB glue, mutex-serialised senders over one `hid_state_t` | no (hardware) |
 | `hid_selftest.[ch]` | M2 deterministic test, one task, always ends with release-all | no (hardware) |
+| `proto_frame.[ch]` | framing: CRC, encode, decode (vectors shared with Rust) | yes |
+| `proto_dispatch.[ch]` | handshake gate, ack dedup, errors, keepalive release; HID effects injected | yes |
+| `led_pattern.[ch]`, `button_logic.[ch]` | LED language and BOOT gestures as pure functions | yes |
+| `ble_link.c` | NimBLE peripheral: bonding, pairing window, GATT, worker task that owns the dispatcher | no (hardware) |
+| `led.c`, `buttons.c`, `kvm_config.c` | WS2812 driver, GPIO0 polling, NVS (name) | no (hardware) |
 | `main.c` | boot sequence | no |
 
 Why two HID interfaces rather than one report-ID composite: BIOS/UEFI keyboard drivers reliably handle a
@@ -58,16 +62,15 @@ Cargo workspace with one crate per concern so no layer reaches into another:
 
 | Crate | Responsibility |
 |---|---|
-| `kvmit-protocol` | frame encode/decode, consumes `protocol/vectors.json` |
-| `kvmit-hid` | key/button/event model, HID usage codes, release-all semantics |
-| `kvmit-layout` | layout trait + US ANSI (text → key events) |
-| `kvmit-ble` | transport trait + btleplug implementation, scan/identify/reconnect |
-| `kvmit-video` | capture trait + V4L2 backend (Media Foundation later) |
-| `kvmit-macro` | structured macro model (TOML/JSON), executor |
-| `kvmit-config` | persistence; secrets never written unless explicitly opted in |
-| `kvmit-input` | platform input capture/grab (Linux first) |
-| `kvmit-app` | application state model (device-scoped, no singletons) |
-| `kvmit-ui` | the egui front end |
+| `kvmit-protocol` | frame + typed message encode/decode, consumes `protocol/vectors.json` |
+| `kvmit-hid` | HID usage codes, key names, mouse buttons |
+| `kvmit-layout` | layout trait + US ANSI (text → key strokes); refuses what it cannot type |
+| `kvmit-ble` | protocol client (handshake, ack/retry, keepalive, motion accumulation) + btleplug transport + BlueZ pairing |
+| `kvmit-video` | V4L2 capture (MJPEG/YUYV), frame conversion; other platforms report unsupported |
+| `kvmit-script` | script model/TOML, DuckyScript import, compile/validate, executor, screen comparison |
+| `kvmit` | config, key mapping, script library, CLI, and the egui GUI (`gui.rs`) |
+
+(Config, app state and UI live in the single `kvmit` crate for now; split them if a second front end appears.)
 
 State is modelled per *device session* (one ESP32 + optionally one capture device) held in a map keyed by
 device UUID, so several adapters are an extension, not a rewrite.

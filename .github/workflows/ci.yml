@@ -13,8 +13,24 @@ jobs:
         run: |
           gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
             -o /tmp/t test/host/test_hid_state.c main/hid_state.c main/ascii_us.c && /tmp/t
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+            -o /tmp/p test/host/test_proto_frame.c main/proto_frame.c && /tmp/p ../protocol/vectors.txt
+          gcc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+            -o /tmp/l test/host/test_logic.c main/proto_frame.c main/proto_dispatch.c main/hid_state.c \
+            main/led_pattern.c main/button_logic.c && /tmp/l
       - name: Build firmware
         working-directory: firmware
         run: |
           . /opt/esp/idf/export.sh
           idf.py set-target esp32s3 && idf.py build
+  desktop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vectors are up to date
+        run: python3 protocol/gen_vectors.py && git diff --exit-code protocol
+      - name: Test, lint, cross-build (container)
+        run: |
+          scripts/rs.sh test
+          scripts/rs.sh clippy
+          scripts/rs.sh windows

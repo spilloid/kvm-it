@@ -30,10 +30,30 @@ COM port. The silkscreen names above are from the board vendor's documentation; 
 
 ### Buttons
 
-- **BOOT** (GPIO0): hold while pressing/releasing **RESET** to force ROM download mode. Not needed for
-  normal flashing over COM (auto-reset), but it is the fallback. From Milestone 11 a 10-second BOOT hold will
-  also erase BLE trust data.
-- **RESET**: reboots the chip. The USB device re-enumerates on the target.
+- **BOOT** (GPIO0, read by the firmware at run time):
+  - short press (< 3 s): open the **pairing window** for 120 s;
+  - hold 10 s: **erase the bonded controller** and reopen the window (LED shows progress, below);
+  - hold it while pressing RESET: ROM download mode (hardware behaviour, unchanged).
+- **RESET** (EN): reboots the chip; the USB device re-enumerates on the target and the adapter comes back
+  with its last configuration (name and bond are stored in flash). Software cannot see this button.
+
+### Status LED (on-board RGB, GPIO48 per the vendor — **not yet verified on this board; set
+`CONFIG_KVMIT_LED_GPIO` to -1 or another pin if it stays dark**)
+
+| LED | Meaning |
+|---|---|
+| white, steady | booting |
+| **blue, fast blink** | pairing window open — a controller may pair now |
+| blue, brief tick every 1.5 s | a controller is bonded; waiting for it to connect |
+| magenta, brief tick every 3 s | nothing bonded and the window is closed; radio is quiet — press BOOT |
+| **green, steady** | controller connected, encrypted and handshaken |
+| brief white flash | an input command was just applied |
+| amber blip every 2 s (on top of anything) | the **target has not enumerated the USB port** (cable, power, suspend) |
+| yellow, blinking faster, then solid (BOOT held ≥ 3 s, solid at 10 s) | trust reset in progress; release before 10 s to cancel |
+| red, 3 flashes | trust erased |
+| red, fast blink | BLE failed to start (USB HID still works) |
+
+Colours are intentionally dim (≤ 40/255).
 
 ## Linux build and flash
 
@@ -77,21 +97,23 @@ If the device node is different (`ls /dev/ttyACM* /dev/ttyUSB*`), pass it as the
 
 ## Verification checklist — please report back
 
-Everything below needs the physical board; none of it has been run yet. Reply with pass/fail and the serial log.
+Already hardware-verified (2026-10-03): flash over COM; USB enumeration (`lsusb`: `303a:4008`, keyboard + mouse
+boot HID); the old M2 self-test typed. The 0.1.0 firmware **no longer types at boot** (self-test is the
+`KVMIT_SELFTEST` option, default off).
 
-1. **Flash succeeds** over COM (note esptool's reported chip, flash size = 16 MB, and any warnings).
-2. **Serial log** shows `kvm-it firmware 0.1.0 ...` then `waiting 8000 ms before test`.
-3. **Enumeration**: with the USB port connected to a *test* Linux machine, `lsusb` shows the device
-   (default Espressif VID `303A`, product string `kvm-it HID adapter`), and `lsusb -v -d 303a:` shows two HID
-   interfaces: keyboard (boot, protocol 1) and mouse (boot, protocol 2).
-   `dmesg` should show `input: kvm-it ...` for both.
-4. **Self-test** on the target, with a text field focused (Caps Lock state is tracked, but start with it off): ~8 s after boot `HELLO FROM KVM`, then Enter,
-   then a ~20 px right-then-left pointer nudge. Serial log ends with `all keys released`.
-5. **No stuck keys** afterwards: keyboard and pointer behave normally.
-6. **BIOS/UEFI** (if available): keyboard works in BIOS setup *and* the mouse behaviour — report whether
-   the 5-byte mouse report is accepted by that firmware (this is the least-certain item).
-7. **Replug**: unplug and replug the USB port; the self-test runs again and enumeration is clean.
-8. **Hot target change**: the board survives USB power loss (it is bus-powered) and comes back with no manual step.
+New in 0.1.0, all unverified on hardware until you report:
+
+1. **Boot log** over COM: `BLE ready, trusted controller none`, `pairing window open for 120 s`, `advertising`.
+2. **LED** behaves per the table above (fast blue while pairing). If dark, GPIO48 is wrong for this board.
+3. **Pair**: `kvmit pair` on a Linux controller (press BOOT first if the window has closed) → "paired and connected".
+4. **Status**: `kvmit status` shows target USB enumerated, a round trip time, firmware 0.1.0.
+5. **Type**: with the USB port on a target, `kvmit type "hello"` and `kvmit key ctrl alt delete` work.
+6. **Reconnect**: unplug/replug the adapter; `kvmit status` reconnects with no pairing step.
+7. **Stuck keys**: hold a key via the GUI capture then kill the app (`kill -9`): within ~5 s the target's key
+   releases. Disconnecting Bluetooth releases immediately.
+8. **Trust reset**: hold BOOT 10 s → LED yellow ramp, three red flashes, fast blue; a second controller can now pair.
+9. **BIOS/UEFI** (if available): keyboard works, and report whether the 5-byte mouse report is accepted.
+10. **GUI** (`kvmit`): connect, capture keyboard/mouse, Ctrl+Alt+Esc releases; with a capture card, video shows.
 
 ## Known hardware unknowns
 
