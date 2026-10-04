@@ -86,6 +86,8 @@ pub struct App {
     input_for: Option<Device>,
     capturing: bool,
     prev_mods: Vec<Key>,
+    /// OS-level keyboard capture while input is captured (Windows); `None` elsewhere, where egui's key events are used.
+    grab: Option<crate::syskeys::Grab>,
     video_devices: Vec<DeviceInfo>,
     video_sel: usize,
     capture: Arc<Mutex<Option<Capture>>>,
@@ -121,6 +123,7 @@ impl App {
             input_for: None,
             capturing: false,
             prev_mods: Vec::new(),
+            grab: None,
             video_sel: cfg.last_video.as_ref().and_then(|p| video_devices.iter().position(|d| &d.path == p)).unwrap_or(0),
             video_devices,
             capture: Arc::default(),
@@ -181,9 +184,14 @@ impl App {
                         ctx.request_repaint();
                         // poll target-USB state while connected
                         let poll = async {
+                            let mut last_held = 0u8;
                             loop {
                                 tokio::time::sleep(Duration::from_secs(2)).await;
                                 if let Ok(s) = dev.status().await {
+                                    if s.keys != last_held {
+                                        debug_log(&format!("adapter reports {} key(s) held on the target", s.keys));
+                                        last_held = s.keys;
+                                    }
                                     *status.lock().unwrap() = Some(s);
                                     ctx.request_repaint();
                                 }
@@ -307,6 +315,7 @@ impl App {
     fn end_capture(&mut self, ctx: &egui::Context) {
         if self.capturing {
             self.capturing = false;
+            self.grab = None; // unhooks: the controller's OS gets its keys back
             self.prev_mods.clear();
             if let Some(tx) = &self.input_tx {
                 let _ = tx.send(Input::ReleaseAll); // release-all on every exit path
@@ -321,6 +330,8 @@ impl App {
             return;
         }
         self.capturing = true;
+        self.grab = crate::syskeys::Grab::start();
+        debug_log(&format!("capture begins (OS keyboard grab: {})", if self.grab.is_some() { "on" } else { "off" }));
         // Captured keys must reach the target only: a focused local widget would otherwise take Enter/Space.
         ctx.memory_mut(|m| {
             if let Some(id) = m.focused() {
@@ -335,18 +346,37 @@ impl App {
     /// never reaches the target.
     fn forward_input(&mut self, ctx: &egui::Context) {
         let Some(tx) = self.pump() else {
+            debug_log("capture ends: the adapter link is gone");
             self.end_capture(ctx);
             return;
         };
         let (events, mods, focused) = ctx.input(|i| (i.events.clone(), i.modifiers, i.focused));
         if !focused {
+            debug_log("capture ends: the window lost focus");
             self.end_capture(ctx);
             return;
         }
         let dev = self.device();
         let mut release = false;
+        // With an OS-level grab the keyboard comes from it alone (it also sees the keys the OS would otherwise
+        // keep for itself: Win, Alt+Tab, ...); egui's key events are then ignored so nothing is sent twice.
+        let hooked = self.grab.is_some();
+        if let Some(g) = &mut self.grab {
+            for ev in g.drain() {
+                match ev {
+                    crate::syskeys::Event::Down(k) => {
+                        let _ = tx.send(Input::Down(k));
+                    }
+                    crate::syskeys::Event::Up(k) => {
+                        let _ = tx.send(Input::Up(k));
+                    }
+                    crate::syskeys::Event::Release => release = true,
+                }
+            }
+        }
         for ev in &events {
             match ev {
+                egui::Event::Key { .. } if hooked => {}
                 egui::Event::Key { key, physical_key, pressed, repeat, modifiers, .. } => {
                     if *key == egui::Key::Escape && modifiers.ctrl && modifiers.alt {
                         release = true;
@@ -385,8 +415,9 @@ impl App {
             }
         }
         if release {
+            debug_log("capture ends: release chord");
             self.end_capture(ctx);
-        } else {
+        } else if !hooked {
             self.sync_mods(&tx, &mods);
         }
     }
@@ -904,6 +935,13 @@ fn chip(ui: &mut egui::Ui, h: Health, text: impl Into<String>) -> egui::Response
 /// A popup under `anchor` that stays open until you click outside it (these hold forms, not one-shot menu items).
 fn popup(anchor: &egui::Response, width: f32, add_contents: impl FnOnce(&mut egui::Ui)) {
     egui::Popup::menu(anchor).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(width).show(add_contents);
+}
+
+/// Diagnostics for support (`KVMIT_DEBUG=1`): why capture started or ended. Never anything about which keys were pressed.
+fn debug_log(msg: &str) {
+    if std::env::var_os("KVMIT_DEBUG").is_some() {
+        eprintln!("[debug] {msg}");
+    }
 }
 
 pub fn run_gui() -> eframe::Result<()> {

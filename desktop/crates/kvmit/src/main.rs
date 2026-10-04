@@ -98,6 +98,9 @@ fn parse_kv(s: &str) -> Result<(String, String), String> {
 type R<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 fn main() {
+    if kvmit::syskeys::run_helper_if_requested() {
+        return; // started as the keyboard-grab helper (Windows)
+    }
     let cli = Cli::parse();
     if let Err(e) = real_main(cli) {
         eprintln!("error: {e}");
