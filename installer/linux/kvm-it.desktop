@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=kvm-it
+GenericName=KVM controller
+Comment=Drive a computer through a Bluetooth USB-HID adapter and an HDMI capture card
+Exec=kvmit-gui
+Icon=kvm-it
+Terminal=false
+Categories=System;Utility;
+Keywords=kvm;keyboard;video;remote;hdmi;

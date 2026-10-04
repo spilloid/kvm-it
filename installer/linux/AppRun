@@ -1,0 +1,7 @@
+#!/bin/sh
+# AppImage entry point: the GUI by default; `cli ...` runs the command-line tool (e.g. ./kvm-it-x.y.z-x86_64.AppImage cli scan).
+HERE="$(dirname "$(readlink -f "$0")")"
+case "${1:-}" in
+    cli) shift; exec "$HERE/usr/bin/kvmit" "$@" ;;
+    *)   exec "$HERE/usr/bin/kvmit-gui" "$@" ;;
+esac

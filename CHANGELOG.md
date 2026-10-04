@@ -15,6 +15,9 @@
   without the variable, and is never saved as the preferred card), and refuses non-regular files and pictures over 8192 px a side.
 - The kvm-it logo: the GUI's window and taskbar icon, the site's favicon and Apple touch icon, and the README and site headers. The
   small icons put the mark on a light tile so the navy monitor does not vanish on dark taskbars and browser tabs.
+- Linux AppImage packaging (`scripts/build-appimage.sh`, `installer/linux/`): built in an Ubuntu 22.04 container so it runs on
+  glibc 2.35 and newer, with the AppImage tool and its embedded runtime pinned by checksum, the glibc floor enforced (and a failed inspection is an error), and
+  the host libraries it relies on named in the README. Not bit-for-bit reproducible (builder apt packages float). Published with 0.2.0 after the tag (asset `kvm-it-0.2.0-x86_64.AppImage`).
 
 ## [0.2.0] - 2026-10-04 (Windows controller)
 

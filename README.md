@@ -53,7 +53,13 @@ Bluetooth connection where that API exists, and without it fast mouse movement c
 
 ## Quick start (Linux)
 
-You need `podman` (or docker). Toolchains live in containers.
+**AppImage:** download `kvm-it-X.Y.Z-x86_64.AppImage` from the Releases page (check it against its `.sha256`), `chmod +x`
+it and run it for the GUI, or `./kvm-it-X.Y.Z-x86_64.AppImage cli scan` for the command line. It needs BlueZ, a
+graphics driver (OpenGL) and the usual desktop libraries from your distro (`libxkbcommon`, plus `libxkbcommon-x11` and the X11
+libraries or Wayland, whichever your session uses); only the C library baseline is checked at build time. It runs on Debian 12 / Ubuntu 22.04 (glibc 2.35) and newer. 0.2.0's AppImage was started on Linux (CLI
+and GUI) but a Linux hardware pass with a board has not been run.
+
+Or build it yourself. You need `podman` (or docker). Toolchains live in containers.
 
 ```bash
 git clone https://github.com/spilloid/kvm-it && cd kvm-it
