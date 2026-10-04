@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+- Build toolchain is Rust 1.99 (was 1.90), needed for the in-app flasher planned for 0.3.0; clippy lints fixed (`as_chunks`, an
+  always-true `min` in a test, explicit `f32` for stroke widths). No behaviour change. The AppImage builder stays on 1.90 for now.
+
 ## [0.2.1] - 2026-10-04 (video switching, logo, Linux AppImage)
 
 Patch release on 0.2.0; firmware (0.1.0) and wire protocol (v1) are unchanged. Verification: the video-switch fix was

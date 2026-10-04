@@ -3,7 +3,7 @@
 # Usage: scripts/rs.sh {image|test|clippy|fmt|build|windows|run <args>|shell|cargo <args>}
 #   windows  cross-compiles kvmit.exe (x86_64-pc-windows-gnu); compile-checked only, not run on Windows here.
 set -euo pipefail
-IMAGE="${RS_IMAGE:-localhost/kvmit-rs:1.90}"
+IMAGE="${RS_IMAGE:-localhost/kvmit-rs:1.99}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME="${CONTAINER_RUNTIME:-podman}"
 ensure_image() {

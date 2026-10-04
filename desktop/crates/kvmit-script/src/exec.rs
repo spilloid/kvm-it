@@ -620,7 +620,7 @@ mod tests {
         assert!(!dump.contains("Key(") && dump.contains("Strokes(<3>)"), "{dump}");
         let deep = script("[[steps]]\nrepeat = { count = 10000, steps = [ { repeat = { count = 10000, steps = [ { repeat = { count = 10000, steps = [ { repeat = { count = 10000, steps = [ { repeat = { count = 10000, steps = [ { text = \"a\" } ] } } ] } } ] } } ] } } ] }\n");
         let p = preview(&deep, &Vars::new(), &UsAnsi, &RunOptions::default()).unwrap();
-        assert_eq!(p.typed_chars, usize::MAX.min(10_000usize.saturating_pow(5)));
+        assert_eq!(p.typed_chars, 10_000usize.saturating_pow(5));
     }
 
     #[test]
