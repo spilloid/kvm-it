@@ -2002,6 +2002,7 @@ dependencies = [
  "dirs",
  "eframe",
  "egui",
+ "image",
  "kvmit-ble",
  "kvmit-hid",
  "kvmit-layout",

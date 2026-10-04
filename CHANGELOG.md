@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- The kvm-it logo: the GUI's window and taskbar icon, the site's favicon and Apple touch icon, and the README and site headers. The
+  small icons put the mark on a light tile so the navy monitor does not vanish on dark taskbars and browser tabs.
+
 ## [0.2.0] - 2026-10-04 (Windows controller)
 
 The controller app now runs on Windows. Firmware and wire protocol are unchanged (firmware 0.1.0, protocol v1).
