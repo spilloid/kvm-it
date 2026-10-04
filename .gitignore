@@ -9,3 +9,5 @@ target/
 .venv-esptool/
 dist-linux/
 target-appimage/
+tools/screenshots/bin/
+tools/screenshots/obj/
