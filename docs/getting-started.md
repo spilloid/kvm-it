@@ -6,7 +6,7 @@
 |---|---|
 | ESP32-S3 dev board with two USB-C ports | One port is a serial/flash port (**COM**), the other is the native USB the target sees (**USB**). Details in [hardware](hardware.md). |
 | USB HDMI capture card (UVC) | Any generic one. Optional: you can drive input without video. |
-| A Linux PC with Bluetooth LE and BlueZ | 0.1.0 is Linux-only on the controller side; the Windows app is planned for 0.2.0. The *target* can run any OS. |
+| A PC with Bluetooth LE | The controller runs on Linux (BlueZ) or Windows 11. The *target* can run any OS. |
 
 ## Install
 
@@ -23,9 +23,15 @@ Flash the adapter once, with its **COM** port on your PC and its **USB** port *n
 scripts/fw.sh build && scripts/fw.sh flash
 ```
 
+On **Windows 11**, install the `.msi` (or unzip the `.zip`) from the release page and check it against its `.sha256`;
+the release notes say whether it is code-signed (an unsigned build makes SmartScreen warn). Open **kvm-it** from the
+Start menu. The app needs a graphics driver with OpenGL 2.0+ (it tells you in a dialog if not), and the video needs
+*Settings > Privacy & security > Camera > Let desktop apps access your camera* turned on.
+
 ## Pair (once)
 
-1. Have `kvmit pair` (or the app's **Scan → Pair & connect**) ready on your PC.
+1. Have `kvmit pair` (or the app's **Adapter** chip, then **Pair & connect**) ready on your PC. On Windows this
+   pairs without any system dialog.
 2. Plug the adapter's **USB** port into the target. For **15 s** after it powers up it accepts a new pairing,
    even if it was paired before, so start pairing right away. The LED is meant to blink blue fast while it offers
    to pair.
@@ -38,14 +44,19 @@ From then on the app reconnects by itself whenever the adapter is in range.
 
 Run `kvmit` to open the app.
 
-- **See**: pick your capture card in the *Video* panel. The target's screen appears.
-- **Drive**: click the picture (or *Capture keyboard & mouse*). Your keyboard and mouse now go to the target.
-  The frame turns red and the status bar says so. **Ctrl+Alt+Esc** releases; that chord is never sent.
-- **Send keys your OS would swallow**: the *Send keys* panel has Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and
-  more.
-- **Type text**: the *Type text* box types a string (tick *Secret* for passwords: masked, never logged).
-- **Run a script**: put `.toml` or DuckyScript files in `~/Documents/kvm-it/scripts`, pick one, review the
-  preview, and press Run. See [scripts and replay](ux.md).
+The top bar is a row of status chips and buttons; the picture fills the rest of the window.
+
+- **See**: click the **Video** chip and open your capture card. The target's screen appears and the chip turns
+  green with the resolution and frame rate.
+- **Drive**: click the picture (or the **Input** chip). Your keyboard and mouse now go to the target. The frame
+  turns red and the Input chip reads *INPUT CAPTURED*. **Ctrl+Alt+Esc** releases; that chord is never sent. On
+  Windows, keys such as Win and Alt+Tab go to the target too while you are captured.
+- **Send keys your OS would swallow**: the **Keys** button has Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more
+  (Ctrl+Alt+Del and Win+L can never be intercepted on Windows, so use this for them).
+- **Type text**: the **Type** button types a string (tick *Secret* for passwords: masked, never logged).
+- **Run a script**: put `.toml` or DuckyScript files in your scripts folder (`~/Documents/kvm-it/scripts`), open
+  **Scripts**, pick one, review the preview, and press Run. Progress shows in a strip along the bottom, with Abort.
+  See [scripts and replay](ux.md).
 
 Everything is also available from the command line:
 
@@ -60,9 +71,14 @@ kvmit import payload.txt
 
 ## When something is off
 
-- The status bar always shows adapter, target-USB, video and capture state. Read it first.
+- The chips always show adapter, target-USB, video and capture state: green is working, amber is in progress, red
+  is broken, grey is idle. Read them first.
+- The app will not start and shows an OpenGL message: update the graphics driver (in a virtual machine without a
+  GPU, use a software OpenGL).
+- Video shows *not opened* or stops: check the card is plugged in, that no other app is using it, and (Windows) the
+  camera privacy setting above.
 - Adapter never appears in a scan: see *BLE troubleshooting* in the [hardware guide](hardware.md).
-- Keys stuck on the target: *Release all keys* in the Adapter panel. If the app dies, the adapter is designed to
+- Keys stuck on the target: *Release all keys* in the **Adapter** popup. If the app dies, the adapter is designed to
   release everything itself within about five seconds (not yet verified on hardware).
 
 ## Treat it with care

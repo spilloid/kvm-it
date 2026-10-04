@@ -1995,7 +1995,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kvmit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -2017,7 +2017,7 @@ dependencies = [
 
 [[package]]
 name = "kvmit-ble"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bluer",
  "btleplug",
@@ -2031,18 +2031,18 @@ dependencies = [
 
 [[package]]
 name = "kvmit-hid"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "kvmit-layout"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "kvmit-hid",
 ]
 
 [[package]]
 name = "kvmit-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2050,7 +2050,7 @@ dependencies = [
 
 [[package]]
 name = "kvmit-script"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "kvmit-hid",
  "kvmit-layout",
@@ -2061,7 +2061,7 @@ dependencies = [
 
 [[package]]
 name = "kvmit-video"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "image",
  "kvmit-script",

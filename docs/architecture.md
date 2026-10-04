@@ -56,7 +56,7 @@ Cost: two endpoints. Rejected: single interface with report IDs (works in OSes, 
 Watchdog/recovery: task WDT (10 s, panic→reset), interrupt WDT and bootloader WDT are enabled; the chip is
 bus-powered by the target, so any hang reboots and re-enumerates. The USB device does not depend on BLE.
 
-## Desktop architecture (planned)
+## Desktop architecture
 
 Cargo workspace with one crate per concern so no layer reaches into another:
 
@@ -65,10 +65,10 @@ Cargo workspace with one crate per concern so no layer reaches into another:
 | `kvmit-protocol` | frame + typed message encode/decode, consumes `protocol/vectors.json` |
 | `kvmit-hid` | HID usage codes, key names, mouse buttons |
 | `kvmit-layout` | layout trait + US ANSI (text → key strokes); refuses what it cannot type |
-| `kvmit-ble` | protocol client (handshake, ack/retry, keepalive, motion accumulation) + btleplug transport + BlueZ pairing |
-| `kvmit-video` | V4L2 capture (MJPEG/YUYV), frame conversion; other platforms report unsupported |
+| `kvmit-ble` | protocol client (handshake, ack/retry, keepalive, ordered motion frames capped at 127 units) + btleplug transport + pairing (BlueZ on Linux, WinRT on Windows, which also requests a fast connection interval) |
+| `kvmit-video` | capture (MJPEG/YUYV, decoded only for display): V4L2 on Linux, Media Foundation on Windows (`mf.rs`); other platforms report unsupported; shared mode scoring and frame conversion |
 | `kvmit-script` | script model/TOML, DuckyScript import, compile/validate, executor, screen comparison |
-| `kvmit` | config, key mapping, script library, CLI, and the egui GUI (`gui.rs`) |
+| `kvmit` | config, key mapping, script library, CLI (`kvmit`), the egui GUI (`gui.rs`; also its own executable `kvmit-gui`), and `syskeys.rs`, the OS-level keyboard grab |
 
 (Config, app state and UI live in the single `kvmit` crate for now; split them if a second front end appears.)
 
@@ -90,16 +90,29 @@ video latency).
 Caveat: this is a reasoned choice, not a measured one. Milestone 8 should verify 1080p60 frame upload
 latency before the choice is considered settled, with iced as the documented fallback.
 
-### Video — planned
+### Video
 
-Linux: V4L2 through a trait (`CaptureBackend`). Prefer MJPEG/YUYV as delivered; decode only for display.
-No transcoding. Windows backend (Media Foundation) slots in behind the same trait. Hotplug: udev monitor +
-reopen loop. Mode list from `VIDIOC_ENUM_FMT/FRAMESIZES/FRAMEINTERVALS`.
+One `Capture` API (`list_devices`, `open`, `latest`, `failed`) with a backend per platform; the GUI, the `video`
+CLI and script `wait` steps use only that. Prefer MJPEG/YUYV as delivered; decode only for display; no
+transcoding. Linux: V4L2 (mode list from `VIDIOC_ENUM_*`). Windows: a Media Foundation Source Reader on the card's
+native MJPEG/YUY2 types with converters disabled; everything COM stays on the capture thread, shutdown is bounded
+(a stalled card cannot hang the GUI) and a terminal read error sets `failed()` so the GUI drops the stale frame.
+Mode scoring (closest to 1080p, penalise < 25 fps, prefer MJPEG) is shared by both backends.
 
-### Input capture — planned
+### Input capture
 
-Relative motion while captured with cursor grab/hide; the release chord (default Ctrl+Alt+Esc) is consumed by
-the app and never forwarded; release-all is sent on capture exit, focus loss, BLE reconnect and app close.
+Relative motion while captured with cursor grab/hide; the release chord (Ctrl+Alt+Esc) is consumed by the app and
+never forwarded; release-all is sent on capture exit, focus loss, BLE reconnect and app close.
+
+**Windows keyboard grab (`syskeys.rs`).** The keys an OS keeps for itself (Win, Alt+Tab, ...) never reach a normal
+window, so while captured a low-level keyboard hook swallows every key locally and hands it to the app. The logic
+(physical key to HID usage by scan code, auto-repeat, keys already held before capture, the release chord) is
+pure and unit-tested. The hook runs in a **helper process** (the app launches itself with `--keyboard-grab-helper`,
+events over a pipe): inside the GUI process the hook callback was never invoked, and a separate process is also
+the safer place for it. The helper handles the release chord itself, stops swallowing if the app's heartbeat (sent
+from the input-handling thread) stops for 3 s, and exits when its parent goes away, so a hung or crashed GUI cannot
+trap the keyboard. Keyboard events and egui's mouse buttons are separate streams, which is why modifier+click
+ordering has a documented limit. Ctrl+Alt+Del and Win+L are handled by Windows itself and cannot be hooked.
 
 ## Hotplug (first-class requirement)
 

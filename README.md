@@ -21,7 +21,8 @@ Your keyboard/mouse ──► kvm-it ──► Bluetooth LE ──► ESP32-S3 �
 ## What you get
 
 - **See and drive the target** in one window. Click the picture to capture your keyboard and mouse;
-  **Ctrl+Alt+Esc** releases them, and that chord never reaches the target.
+  **Ctrl+Alt+Esc** releases them, and that chord never reaches the target. On Windows, the keys your OS would
+  keep for itself (Win, Alt+Tab, Ctrl+Esc, Alt+F4, ...) go to the target too while you are captured.
 - **Send the keys your OS would swallow.** One-click Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more.
 - **Zero-step reconnect.** Pair once. Move the cables to the next machine and the app reconnects by itself.
 - **Replayable setup scripts.** Native TOML or imported DuckyScript: text, keys, chords, delays, and
@@ -29,8 +30,24 @@ Your keyboard/mouse ──► kvm-it ──► Bluetooth LE ──► ESP32-S3 �
   run before anything is typed; abort leaves nothing held down.
 - **Safe with secrets.** Passwords are masked, never logged, never saved. Pairing needs physical presence:
   you press a button on the adapter.
-- **Honest status.** One status bar shows adapter, target USB, video and input capture, always.
+- **Honest status.** One row of colour-coded chips (green working, amber in progress, red broken, grey idle) shows
+  adapter, target USB, video and input capture, always; each opens the controls it describes.
 - **Open.** MIT-licensed; the wire protocol, firmware and every review round are in this repo.
+
+## Quick start (Windows 11)
+
+Download `kvmit-vX.Y.Z-windows-x64.msi` (or the `.zip`) from the Releases page and check it against its `.sha256`
+file. Whether a release is code-signed is stated in its release notes; an unsigned build makes Windows SmartScreen
+warn. Open **kvm-it** from the Start menu (`kvmit-gui.exe`), or use `kvmit.exe` from a terminal.
+
+Pair as on Linux: plug the adapter's **USB** port into the target and press **BOOT** briefly (or re-plug it) to open
+its pairing window, then run `kvmit pair` or use the app's **Adapter** chip. Windows pairs by itself; no system
+dialog appears.
+
+You need Bluetooth LE, a graphics driver with OpenGL 2.0 or newer (the app says so in a dialog if it cannot start;
+a software OpenGL works in a virtual machine), and, for the video, Settings > Privacy & security > Camera >
+*Let desktop apps access your camera* turned on. Windows 11 is what was tested; the app asks Windows for a faster
+Bluetooth connection where that API exists, and without it fast mouse movement can overwhelm the link.
 
 ## Quick start (Linux)
 
@@ -58,10 +75,12 @@ which USB-C port goes where, what the LED and button mean.
 The CLI does everything the app does:
 `kvmit scan | status | type "text" | key ctrl alt delete | run script.toml [--dry-run] | import payload.txt`.
 
-## Status: v0.1.0
+## Status: v0.2.0
 
 Labels are strict: **built** = compiles; **host-tested** = automated tests pass in CI/containers;
-**hardware-verified** = run on a physical board.
+**hardware-verified** = run on a physical board; **VM-verified** = run in a Windows 11 virtual machine on a Linux
+host with the Bluetooth adapter and the capture card passed through over USB (the real radio and the real card, but
+not bare-metal Windows).
 
 | Area | State |
 |---|---|
@@ -72,9 +91,14 @@ Labels are strict: **built** = compiles; **host-tested** = automated tests pass 
 | Protocol v1 spec + shared vectors (C and Rust) | host-tested |
 | Desktop: client (ack/retry/keepalive), script engine, DuckyScript import, layout | host-tested |
 | Desktop: BLE transport + BlueZ pairing | **hardware-verified** on Linux/BlueZ (Intel AX201): `scan`, `pair`, `status` (90 ms RTT); `type`/`key` **hardware-verified** into a Windows 11 target (every printable US-ASCII character, checked on screen through the capture card) |
+| Desktop: BLE on Windows (WinRT pairing, `scan`, `status`, `unpair`, faster-connection request) | **VM-verified**: pairing with no system dialog, `status` (30 ms RTT with the fast connection, 120 ms without), `key --hold`; sustained mouse motion at 60 and 125 frames/s no longer collapses the link. `kvmit type` was not run from Windows. Bare-metal Windows: not tested |
 | Desktop: V4L2 capture | **hardware-verified** with an HDMI capture card (MacroSilicon `345f:2109`): 1920x1080 frame of a live Windows 11 desktop via `kvmit video snap` |
-| Desktop: egui GUI (capture, Send keys toolbar, scripts) | **maintainer-checked** on Linux with an adapter and a target (2026-10-03), including the input-ownership changes; no automated GUI tests |
-| Windows as the controller (app) | **planned for v0.2.0**: cross-compiles (`scripts/rs.sh windows`); never run; no video backend yet. (Windows as the *target* works today: it only sees a USB keyboard and mouse.) |
+| Desktop: Media Foundation capture (Windows) | **VM-verified** with the same MacroSilicon card: `video list`, a 1920x1080 MJPEG `video snap`, live video in the GUI, and a notice (not a frozen frame) when the card is unplugged mid-stream. The YUY2 path is untested |
+| Desktop: egui GUI, v0.1.0 layout (left panel) | **maintainer-checked** on Linux with an adapter and a target (2026-10-03), including the input-ownership changes |
+| Desktop: egui GUI, v0.2.0 layout (top-bar status chips, popups, run-log strip) | **VM-verified** on Windows (chips, popups, capture, error dialog). **Not yet checked on Linux** since the redesign; exposes a UI Automation tree for screen readers and tests. No automated GUI tests |
+| Desktop: Windows keyboard grab (Win, Alt+Tab, ... go to the target while captured) | **VM-verified**: Win and Alt+Tab never reach the controller while captured, a held key reaches the adapter, Ctrl+Alt+Esc releases and the keyboard returns, and a hung GUI cannot trap the keyboard (the helper stops swallowing after 3 s). Not verified: non-US layouts and IMEs, bare metal. Linux has no equivalent |
+| Desktop: shared client change (mouse motion split into 127-unit frames, ordered before clicks) | host-tested; **not re-run on a Linux board yet** |
+| Windows as the controller (app) | **v0.2.0**: runs in a Windows 11 VM with real hardware passed through (rows above); **not verified on bare-metal Windows**. Windows as the *target* works as before: it only sees a USB keyboard and mouse |
 | Built-in OOBE script | template only, never run on a real OOBE |
 | Session recording | planned |
 

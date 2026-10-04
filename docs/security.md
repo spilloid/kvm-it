@@ -68,3 +68,17 @@ provisioning credentials.
 
 The firmware stores no typed text and has no logging of key events beyond counters. The self-test types only
 the fixed non-secret string `HELLO FROM KVM`.
+
+## Windows controller (0.2.0)
+
+- **Pairing on Windows** uses the WinRT custom-pairing API and accepts the pairing request in code so no system
+  dialog appears. Only the Just Works ceremony is offered and accepted (a peer asking for numeric comparison is
+  refused, since this headless adapter cannot show a code). The adapter's physical pairing window is still the
+  authentication; nothing about the trust model changed.
+- **Keyboard grab.** While input is captured the app swallows keys locally and forwards them to the adapter. Which
+  keys you pressed is never logged or persisted (diagnostics report counts only). The hook runs in a helper process
+  that talks to the app over a private pipe; it passes keys through to the controller whenever nobody is
+  listening, and a hung or crashed app cannot keep them (see architecture). A keyboard hook can look like keylogger
+  behaviour to security software: it only exists while you are captured, and its source is in this repository.
+- **Release signing.** A release is code-signed only if its notes say so; checksums (`.sha256`, `SHA256SUMS`)
+  accompany every release asset.

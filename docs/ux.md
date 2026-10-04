@@ -5,9 +5,9 @@ BIOS screen. The UX bar is "never make me think about the tool".
 
 1. **Zero-step reconnect.** Moving the cables to the next machine is the whole workflow. BLE, capture and
    (later) trust all re-establish themselves; the UI shows state, it does not ask for action.
-2. **State is always visible, never ambiguous.** One status strip: capture-card signal, BLE link (+RSSI),
-   target USB mounted, input capture on/off. Capture-active is unmistakable (coloured frame + banner naming
-   the release chord).
+2. **State is always visible, never ambiguous.** One row of colour-coded chips: BLE link, target USB mounted,
+   capture-card signal, input capture on/off. Green is working, amber is in progress, red is broken, grey is idle.
+   Capture-active is unmistakable (red frame + a chip naming the release chord).
 3. **Safe by default.** Releasing capture, losing focus, reconnecting or quitting sends release-all. The
    release chord is never forwarded to the target.
 4. **Secrets are first-class.** Masked, never logged, per-run by default (see security.md). Typing a secret
@@ -18,6 +18,19 @@ BIOS screen. The UX bar is "never make me think about the tool".
    confirmed, say so plainly — a KVM that silently mistypes a password is worse than none.
 7. **Fast to first pixel.** Last-used capture device and mode are remembered; the preview appears before the
    user has found the mouse.
+
+## Window layout (0.2.0)
+
+The picture is the window. A single top bar holds everything else:
+
+- **Adapter**, **Target USB**, **Video**, **Input**: status chips filled with their health colour. *Adapter*, *Video*
+  and *Input* open the controls they describe (scan/pair/connect, device and mode, capture), and the *Input* chip
+  starts capture when clicked. *Target USB* is an indicator only.
+- **Keys**, **Type**, **Scripts**: buttons that open popups (chords the OS would swallow; typing a string, masked
+  if secret; the script library, variables, preview, run and dry run). Popups stay open until you click outside.
+- While input is captured only the *Input* chip is live: every key belongs to the target.
+- A running script's log is a strip along the bottom, with Abort, and outlives any popup.
+- The chips and buttons are exposed to screen readers and UI Automation by name.
 
 # Scripting and replay
 
