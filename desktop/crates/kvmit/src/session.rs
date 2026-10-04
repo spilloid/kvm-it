@@ -6,9 +6,14 @@ pub type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
 pub async fn connect(id: &str) -> Result<(Device, backend::Connection), BoxErr> {
     let mut conn = backend::connect(id).await?;
-    let dev = Device::connect(conn.take_io()).await.map_err(|e| {
-        format!("{e}. If this is a new adapter, run `kvmit pair` first (within 15 s of plugging the adapter in, or after pressing BOOT on it).")
-    })?;
+    let dev = match Device::connect(conn.take_io()).await {
+        Ok(d) => d,
+        Err(e) => {
+            // `Connection` does not disconnect when dropped: close the link ourselves, or a failed handshake leaves the OS holding it
+            conn.disconnect().await;
+            return Err(format!("{e}. If this is a new adapter, run `kvmit pair` first (within 15 s of plugging the adapter in, or after pressing BOOT on it).").into());
+        }
+    };
     Ok((dev, conn))
 }
 

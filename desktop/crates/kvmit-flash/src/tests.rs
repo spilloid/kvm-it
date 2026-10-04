@@ -50,6 +50,10 @@ fn table(entries: &[(u8, u8, u32, u32, &str)]) -> Vec<u8> {
     v
 }
 
+fn parse(t: &[u8]) -> Result<Vec<Partition>, FlashError> {
+    parse_partition_table(t, 16 << 20, true)
+}
+
 fn project_table() -> Vec<u8> {
     table(&[(1, 2, 0x9000, 0x6000, "nvs"), (1, 1, 0xf000, 0x1000, "phy_init"), (0, 0, 0x10000, 0x100000, "factory")])
 }
@@ -130,7 +134,7 @@ fn images_must_be_intact_not_just_shaped_like_images() {
     assert!(corrupt(|d| d.truncate(24)).is_err());
     assert!(corrupt(|d| d[100] ^= 1).unwrap_err().0.contains("checksum mismatch"));
     assert!(corrupt(|d| { let n = d.len(); d.truncate(n - 40) }).is_err());
-    assert!(corrupt(|d| d[28..32].copy_from_slice(&u32::MAX.to_le_bytes())).unwrap_err().0.contains("past the end"));
+    assert!(corrupt(|d| d[28..32].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes())).unwrap_err().0.contains("past the end"));
     assert!(corrupt(|d| { let n = d.len(); d[n - 1] ^= 1 }).unwrap_err().0.contains("SHA-256"));
     assert!(corrupt(|d| d[0] = 0).is_err());
     assert!(corrupt(|d| d[1] = 0).is_err());
@@ -141,36 +145,36 @@ fn images_must_be_intact_not_just_shaped_like_images() {
 #[test]
 fn partition_tables_must_be_valid_the_way_the_bootloader_demands() {
     let good = project_table();
-    assert_eq!(parse_partition_table(&good).unwrap().len(), 3);
+    assert_eq!(parse(&good).unwrap().len(), 3);
     // flipped MD5 (round 8 F5), changed entry, junk after the MD5, bad magic, no MD5 at all, partial entry
     let mut v = good.clone();
     v[16 * 6 + 3] ^= 1; // inside the md5 entry's digest (entry 3 starts at 96; its md5 at +16)
     let mut md5_flip = good.clone();
     md5_flip[96 + 16] ^= 1;
-    assert!(parse_partition_table(&md5_flip).unwrap_err().0.contains("MD5"));
+    assert!(parse(&md5_flip).unwrap_err().0.contains("MD5"));
     let mut entry_changed = good.clone();
     entry_changed[8] ^= 0x10;
-    assert!(parse_partition_table(&entry_changed).is_err());
+    assert!(parse(&entry_changed).is_err());
     let mut trailing = good.clone();
     let n = trailing.len();
     trailing[n - 1] = 0;
-    assert!(parse_partition_table(&trailing).unwrap_err().0.contains("after its MD5"));
+    assert!(parse(&trailing).unwrap_err().0.contains("after its end"));
     let mut bad_magic = good.clone();
     bad_magic[32] = 0x12;
-    assert!(parse_partition_table(&bad_magic).unwrap_err().0.contains("bad entry"));
-    assert!(parse_partition_table(&[0xFF; 0xC00]).is_err());
-    assert!(parse_partition_table(&good[..100]).is_err());
+    assert!(parse(&bad_magic).unwrap_err().0.contains("bad entry"));
+    assert!(parse(&[0xFF; 0xC00]).is_err());
+    assert!(parse(&good[..100]).is_err());
     let _ = v;
 }
 
 #[test]
 fn partition_tables_with_bad_ranges_overlaps_or_nvs_names_are_refused() {
-    assert!(parse_partition_table(&table(&[(1, 2, 0x9000, 0, "nvs"), (0, 0, 0x10000, 0x1000, "app")])).is_err(), "zero size");
-    assert!(parse_partition_table(&table(&[(1, 2, 0x9100, 0x1000, "nvs"), (0, 0, 0x10000, 0x1000, "app")])).is_err(), "unaligned");
-    assert!(parse_partition_table(&table(&[(1, 2, 0x9000, 0x7000, "nvs"), (0, 0, 0xf000, 0x1000, "app")])).unwrap_err().0.contains("overlap"));
-    assert!(parse_partition_table(&table(&[(1, 2, 0x9000, 0x6000, "storage"), (0, 0, 0x10000, 0x1000, "app")])).unwrap_err().0.contains("named"));
-    assert!(parse_partition_table(&table(&[(1, 2, 0x9000, 0x3000, "nvs"), (1, 2, 0xc000, 0x3000, "nvs"), (0, 0, 0x10000, 0x1000, "app")])).is_err(), "two nvs");
-    assert!(parse_partition_table(&table(&[(0, 0, 0x10000, 0x1000, "app")])).is_err(), "no nvs");
+    assert!(parse(&table(&[(1, 2, 0x9000, 0, "nvs"), (0, 0, 0x10000, 0x1000, "app")])).is_err(), "zero size");
+    assert!(parse(&table(&[(1, 2, 0x9100, 0x1000, "nvs"), (0, 0, 0x10000, 0x1000, "app")])).is_err(), "unaligned");
+    assert!(parse(&table(&[(1, 2, 0x9000, 0x7000, "nvs"), (1, 1, 0xf000, 0x1000, "phy")])).unwrap_err().0.contains("overlap"));
+    assert!(parse(&table(&[(1, 2, 0x9000, 0x6000, "storage"), (0, 0, 0x10000, 0x1000, "app")])).unwrap_err().0.contains("named"));
+    assert!(parse(&table(&[(1, 2, 0x9000, 0x3000, "nvs"), (1, 2, 0xc000, 0x3000, "nvs"), (0, 0, 0x10000, 0x1000, "app")])).is_err(), "two nvs");
+    assert!(parse(&table(&[(0, 0, 0x10000, 0x1000, "app")])).is_err(), "no nvs");
 }
 
 #[test]
@@ -250,8 +254,8 @@ fn the_scratch_folder_is_private_unique_and_removed() {
     std::fs::write(path.join("x"), [1]).unwrap();
     drop(a);
     assert!(!path.exists());
-    assert!(read_small(&b.path().join("missing")).is_err());
-    assert!(read_small(b.path()).is_err(), "a directory is not a small file");
+    assert!(read_limited(&b.path().join("missing"), 1024, "x").is_err());
+    assert!(read_limited(b.path(), 1024, "x").is_err(), "a directory is not a file");
 }
 
 #[test]
@@ -363,6 +367,85 @@ fn a_new_table_that_moves_shrinks_renames_or_changes_nvs_is_refused_against_the_
     // swapped labels (round 8 F6): the installed table has nvs at 0x9000 and "storage" at 0x10000... the new one the reverse
     let installed = table(&[(1, 2, 0x9000, 0x6000, "nvs"), (1, 2, 0x20000, 0x6000, "storage"), (0, 0, 0x30000, 0x100000, "factory")]);
     let new = table(&[(1, 2, 0x9000, 0x6000, "storage"), (1, 2, 0x20000, 0x6000, "nvs"), (0, 0, 0x30000, 0x100000, "factory")]);
-    assert!(parse_partition_table(&installed).is_err(), "two nvs partitions are refused outright by the table rules");
-    assert!(parse_partition_table(&new).is_err());
+    assert!(parse(&installed).is_err(), "two nvs partitions are refused outright by the table rules");
+    assert!(parse(&new).is_err());
+}
+
+#[test]
+fn the_hash_flag_is_any_nonzero_and_segments_are_word_sized() {
+    // round 9: byte 23 = 2 must still be hash-checked (ESP-IDF treats any nonzero as "hash appended"); an odd segment length is refused
+    // the flag byte is inside the hashed header, so changing it 1 -> 2 without recomputing the digest must fail the SHA check
+    assert!(corrupt(|d| d[23] = 2).unwrap_err().0.contains("SHA-256"));
+    assert!(corrupt(|d| d[23] = 0).is_ok(), "no appended hash: the XOR checksum alone (the trailing digest is then just extra bytes)");
+    let mut odd = esp_image(ESP32S3_CHIP_ID, 5000);
+    let len = u32::from_le_bytes([odd[28], odd[29], odd[30], odd[31]]);
+    odd[28..32].copy_from_slice(&(len - 1).to_le_bytes());
+    assert!(check_esp_image(&Part { name: "odd".into(), offset: 0, data: odd }).unwrap_err().0.contains("multiple of 4"));
+    // a segment length that would overflow pointer arithmetic is an error, not a panic
+    let mut huge = esp_image(ESP32S3_CHIP_ID, 5000);
+    huge[28..32].copy_from_slice(&0xFFFF_FFFCu32.to_le_bytes());
+    assert!(check_esp_image(&Part { name: "huge".into(), offset: 0, data: huge }).is_err());
+}
+
+#[test]
+fn a_table_filled_to_its_last_entry_has_no_terminator_and_is_refused() {
+    let mut entries: Vec<(u8, u8, u32, u32, String)> = vec![(1, 2, 0x9000, 0x1000, "nvs".into()), (0, 0, 0x10000, 0x10000, "app".into())];
+    for i in 0..93u32 {
+        entries.push((1, 0x80, 0x20000 + i * 0x1000, 0x1000, format!("d{i}")));
+    }
+    let refs: Vec<(u8, u8, u32, u32, &str)> = entries.iter().map(|(a, b, c, d, n)| (*a, *b, *c, *d, n.as_str())).collect();
+    // 95 entries + the MD5 record fill all 96 slots of 0xC00 bytes
+    assert_eq!(refs.len(), 95);
+    assert!(parse(&table(&refs)).unwrap_err().0.contains("terminating"));
+    assert!(parse(&table(&refs[..94])).is_ok(), "one fewer leaves the erased terminator");
+}
+
+#[test]
+fn ota_geometry_app_alignment_and_the_flash_size_are_checked() {
+    assert!(parse(&table(&[(1, 2, 0x9000, 0x6000, "nvs"), (1, 0, 0xf000, 0x1000, "otadata"), (0, 0x10, 0x10000, 0x1000, "ota_0")])).unwrap_err().0.contains("0x2000"));
+    parse(&table(&[(1, 2, 0x9000, 0x4000, "nvs"), (1, 0, 0xd000, 0x2000, "otadata"), (0, 0x10, 0x10000, 0x1000, "ota_0")])).unwrap();
+    assert!(parse(&table(&[(1, 2, 0x9000, 0x6000, "nvs"), (0, 0, 0x11000, 0x1000, "factory")])).unwrap_err().0.contains("64 KiB"));
+    // bounds come from the image's flash size, not a global maximum
+    let t = table(&[(1, 2, 0x9000, 0x6000, "nvs"), (0, 0, 0x10000, 0x100000, "factory")]);
+    assert!(parse_partition_table(&t, 1 << 20, true).is_err());
+    assert!(parse_partition_table(&t, 2 << 20, true).is_ok());
+    // and the image-level check: an app moved to 0x11000 with a matching table entry is refused
+    let moved = table(&[(1, 2, 0x9000, 0x6000, "nvs"), (0, 0, 0x11000, 0x100000, "factory")]);
+    assert!(image_with(moved, 21_088, 0x11000).validate().is_err());
+}
+
+#[test]
+fn an_installed_table_without_an_md5_entry_is_accepted_for_the_settings_comparison() {
+    // older build options leave out the MD5 record; the settings partition can still be proven identical
+    let mut v = Vec::new();
+    for e in [(1u8, 2u8, 0x9000u32, 0x6000u32, "nvs"), (0, 0, 0x10000, 0x100000, "factory")] {
+        let mut x = vec![0xAA, 0x50, e.0, e.1];
+        x.extend(e.2.to_le_bytes());
+        x.extend(e.3.to_le_bytes());
+        let mut n = e.4.as_bytes().to_vec();
+        n.resize(16, 0);
+        x.extend(n);
+        x.extend(0u32.to_le_bytes());
+        v.extend(x);
+    }
+    v.resize(PARTITION_TABLE_BYTES as usize, 0xFF);
+    assert!(parse(&v).is_err(), "a NEW table must carry the MD5");
+    image().check_matches_installed(&v).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_fifo_is_refused_without_hanging_and_oversize_files_are_errors_not_truncations() {
+    let base = std::env::temp_dir().join(format!("kvmit-flash-fifo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let fifo = base.join("pipe.bin");
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    // would block forever in open() if the type were not checked first
+    assert!(read_limited(&fifo, 1024, "pipe").unwrap_err().0.contains("not a regular file"));
+    let big = base.join("big.bin");
+    std::fs::write(&big, vec![0u8; 2000]).unwrap();
+    assert!(read_limited(&big, 1024, "big").unwrap_err().0.contains("larger than"));
+    assert_eq!(read_limited(&big, 2000, "big").unwrap().len(), 2000);
+    let _ = std::fs::remove_dir_all(&base);
 }

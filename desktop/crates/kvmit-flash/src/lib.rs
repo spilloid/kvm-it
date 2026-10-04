@@ -133,27 +133,35 @@ fn check_relative(rel: &str) -> Result<(), FlashError> {
     Ok(())
 }
 
-/// Read a file the manifest names: inside `dir` (symlinks resolved), a regular file, no bigger than the flash. The checks are
-/// made on the opened handle and the read is bounded, so a file swapped after the check cannot lift the size limit.
-fn read_contained(dir: &Path, rel: &str) -> Result<Vec<u8>, FlashError> {
+/// Read a regular file of at most `limit` bytes. The type is checked before opening (opening a FIFO would block) and again on the
+/// opened handle; the read itself is bounded, so a file that grows after the check cannot lift the limit; too big is an error.
+fn read_limited(path: &Path, limit: u64, what: &str) -> Result<Vec<u8>, FlashError> {
     use std::io::Read;
+    let before = std::fs::metadata(path).or_else(|e| err(format!("{what}: {e}")))?;
+    if !before.is_file() {
+        return err(format!("{what} is not a regular file"));
+    }
+    let file = std::fs::File::open(path).or_else(|e| err(format!("{what}: {e}")))?;
+    if !file.metadata().or_else(|e| err(format!("{what}: {e}")))?.is_file() {
+        return err(format!("{what} is not a regular file"));
+    }
+    let mut data = Vec::new();
+    file.take(limit + 1).read_to_end(&mut data).or_else(|e| err(format!("{what}: {e}")))?;
+    if data.len() as u64 > limit {
+        return err(format!("{what} is larger than {limit} bytes"));
+    }
+    Ok(data)
+}
+
+/// Read a file the manifest names: inside `dir` (symlinks resolved), a regular file, no bigger than the flash.
+fn read_contained(dir: &Path, rel: &str) -> Result<Vec<u8>, FlashError> {
     check_relative(rel)?;
     let root = dir.canonicalize().or_else(|e| err(format!("{}: {e}", dir.display())))?;
     let path = root.join(rel).canonicalize().or_else(|e| err(format!("{rel}: {e}")))?;
     if !path.starts_with(&root) {
         return err(format!("{rel} resolves outside the firmware folder"));
     }
-    let file = std::fs::File::open(&path).or_else(|e| err(format!("{rel}: {e}")))?;
-    let meta = file.metadata().or_else(|e| err(format!("{rel}: {e}")))?;
-    if !meta.is_file() {
-        return err(format!("{rel} is not a regular file"));
-    }
-    let mut data = Vec::new();
-    file.take(MAX_FLASH as u64 + 1).read_to_end(&mut data).or_else(|e| err(format!("{rel}: {e}")))?;
-    if data.len() > MAX_FLASH as usize {
-        return err(format!("{rel} is larger than the flash"));
-    }
-    Ok(data)
+    read_limited(&path, MAX_FLASH as u64, rel)
 }
 
 /// One entry of the partition table.
@@ -167,21 +175,25 @@ pub struct Partition {
     pub flags: u32,
 }
 
-/// Parse an ESP-IDF partition table strictly: 32-byte entries (`AA 50`), then the MD5 entry (`EB EB`, ones, then the MD5 of
-/// the entries, which is verified), then erased flash. Anything else is an error: the bootloader rejects such a table and the
-/// board would not boot.
-pub fn parse_partition_table(table: &[u8]) -> Result<Vec<Partition>, FlashError> {
+/// Parse an ESP-IDF partition table strictly: 32-byte entries (`AA 50`), then (when `require_md5`) the MD5 entry (`EB EB`, ones,
+/// then the MD5 of the entries, which is verified), then erased flash, with at least one erased terminator entry inside the table
+/// window, as the bootloader requires. A table the board already has may lack the MD5 entry (older build options), so installed
+/// tables are parsed with `require_md5 = false`. `flash_bytes` bounds the partitions. Anything else is an error: the bootloader
+/// rejects such a table and the board would not boot.
+pub fn parse_partition_table(table: &[u8], flash_bytes: u32, require_md5: bool) -> Result<Vec<Partition>, FlashError> {
     use md5::{Digest, Md5};
     let mut out = Vec::new();
     let mut md5_seen = false;
+    let mut terminated = false;
     for (i, e) in table.chunks(32).enumerate() {
         if e.len() < 32 {
             return err("the partition table ends in a partial entry");
         }
-        if md5_seen {
+        if terminated || md5_seen {
             if e.iter().any(|&b| b != 0xFF) {
-                return err("the partition table has data after its MD5 entry");
+                return err("the partition table has data after its end");
             }
+            terminated = true;
             continue;
         }
         match e[0..2] {
@@ -203,24 +215,38 @@ pub fn parse_partition_table(table: &[u8]) -> Result<Vec<Partition>, FlashError>
                 }
                 md5_seen = true;
             }
+            _ if e.iter().all(|&b| b == 0xFF) => terminated = true,
             _ => return err(format!("the partition table has a bad entry at index {i}")),
         }
     }
-    if !md5_seen {
+    if require_md5 && !md5_seen {
         return err("the partition table has no MD5 entry");
     }
-    check_partitions(&out)?;
+    // the bootloader needs an erased terminator entry inside the window: a table filled to its last entry (the MD5 record
+    // included) is rejected by ESP-IDF
+    if !(terminated || table.len() / 32 > out.len() + usize::from(md5_seen)) {
+        return err("the partition table has no terminating entry inside its 0xC00 window");
+    }
+    check_partitions(&out, flash_bytes)?;
     Ok(out)
 }
 
-fn check_partitions(t: &[Partition]) -> Result<(), FlashError> {
+fn check_partitions(t: &[Partition], flash_bytes: u32) -> Result<(), FlashError> {
     if t.is_empty() {
         return err("the partition table has no entries");
     }
     let mut spans: Vec<(u32, u32, &str)> = Vec::new();
     for p in t {
-        if p.size == 0 || p.offset % SECTOR != 0 || p.offset as u64 + p.size as u64 > MAX_FLASH as u64 {
-            return err(format!("partition {:?} has a bad range (offset 0x{:x}, size 0x{:x})", p.name, p.offset, p.size));
+        if p.size == 0 || p.offset % SECTOR != 0 || p.offset as u64 + p.size as u64 > flash_bytes as u64 {
+            return err(format!("partition {:?} has a bad range (offset 0x{:x}, size 0x{:x}) for {} MB of flash", p.name, p.offset, p.size, flash_bytes / (1024 * 1024)));
+        }
+        // ESP-IDF: app partitions sit on 64 KiB boundaries (the flash cache maps whole 64 KiB pages); the OTA selection
+        // partition (data/ota) is two sectors
+        if p.ptype == 0 && p.offset % 0x1_0000 != 0 {
+            return err(format!("app partition {:?} is not on a 64 KiB boundary", p.name));
+        }
+        if p.ptype == 1 && p.subtype == 0 && p.size != 0x2000 {
+            return err(format!("the OTA data partition {:?} must be 0x2000 bytes", p.name));
         }
         spans.push((p.offset, p.offset + p.size, &p.name));
     }
@@ -246,11 +272,10 @@ impl Image {
     /// Load the image set an ESP-IDF build directory describes (`flasher_args.json`, files relative to it).
     pub fn from_build_dir(dir: &Path) -> Result<Image, FlashError> {
         let manifest = dir.join("flasher_args.json");
-        let meta = std::fs::metadata(&manifest).or_else(|e| err(format!("{}: {e} (is this a firmware build directory?)", manifest.display())))?;
-        if !meta.is_file() || meta.len() > MAX_MANIFEST {
-            return err("flasher_args.json is not a regular file of sane size");
+        if !manifest.exists() {
+            return err(format!("{}: not found (is this a firmware folder?)", manifest.display()));
         }
-        let json = std::fs::read_to_string(&manifest).or_else(|e| err(format!("{}: {e}", manifest.display())))?;
+        let json = String::from_utf8(read_limited(&manifest, MAX_MANIFEST, "flasher_args.json")?).or_else(|_| err("flasher_args.json is not UTF-8"))?;
         Self::from_manifest(&json, |rel| read_contained(dir, rel))
     }
 
@@ -310,7 +335,7 @@ impl Image {
         if table_part.data.len() as u32 > PARTITION_TABLE_BYTES {
             return err("the partition table is larger than 0xC00 bytes");
         }
-        let table = parse_partition_table(&table_part.data)?;
+        let table = parse_partition_table(&table_part.data, self.flash_bytes, true)?;
         let app = &self.parts[2];
         let need = app.data.len() as u32;
         match table.iter().find(|p| p.ptype == 0 && p.offset == app.offset) {
@@ -323,7 +348,7 @@ impl Image {
 
     /// The new image's partition table (valid, because [`Image::validate`] passed).
     fn table(&self) -> Result<Vec<Partition>, FlashError> {
-        parse_partition_table(&self.parts[1].data)
+        parse_partition_table(&self.parts[1].data, self.flash_bytes, true)
     }
 
     /// The flash regions (start, end) the image's own partition table gives to the settings (data/nvs): where the pairing lives.
@@ -352,7 +377,7 @@ impl Image {
     /// The installed partition table (read from the chip) must give the settings exactly the same place, size, name and flags as
     /// the new one, or the new firmware would not find the old pairing (or, if shrunk, would erase it on start).
     pub fn check_matches_installed(&self, installed_table: &[u8]) -> Result<(), FlashError> {
-        let installed = parse_partition_table(installed_table).or_else(|e| {
+        let installed = parse_partition_table(installed_table, self.flash_bytes, false).or_else(|e| {
             err(format!("the board's partition table is not valid ({e}): flash it with a full erase"))
         })?;
         let new = self.table()?;
@@ -392,11 +417,15 @@ fn check_esp_image(p: &Part) -> Result<(), FlashError> {
     let mut pos = 24usize;
     let mut xor = 0xEFu8;
     for _ in 0..segments {
-        let Some(h) = d.get(pos..pos + 8) else { return bad("truncated segment header") };
+        let Some(h) = d.get(pos..pos.saturating_add(8)).filter(|h| h.len() == 8) else { return bad("truncated segment header") };
         let len = u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize;
-        let Some(data) = d.get(pos + 8..pos + 8 + len) else { return bad("a segment runs past the end of the file") };
+        if !len.is_multiple_of(4) {
+            return bad("a segment length is not a multiple of 4");
+        }
+        let Some(end) = (pos + 8).checked_add(len) else { return bad("a segment runs past the end of the file") };
+        let Some(data) = d.get(pos + 8..end) else { return bad("a segment runs past the end of the file") };
         xor = data.iter().fold(xor, |a, &b| a ^ b);
-        pos += 8 + len;
+        pos = end;
     }
     let checksum_at = (pos + 1).next_multiple_of(16) - 1;
     match d.get(checksum_at) {
@@ -405,7 +434,7 @@ fn check_esp_image(p: &Part) -> Result<(), FlashError> {
         None => return bad("truncated before the checksum"),
     }
     let end = checksum_at + 1;
-    if d[23] == 1 {
+    if d[23] != 0 {
         let Some(hash) = d.get(end..end + 32) else { return bad("truncated before the appended SHA-256") };
         if Sha256::digest(&d[..end]).as_slice() != hash {
             return bad("appended SHA-256 mismatch");
@@ -592,7 +621,7 @@ pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut d
         let scratch = Scratch::new().map_err(|e| fail("could not make a private scratch folder", &e))?;
         let file = scratch.path().join("partition-table.bin");
         flasher.read_flash(PARTITION_TABLE_OFFSET, PARTITION_TABLE_BYTES, 0x1000, 64, file.clone()).map_err(|e| fail("could not read the board's partition table", &e))?;
-        let table = read_small(&file).map_err(|e| fail("could not read the board's partition table", &e))?;
+        let table = read_limited(&file, 64 * 1024, "the board's partition table").map_err(|e| fail("could not read the board's partition table", &e))?;
         drop(scratch);
         image.check_matches_installed(&table)?;
     } else {
@@ -639,18 +668,6 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
-}
-
-/// Read a small regular file, refusing anything else or anything big.
-fn read_small(path: &Path) -> std::io::Result<Vec<u8>> {
-    use std::io::Read;
-    let f = std::fs::File::open(path)?;
-    if !f.metadata()?.is_file() {
-        return Err(std::io::Error::other("not a regular file"));
-    }
-    let mut v = Vec::new();
-    f.take(64 * 1024).read_to_end(&mut v)?;
-    Ok(v)
 }
 
 #[cfg(test)]

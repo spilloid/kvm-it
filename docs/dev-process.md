@@ -395,3 +395,27 @@ findings 3, 9, 11, 12, 13 fixed; 1, 2, 4, 5, 6, 8 partial; 10 regressed by the w
   always validated, label/size/move refusals, ROM-mode and half-readable USB devices, scratch folder), wizard rules; clippy clean.
 - Hardware after the fixes (Windows 11 VM, COM bridge): the CLI default flash read back and strictly parsed the board's installed
   table; the GUI wizard blocked while connected ("Disconnect first"), then after Disconnect flashed and verified.
+
+### Round 9 (re-review of the round-8 fixes, `59a6f22..7b8eafa`)
+
+Verdict "do not ship yet": F5, F9, F10, F12, F13 incomplete, two regressions of mine, and a coverage gap. 11 findings (+1 low):
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | Med | A cancelled BLE attempt can still publish `Connected` (generation checked before taking the link lock) and its poll loop never notices cancellation | **Confirmed.** Every link-state write now goes through one `publish` that checks the generation *under the link lock*; the cancel bumps it under the same lock; the connected poll loop exits when cancelled |
+| 2 | Med | `pair_first` paths write state unguarded; a failed handshake drops the connection without disconnecting (`Connection` has no `Drop`, its doc said it did) | **Confirmed.** Pair paths guarded; `session::connect` disconnects on handshake failure; the doc is corrected. Cancelling does not abort an in-flight OS operation, it closes it when it completes |
+| 3 | High | Image walk accepts hash flag 2 (skipping SHA) and odd segment lengths | **Confirmed.** Any nonzero flag means a digest is present and checked; segment lengths must be multiples of 4; checked arithmetic (also the 32-bit low finding) |
+| 4 | High | A table filled to its last slot (no terminator) passes | **Confirmed.** An erased terminator entry inside the 0xC00 window is required |
+| 5 | High | App not on a 64 KiB boundary, a 0x1000 `data/ota`, bounds from a global maximum | **Confirmed.** App partitions on 64 KiB boundaries, OTA data exactly 0x2000, partition bounds from the image's flash size. This is a bounded rule set, not a reimplementation of ESP-IDF's partition semantics |
+| 6 | Med | Valid installed tables without an MD5 entry are refused (needless "full erase") | **Confirmed.** The MD5 is required of the *new* table only; an installed table without one is accepted for the settings comparison |
+| 7 | Med | Opening a FIFO blocks before it can be rejected | **Confirmed (my regression).** The file type is checked before opening, and again on the handle |
+| 8 | Med | The manifest is read unbounded after its size check | **Confirmed.** One bounded reader for the manifest, parts and read-back; too big is an error, not a truncation |
+| 9 | Med | `autocrlf` rewrites the hash inputs on Windows, so the freshness check fails there | **Confirmed (my regression).** `.gitattributes`: `firmware/**` and `scripts/fw.sh` are `-text` |
+| 10 | Med | Inner `SHA256SUMS` coverage not required complete or unique | **Confirmed.** Must cover exactly the bundled files (except itself and FIRMWARE.txt); duplicates refused |
+| 11 | High | Native USB of an S3 already running other firmware under another VID is not detected | **Accepted, documented.** Nothing in the descriptors says that device is an adapter; the rule stays "any Espressif device blocks". A stated detection limit alongside the OS-hidden-device and late-cable ones |
+
+- Tests after the fixes: 28 flash-crate tests (new: hash flag, odd and overflowing segments, full table, OTA geometry, 64 KiB alignment,
+  flash-size bounds, MD5-less installed table, FIFO, oversize); clippy clean. The BLE publish race has no automated test (the
+  window is a few microseconds); it is covered by construction (one lock) and by the hardware run below.
+- Hardware after the fixes (Windows 11 VM, COM bridge, the board): CLI flash; GUI Scan > Connect > wizard blocks while connected >
+  Disconnect > flash verified.

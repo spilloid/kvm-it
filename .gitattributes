@@ -1,2 +1,4 @@
-# The bundled adapter firmware is hashed (SHA256SUMS) and shipped byte for byte: no line-ending conversion on any platform.
-firmware/release/** -text
+# The adapter firmware (the bundled images AND the sources and build script they are hashed from, see scripts/fw-source-hash.py)
+# is checked out byte for byte: no line-ending conversion on any platform, so the hashes agree everywhere.
+firmware/** -text
+scripts/fw.sh -text

@@ -81,9 +81,13 @@ def main():
         for line in z.read("kvmit/firmware/SHA256SUMS").decode().splitlines():
             if line.strip():
                 digest, name = line.split(None, 1)
-                inner[name.strip().lstrip("*")] = digest
-        if not inner:
-            die("firmware/SHA256SUMS in the zip is empty")
+                name = name.strip().lstrip("*")
+                if name in inner:
+                    die(f"firmware/SHA256SUMS lists {name} twice")
+                inner[name] = digest
+        covered = {n for n in fw_files if n not in ("SHA256SUMS", "FIRMWARE.txt")}  # the sums cannot list themselves
+        if set(inner) != covered:
+            die(f"firmware/SHA256SUMS covers {sorted(inner)} but must cover exactly {sorted(covered)}")
         for name, digest in inner.items():
             if hashlib.sha256(z.read(f"kvmit/firmware/{name}")).hexdigest() != digest:
                 die(f"firmware/SHA256SUMS in the zip does not match {name} (line endings changed by a checkout?)")

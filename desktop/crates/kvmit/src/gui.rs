@@ -168,36 +168,57 @@ impl App {
         self.cfg.last_device = Some(id.clone());
         self.cfg.save();
         let (link, gen_ref, status, notice) = (self.link.clone(), self.link_gen.clone(), self.status.clone(), self.notice.clone());
+        // Every write of link state goes through `publish`, which checks the generation while holding the link lock; the
+        // cancel (`cancel_pending_link`, `stop_link`) bumps the generation while holding the same lock, so a cancelled attempt
+        // can never write after the cancel.
+        let publish = {
+            let (link, gen_ref) = (link.clone(), gen_ref.clone());
+            move |state: Link| -> bool {
+                let mut l = link.lock().unwrap();
+                if gen_ref.load(Ordering::SeqCst) != generation {
+                    return false;
+                }
+                *l = state;
+                true
+            }
+        };
         self.rt.spawn(async move {
             if pair_first {
-                *link.lock().unwrap() = Link::Connecting(id.clone());
+                if !publish(Link::Connecting(id.clone())) {
+                    return;
+                }
                 ctx.request_repaint();
                 if let Err(e) = backend::pair(&id).await {
-                    *notice.lock().unwrap() = format!("Pairing failed: {e}. Re-plug the adapter (15 s pairing window) or press BOOT briefly on it, then try again.");
-                    *link.lock().unwrap() = Link::Disconnected;
+                    if publish(Link::Disconnected) {
+                        *notice.lock().unwrap() = format!("Pairing failed: {e}. Re-plug the adapter (15 s pairing window) or press BOOT briefly on it, then try again.");
+                    }
                     ctx.request_repaint();
                     return;
                 }
             }
             while gen_ref.load(Ordering::SeqCst) == generation {
-                *link.lock().unwrap() = Link::Connecting(id.clone());
+                if !publish(Link::Connecting(id.clone())) {
+                    break;
+                }
                 ctx.request_repaint();
                 match session::connect(&id).await {
                     Ok((dev, conn)) => {
-                        if gen_ref.load(Ordering::SeqCst) != generation {
-                            // cancelled (e.g. the flasher opened) while this attempt was in flight: never publish it
+                        let name = dev.info().name.clone();
+                        if !publish(Link::Connected { dev: dev.clone(), name, id: id.clone() }) {
+                            // cancelled (e.g. the flasher opened) while this attempt was in flight: close it, never publish it
                             conn.disconnect().await;
                             break;
                         }
-                        let name = dev.info().name.clone();
-                        *link.lock().unwrap() = Link::Connected { dev: dev.clone(), name, id: id.clone() };
                         notice.lock().unwrap().clear();
                         ctx.request_repaint();
-                        // poll target-USB state while connected
+                        // poll target-USB state while connected, and give up the link if this attempt is cancelled
                         let poll = async {
                             let mut last_held = 0u8;
                             loop {
                                 tokio::time::sleep(Duration::from_secs(2)).await;
+                                if gen_ref.load(Ordering::SeqCst) != generation {
+                                    break;
+                                }
                                 if let Ok(s) = dev.status().await {
                                     if s.keys != last_held {
                                         debug_log(&format!("adapter reports {} key(s) held on the target", s.keys));
@@ -211,14 +232,12 @@ impl App {
                         tokio::select! { _ = dev.closed() => {}, _ = poll => {} }
                         *status.lock().unwrap() = None;
                         conn.disconnect().await;
-                        if gen_ref.load(Ordering::SeqCst) == generation {
-                            *link.lock().unwrap() = Link::Failed("link lost, reconnecting…".into());
+                        if publish(Link::Failed("link lost, reconnecting…".into())) {
                             ctx.request_repaint();
                         }
                     }
                     Err(e) => {
-                        if gen_ref.load(Ordering::SeqCst) == generation {
-                            *link.lock().unwrap() = Link::Failed(e.to_string());
+                        if publish(Link::Failed(e.to_string())) {
                             ctx.request_repaint();
                         }
                     }
@@ -239,12 +258,15 @@ impl App {
     }
 
     fn stop_link(&mut self) {
-        self.link_gen.fetch_add(1, Ordering::SeqCst);
-        if let Link::Connected { dev, .. } = self.link.lock().unwrap().clone() {
-            let d = dev.clone();
-            self.rt.spawn(async move { d.shutdown().await });
+        // bump the generation and replace the state under one lock, so an in-flight attempt cannot publish in between
+        let previous = {
+            let mut l = self.link.lock().unwrap();
+            self.link_gen.fetch_add(1, Ordering::SeqCst);
+            std::mem::replace(&mut *l, Link::Disconnected)
+        };
+        if let Link::Connected { dev, .. } = previous {
+            self.rt.spawn(async move { dev.shutdown().await });
         }
-        *self.link.lock().unwrap() = Link::Disconnected;
         self.cfg.last_device = None;
         self.cfg.save();
     }
