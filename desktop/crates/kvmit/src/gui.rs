@@ -1042,9 +1042,22 @@ fn debug_log(msg: &str) {
     }
 }
 
+/// The window/taskbar icon (the logo on a light tile so it reads on dark taskbars too).
+fn app_icon() -> Option<egui::IconData> {
+    let img = image::load_from_memory_with_format(include_bytes!("../assets/icon-256.png"), image::ImageFormat::Png).ok()?.into_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData { rgba: img.into_raw(), width, height })
+}
+
 pub fn run_gui() -> eframe::Result<()> {
     let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_title("kvm-it"),
+        viewport: {
+            let v = egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_title("kvm-it");
+            match app_icon() {
+                Some(icon) => v.with_icon(icon),
+                None => v,
+            }
+        },
         ..Default::default()
     };
     eframe::run_native("kvm-it", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))

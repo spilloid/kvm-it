@@ -13,6 +13,8 @@
 - A synthetic demo video source for documentation screenshots and tests: with `KVMIT_DEMO_VIDEO=<picture.png>` the GUI lists a
   "Demo target (synthetic picture)" device that shows that picture, so screenshots never need a real machine's screen. It is opt-in at open time too (a remembered `demo:` path does nothing
   without the variable, and is never saved as the preferred card), and refuses non-regular files and pictures over 8192 px a side.
+- The kvm-it logo: the GUI's window and taskbar icon, the site's favicon and Apple touch icon, and the README and site headers. The
+  small icons put the mark on a light tile so the navy monitor does not vanish on dark taskbars and browser tabs.
 
 ## [0.2.0] - 2026-10-04 (Windows controller)
 

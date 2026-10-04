@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/logo.png" alt="kvm-it logo" width="120"></p>
+
 # kvm-it
 
 **A KVM for the machine that has nothing on it yet.**
