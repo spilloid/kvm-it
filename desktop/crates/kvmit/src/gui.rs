@@ -88,6 +88,9 @@ pub struct App {
     prev_mods: Vec<Key>,
     /// OS-level keyboard capture while input is captured (Windows); `None` elsewhere, where egui's key events are used.
     grab: Option<crate::syskeys::Grab>,
+    /// Capture was released earlier in this frame: nothing in the same frame may start it again (a click on the
+    /// picture that arrived with the release chord would otherwise re-capture immediately).
+    released_this_frame: bool,
     video_devices: Vec<DeviceInfo>,
     video_sel: usize,
     capture: Arc<Mutex<Option<Capture>>>,
@@ -124,6 +127,7 @@ impl App {
             capturing: false,
             prev_mods: Vec::new(),
             grab: None,
+            released_this_frame: false,
             video_sel: cfg.last_video.as_ref().and_then(|p| video_devices.iter().position(|d| &d.path == p)).unwrap_or(0),
             video_devices,
             capture: Arc::default(),
@@ -336,6 +340,9 @@ impl App {
     }
 
     fn begin_capture(&mut self, ctx: &egui::Context) {
+        if self.released_this_frame {
+            return;
+        }
         if self.run_handle.as_ref().is_some_and(|r| !r.done.load(Ordering::SeqCst)) || self.pump().is_none() {
             return;
         }
@@ -373,7 +380,7 @@ impl App {
         let mut release = false;
         // With an OS-level grab the keyboard comes from it alone (it also sees the keys the OS would otherwise
         // keep for itself: Win, Alt+Tab, ...); egui's key events are then ignored so nothing is sent twice.
-        let mut hooked = self.grab.is_some();
+        let hooked = self.grab.is_some();
         if let Some(g) = &mut self.grab {
             // The release chord is a terminal boundary: nothing queued after it is forwarded, keys or clicks.
             let (forward, released) = crate::syskeys::until_release(g.drain());
@@ -390,18 +397,22 @@ impl App {
             }
             if released {
                 debug_log("capture ends: release chord");
+                self.released_this_frame = true;
                 self.end_capture(ctx);
                 return;
             }
         }
         for ev in &events {
-            // A key press that reaches egui while the grab is on was not swallowed: Windows removed the hook (it
-            // does that silently if a callback is ever too slow). Fall back to egui's keys rather than leave the
-            // user capturing without a keyboard.
-            if hooked && matches!(ev, egui::Event::Key { pressed: true, .. }) {
-                debug_log("keyboard grab is not swallowing keys; falling back to egui key events");
-                self.grab = None;
-                hooked = false;
+            // A fresh press of a key the grab would swallow reached egui: the grab is no longer in control (Windows
+            // removed the hook, or it stopped swallowing for the chord or a missed heartbeat and the release
+            // notice is still on its way). End capture, which releases everything held on the target, instead of
+            // guessing which keys are down: continuing on egui's keys could leave a forwarded modifier stuck.
+            if hooked && grab_should_have_swallowed(ev) {
+                debug_log("capture ends: the keyboard grab is no longer swallowing keys");
+                self.set_notice("Keyboard capture ended: Windows stopped routing keys through kvm-it's keyboard grab. Click the picture to capture again.");
+                self.released_this_frame = true;
+                self.end_capture(ctx);
+                return;
             }
             match ev {
                 egui::Event::Key { .. } if hooked => {}
@@ -444,6 +455,7 @@ impl App {
         }
         if release {
             debug_log("capture ends: release chord");
+            self.released_this_frame = true;
             self.end_capture(ctx);
         } else if !hooked {
             self.sync_mods(&tx, &mods);
@@ -559,6 +571,7 @@ impl eframe::App for App {
         if let Some(h) = &self.run_handle {
             self.run_log = h.log.lock().unwrap().clone();
         }
+        self.released_this_frame = false;
         if self.capturing {
             self.forward_input(ctx);
         }
@@ -975,6 +988,13 @@ fn popup(anchor: &egui::Response, width: f32, add_contents: impl FnOnce(&mut egu
     egui::Popup::menu(anchor).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(width).show(add_contents);
 }
 
+/// A fresh press of a key the OS-level grab forwards (one that maps to a HID usage), as egui sees it. With the grab in
+/// control such a press is swallowed before egui can see it, so seeing one means the grab is not in control.
+/// Auto-repeats (a key held before capture began) and keys the grab cannot map legitimately reach egui and do not count.
+fn grab_should_have_swallowed(ev: &egui::Event) -> bool {
+    matches!(ev, egui::Event::Key { key, physical_key, pressed: true, repeat: false, .. } if keymap::to_hid(physical_key.unwrap_or(*key)).is_some())
+}
+
 /// Diagnostics for support (`KVMIT_DEBUG=1`): why capture started or ended. Never anything about which keys were pressed.
 fn debug_log(msg: &str) {
     if std::env::var_os("KVMIT_DEBUG").is_some() {
@@ -988,4 +1008,21 @@ pub fn run_gui() -> eframe::Result<()> {
         ..Default::default()
     };
     eframe::run_native("kvm-it", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(k: egui::Key, pressed: bool, repeat: bool) -> egui::Event {
+        egui::Event::Key { key: k, physical_key: Some(k), pressed, repeat, modifiers: egui::Modifiers::NONE }
+    }
+
+    #[test]
+    fn only_a_fresh_press_of_a_mappable_key_proves_the_grab_is_not_in_control() {
+        assert!(grab_should_have_swallowed(&key(egui::Key::A, true, false)));
+        assert!(!grab_should_have_swallowed(&key(egui::Key::A, true, true)), "auto-repeat of a key held before capture");
+        assert!(!grab_should_have_swallowed(&key(egui::Key::A, false, false)), "a release passes through legitimately");
+        assert!(!grab_should_have_swallowed(&egui::Event::PointerGone), "not a key at all");
+    }
 }

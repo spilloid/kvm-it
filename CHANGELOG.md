@@ -52,6 +52,8 @@ The code was adversarially reviewed in two rounds (docs/dev-process.md, round 4:
 - Modifier+click ordering can break while capturing on Windows if a GUI frame takes longer than the click: keyboard
   and mouse buttons reach the app through two paths (planned fix: one ordered stream, review round 4 finding 6).
 - The end-to-end transport queue for mouse motion is not bounded; only the work per frame is (finding 8).
+- Keys held across the instant capture begins are handled by virtual key, so an alias pair that shares one (Enter and
+  keypad Enter) can be misattributed once (review round 5, finding 4).
 - Windows 10, non-US keyboard layouts and IMEs, and bare-metal Windows are untested. The Linux GUI has not been
   re-checked since the redesign. The V4L2 (Linux) backend still shows its last frame if the card vanishes.
 - Releases may be unsigned; the release notes say so. An unsigned build makes Windows SmartScreen warn.

@@ -286,3 +286,24 @@ Hardware-verified after 3f (release build): reset, wait past 15 s, `kvmit pair` 
   tracker calls; the helper, heartbeat and process teardown are covered only by the hardware checks above. New unit
   tests cover pre-held keys, the full chord, the release boundary, the added scan codes and motion/click ordering.
 - Not verified: bare-metal Windows; non-US keyboards/IME; the hook-removal fallback; capture-stall shutdown.
+
+### Review round 5 (re-review of the round-4 fix commit `d73c0b5`)
+
+astra (`gpt-6-astra`, high effort, read-only, static; `git diff d19559d d73c0b5`): 6 findings, 3 High, all in the fixes
+themselves (the reason STD-001 re-reviews after a fix round). Verdict "do not merge yet". Adjudicated by the orchestrator:
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | High | The egui fallback after a failed grab can leave a forwarded right-hand modifier held on the target | **Confirmed.** Fixed differently from the suggestion: no fallback at all; the GUI ends capture (which sends release-all and drops the grab) |
+| 2 | High | A pre-held key's repeat counted as "hook failed"; a late release notice could be lost in the same fallback | **Confirmed.** Fixed: the evidence is now only a fresh (non-repeat) press of a key the grab maps, and the response is the same safe end-capture; unit-tested predicate |
+| 3 | High | The release chord and a click in the same frame re-capture at once | **Confirmed.** Fixed: `released_this_frame` blocks `begin_capture` for that frame |
+| 4 | Med | Seeding held keys from virtual keys cannot tell Enter from keypad Enter (shared VK) | **Confirmed, inherent; accepted and documented** (CHANGELOG known limitations): a key of such an alias held across the instant capture begins can misbehave once |
+| 5 | Med | The held-keys snapshot is taken before the hook is installed | **Confirmed (small).** Fixed: sampled and installed under the state lock inside the hook thread |
+| 6 | Med | A blocked stdout write stops the heartbeat watchdog | **Confirmed.** Fixed: the watchdog is its own thread and turns swallowing off itself |
+
+- Test grading from the review: the motion-order tests were "D for race coverage, B for serial ordering". Added a
+  multi-thread, real-time stress test (clicks vs the concurrent motion timer; a race, so a stress test, not a proof).
+- Hardware (Windows 11 VM) after the fixes: normal capture (Win x2 and Alt+Tab swallowed, chord releases, Win reaches the
+  controller afterwards); helper process killed mid-capture (capture ends, keyboard returns); GUI process frozen
+  (keyboard returns after the helper's timeout). Not hardware-tested: the same-frame release+click case, the new
+  end-capture-on-unswallowed-key path, the held-key snapshot reordering.

@@ -238,6 +238,8 @@ mod imp {
     static SWALLOW: AtomicBool = AtomicBool::new(true);
     /// Milliseconds (since `epoch()`) of the last heartbeat from the parent.
     static LAST_BEAT: AtomicU64 = AtomicU64::new(0);
+    /// Set by the watchdog thread when the heartbeat stopped; the writer loop then reports it to the parent.
+    static STALE: AtomicBool = AtomicBool::new(false);
 
     fn epoch() -> Instant {
         static T: OnceLock<Instant> = OnceLock::new();
@@ -308,18 +310,28 @@ mod imp {
             let (tx, rx) = channel();
             let (ready_tx, ready_rx) = channel::<Option<u32>>();
             SWALLOW.store(true, Ordering::Relaxed);
-            *STATE.lock().unwrap() = Some(State { tx, tracker: Tracker::with_pre_held(keys_down_now()) });
+            *STATE.lock().unwrap() = Some(State { tx, tracker: Tracker::default() });
             let join = std::thread::Builder::new()
                 .name("kvmit-keyboard-hook".into())
                 .spawn(move || unsafe {
                     let module = GetModuleHandleW(None).ok().map(|m| HINSTANCE(m.0));
+                    // Sample the keys held right now and install the hook while holding the state lock: callbacks
+                    // that arrive meanwhile find it locked and pass their key through (the OS keeps it, consistent
+                    // with the sample), and the gap between the sample and the hook going live is as small as it can be.
+                    let mut state = STATE.lock().unwrap();
+                    let held = keys_down_now();
                     let hook = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), module, 0) {
                         Ok(h) => h,
                         Err(_) => {
+                            drop(state);
                             let _ = ready_tx.send(None);
                             return;
                         }
                     };
+                    if let Some(s) = state.as_mut() {
+                        s.tracker = Tracker::with_pre_held(held);
+                    }
+                    drop(state);
                     let _ = ready_tx.send(Some(GetCurrentThreadId()));
                     // A low-level hook is only called while its thread pumps messages; WM_QUIT ends the loop.
                     let mut msg = MSG::default();
@@ -376,12 +388,22 @@ mod imp {
             }
             a2.store(false, Ordering::SeqCst);
         });
+        // The watchdog is its own thread so that nothing the writer loop below can block on (a full pipe to a
+        // suspended parent, say) can stop it from giving the keyboard back.
+        STALE.store(false, Ordering::Relaxed);
+        std::thread::spawn(|| loop {
+            std::thread::sleep(Duration::from_millis(200));
+            if now_ms().saturating_sub(LAST_BEAT.load(Ordering::Relaxed)) > HEARTBEAT_TIMEOUT.as_millis() as u64 {
+                // The GUI has stopped answering (hung?): give the keyboard back now.
+                SWALLOW.store(false, Ordering::Relaxed);
+                STALE.store(true, Ordering::Relaxed);
+                return;
+            }
+        });
         let mut timed_out_reported = false;
         while alive.load(Ordering::SeqCst) {
-            if !timed_out_reported && now_ms().saturating_sub(LAST_BEAT.load(Ordering::Relaxed)) > HEARTBEAT_TIMEOUT.as_millis() as u64 {
-                // The GUI has stopped answering (hung?): give the keyboard back and say so, so a recovering GUI
-                // ends capture instead of believing it still has the keyboard.
-                SWALLOW.store(false, Ordering::Relaxed);
+            if !timed_out_reported && STALE.load(Ordering::Relaxed) {
+                // Say so, so a recovering GUI ends capture instead of believing it still has the keyboard.
                 let _ = writeln!(out, "R");
                 let _ = out.flush();
                 timed_out_reported = true;

@@ -341,6 +341,8 @@ mod tests {
         seen_frames: usize,
         /// Message types in the order the device saw them.
         order: Vec<u8>,
+        /// Total x motion the device had seen when each button-down arrived.
+        motion_at_button: Vec<i32>,
         silent: bool,
         released: usize,
     }
@@ -358,6 +360,10 @@ mod tests {
                 let mut st = state.lock().unwrap();
                 st.seen_frames += 1;
                 st.order.push(f.msg_type);
+                if f.msg_type == msg::MOUSE_BUTTON_DOWN {
+                    let seen = st.motion.0;
+                    st.motion_at_button.push(seen);
+                }
                 if st.silent {
                     continue;
                 }
@@ -518,6 +524,32 @@ mod tests {
         let mv = order.iter().position(|t| *t == msg::MOUSE_MOVE).expect("a move frame");
         let btn = order.iter().position(|t| *t == msg::MOUSE_BUTTON_DOWN).expect("a button frame");
         assert!(mv < btn, "the click overtook the movement: {order:?}");
+    }
+
+    /// Real threads and real time: the motion timer runs concurrently with the producer and its clicks. By the time
+    /// the device sees the k-th click it must already have seen all the motion submitted before that click (each
+    /// step is 1 unit, so nothing is dropped by the backlog cap). The timer-takes-then-sends bug this guards against
+    /// lets a click slip in between; it is a race, so this is a stress test, not a proof.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn clicks_never_overtake_motion_while_the_timer_flushes_concurrently() {
+        let st = Arc::new(Mutex::new(MockState::default()));
+        let dev = Device::connect(spawn_mock(st.clone())).await.unwrap();
+        let (mut submitted, mut at_click) = (0i32, Vec::new());
+        for i in 0..1500u32 {
+            dev.mouse_move(1, 0);
+            submitted += 1;
+            if i % 5 == 0 {
+                at_click.push(submitted);
+                let _ = dev.button(1, true).await;
+            }
+            tokio::time::sleep(Duration::from_micros(300)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let seen = st.lock().unwrap().motion_at_button.clone();
+        assert_eq!(seen.len(), at_click.len());
+        for (k, (moved, need)) in seen.iter().zip(&at_click).enumerate() {
+            assert!(moved >= need, "click {k} reached the device after only {moved} of the {need} units submitted before it");
+        }
     }
 
     #[tokio::test(start_paused = true)]
