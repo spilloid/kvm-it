@@ -2,7 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+- Switching video devices in the GUI did nothing: the device dropdown was a second popup inside the Video popup, so opening it
+  counted as a click outside and closed the Video popup before anything was chosen. Devices are now rows in the popup (one click
+  switches), and a **Rescan** button re-reads the device list (it was only read at startup, so a card plugged in later never appeared).
+  Clicking the open device reopens it (a stalled card no longer needs an app restart), and the old capture is closed outside the
+  shared video lock so a card that will not stop cannot freeze scripts' `screen()`.
+
 ### Added
+- A synthetic demo video source for documentation screenshots and tests: with `KVMIT_DEMO_VIDEO=<picture.png>` the GUI lists a
+  "Demo target (synthetic picture)" device that shows that picture, so screenshots never need a real machine's screen. It is opt-in at open time too (a remembered `demo:` path does nothing
+  without the variable, and is never saved as the preferred card), and refuses non-regular files and pictures over 8192 px a side.
+- The kvm-it logo: the GUI's window and taskbar icon, the site's favicon and Apple touch icon, and the README and site headers. The
+  small icons put the mark on a light tile so the navy monitor does not vanish on dark taskbars and browser tabs.
 - Linux AppImage packaging (`scripts/build-appimage.sh`, `installer/linux/`): built in an Ubuntu 22.04 container so it runs on
   glibc 2.35 and newer, with the AppImage tool and its embedded runtime pinned by checksum, the glibc floor enforced (and a failed inspection is an error), and
   the host libraries it relies on named in the README. Not bit-for-bit reproducible (builder apt packages float). Published with 0.2.0 after the tag (asset `kvm-it-0.2.0-x86_64.AppImage`).

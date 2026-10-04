@@ -4,6 +4,8 @@ title: kvm-it
 
 # kvm-it
 
+<img src="assets/logo.png" alt="kvm-it logo" width="110" style="float:right; margin:0 0 12px 24px">
+
 **A KVM for the machine that has nothing on it yet.** A cheap USB HDMI capture card shows you the target's
 screen. A $10 ESP32-S3 board types and clicks for it over plain USB. Nothing is installed on the target: it
 works in BIOS/UEFI, OS installers, login screens and recovery shells.

@@ -47,13 +47,14 @@ done
 # 3. AppDir
 APPDIR="$OUT/AppDir"
 rm -rf "$APPDIR"
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/scalable/apps"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 install -m 755 "$BIN/kvmit" "$BIN/kvmit-gui" "$APPDIR/usr/bin/"
 install -m 755 "$ROOT/installer/linux/AppRun" "$APPDIR/AppRun"
 install -m 644 "$ROOT/installer/linux/kvm-it.desktop" "$APPDIR/kvm-it.desktop"
 install -m 644 "$ROOT/installer/linux/kvm-it.desktop" "$APPDIR/usr/share/applications/kvm-it.desktop"
-install -m 644 "$ROOT/installer/linux/kvm-it.svg" "$APPDIR/kvm-it.svg"
-install -m 644 "$ROOT/installer/linux/kvm-it.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/kvm-it.svg"
+ICON="$ROOT/desktop/crates/kvmit/assets/icon-256.png"   # the project logo, same file the GUI embeds
+install -m 644 "$ICON" "$APPDIR/kvm-it.png"
+install -m 644 "$ICON" "$APPDIR/usr/share/icons/hicolor/256x256/apps/kvm-it.png"
 install -m 644 "$ROOT/LICENSE" "$APPDIR/usr/share/LICENSE"
 
 # 4. appimagetool (pinned)
