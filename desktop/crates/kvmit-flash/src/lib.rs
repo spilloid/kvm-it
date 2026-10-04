@@ -218,6 +218,7 @@ pub struct Options {
 pub fn flash(port: &str, image: &Image, opts: Options, progress: &mut dyn ProgressCallbacks) -> Result<(), FlashError> {
     use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
     use espflash::flasher::Flasher;
+    use espflash::image_format::Segment;
     image.validate()?;
     let fail = |what: &str, e: &dyn std::fmt::Display| FlashError(format!("{what}: {e}"));
     let serial = serialport::new(port, 115_200)
@@ -238,9 +239,18 @@ pub fn flash(port: &str, image: &Image, opts: Options, progress: &mut dyn Progre
     if opts.erase_all {
         flasher.erase_flash().map_err(|e| fail("erase failed", &e))?;
     }
-    for p in &image.parts {
-        flasher.write_bin_to_flash(p.offset, &p.data, progress).map_err(|e| fail(&format!("writing {} failed", p.name), &e))?;
-    }
+    // One session for all parts: `write_bin_to_flash` resets the chip after every call, so a second part would go to a
+    // restarting chip. Data is padded to a multiple of 4 with 0xFF (erased flash) as the library requires.
+    let segments: Vec<Segment<'_>> = image
+        .parts
+        .iter()
+        .map(|p| {
+            let mut data = p.data.clone();
+            data.resize(data.len().next_multiple_of(4), 0xFF);
+            Segment { addr: p.offset, data: std::borrow::Cow::Owned(data) }
+        })
+        .collect();
+    flasher.write_bins_to_flash(&segments, progress).map_err(|e| fail("writing the firmware failed", &e))?;
     Ok(())
 }
 

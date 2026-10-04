@@ -26,7 +26,7 @@ impl ProgressCallbacks for Bar {
         self.total = total;
         self.done = 0;
         self.name = "";
-        eprint!("  0x{addr:06x}  {total} bytes ");
+        eprint!("  0x{addr:06x}  {total} blocks ");
     }
     fn update(&mut self, current: usize) {
         let before = self.done * 20 / self.total.max(1);
