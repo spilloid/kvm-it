@@ -46,8 +46,9 @@ Run `kvmit` to open the app.
 
 The top bar is a row of status chips and buttons; the picture fills the rest of the window.
 
-- **See**: click the **Video** chip and open your capture card. The target's screen appears and the chip turns
-  green with the resolution and frame rate.
+- **See**: click the **Video** chip and pick your capture card from the list (one click switches devices; **Rescan**
+  finds a card you plugged in after the app started). The target's screen appears and the chip turns green with the
+  resolution and frame rate.
 - **Drive**: click the picture (or the **Input** chip). Your keyboard and mouse now go to the target. The frame
   turns red and the Input chip reads *INPUT CAPTURED*. **Ctrl+Alt+Esc** releases; that chord is never sent. On
   Windows, keys such as Win and Alt+Tab go to the target too while you are captured.
