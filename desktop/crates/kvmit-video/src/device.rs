@@ -12,6 +12,13 @@ pub struct Mode {
     pub mjpeg: bool,
 }
 
+/// Mode preference shared by every backend (lower is better): closest to 1080p, heavily penalise < 25 fps (cards
+/// only deliver high resolutions at high fps compressed), and prefer MJPEG on ties.
+pub(crate) fn mode_score(width: u32, height: u32, fps: u32, mjpeg: bool) -> i64 {
+    let area = i64::from(width) * i64::from(height);
+    (area - 1920 * 1080).abs() + if fps < 25 { 50_000_000 } else { 0 } + if mjpeg { 0 } else { 1_000 }
+}
+
 #[derive(Debug)]
 pub struct CaptureError(pub String);
 impl std::fmt::Display for CaptureError {
@@ -69,10 +76,7 @@ mod imp {
                                 .max()
                         })
                         .unwrap_or(30);
-                    let area = (s.width * s.height) as i64;
-                    let target = 1920 * 1080;
-                    // lower is better: distance from 1080p, penalise <30 fps heavily, prefer MJPEG on ties
-                    let score = (area - target).abs() + if fps < 25 { 50_000_000 } else { 0 } + if f.fourcc == mjpg { 0 } else { 1_000 };
+                    let score = mode_score(s.width, s.height, fps, f.fourcc == mjpg);
                     let mode = Mode { width: s.width, height: s.height, fps, mjpeg: f.fourcc == mjpg };
                     if best.as_ref().is_none_or(|(b, _, _)| score < *b) {
                         best = Some((score, mode, f.fourcc));
@@ -144,7 +148,11 @@ mod imp {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+#[path = "mf.rs"]
+mod imp;
+
+#[cfg(not(any(target_os = "linux", windows)))]
 mod imp {
     use super::*;
     use crate::SharedFrame;
@@ -166,3 +174,17 @@ mod imp {
 }
 
 pub use imp::{list_devices, Capture};
+
+#[cfg(test)]
+mod tests {
+    use super::mode_score;
+
+    #[test]
+    fn prefers_1080p_mjpeg_at_high_fps() {
+        let best = mode_score(1920, 1080, 60, true);
+        assert!(best < mode_score(1280, 720, 60, true), "1080p beats 720p");
+        assert!(best < mode_score(1920, 1080, 60, false), "MJPEG wins a tie");
+        assert!(best < mode_score(1920, 1080, 10, true), "low fps is penalised heavily");
+        assert!(mode_score(1920, 1080, 30, false) < mode_score(1600, 1200, 30, true), "an exact 1080p YUY2 beats a near miss");
+    }
+}
