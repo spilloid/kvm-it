@@ -182,6 +182,9 @@ pub struct Partition {
 /// rejects such a table and the board would not boot.
 pub fn parse_partition_table(table: &[u8], flash_bytes: u32, require_md5: bool) -> Result<Vec<Partition>, FlashError> {
     use md5::{Digest, Md5};
+    if table.len() > PARTITION_TABLE_BYTES as usize {
+        return err("the partition table is larger than the 0xC00-byte window the bootloader reads");
+    }
     let mut out = Vec::new();
     let mut md5_seen = false;
     let mut terminated = false;

@@ -164,7 +164,15 @@ impl App {
 
     /// Connect and keep reconnecting until superseded (generation counter) or the app exits.
     fn start_link(&mut self, id: String, ctx: egui::Context, pair_first: bool) {
-        let generation = self.link_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        // Register the attempt synchronously, in the same step that supersedes any earlier one: the generation bump and the
+        // `Connecting` state happen under the link lock, so a cancel (the flasher opening) always sees this attempt and a
+        // superseded one can no longer publish.
+        let generation = {
+            let mut l = self.link.lock().unwrap();
+            let g = self.link_gen.fetch_add(1, Ordering::SeqCst) + 1;
+            *l = Link::Connecting(id.clone());
+            g
+        };
         self.cfg.last_device = Some(id.clone());
         self.cfg.save();
         let (link, gen_ref, status, notice) = (self.link.clone(), self.link_gen.clone(), self.status.clone(), self.notice.clone());
@@ -188,12 +196,20 @@ impl App {
                     return;
                 }
                 ctx.request_repaint();
-                if let Err(e) = backend::pair(&id).await {
-                    if publish(Link::Disconnected) {
-                        *notice.lock().unwrap() = format!("Pairing failed: {e}. Re-plug the adapter (15 s pairing window) or press BOOT briefly on it, then try again.");
+                match backend::pair(&id).await {
+                    Err(e) => {
+                        if publish(Link::Disconnected) {
+                            *notice.lock().unwrap() = format!("Pairing failed: {e}. Re-plug the adapter (15 s pairing window) or press BOOT briefly on it, then try again.");
+                        }
+                        ctx.request_repaint();
+                        return;
                     }
-                    ctx.request_repaint();
-                    return;
+                    Ok(()) if gen_ref.load(Ordering::SeqCst) != generation => {
+                        // cancelled while pairing: the pairing is done, but the link it left open must not be kept
+                        let _ = backend::release(&id).await;
+                        return;
+                    }
+                    Ok(()) => {}
                 }
             }
             while gen_ref.load(Ordering::SeqCst) == generation {
@@ -209,7 +225,9 @@ impl App {
                             conn.disconnect().await;
                             break;
                         }
-                        notice.lock().unwrap().clear();
+                        if gen_ref.load(Ordering::SeqCst) == generation {
+                            notice.lock().unwrap().clear();
+                        }
                         ctx.request_repaint();
                         // poll target-USB state while connected, and give up the link if this attempt is cancelled
                         let poll = async {
@@ -224,13 +242,17 @@ impl App {
                                         debug_log(&format!("adapter reports {} key(s) held on the target", s.keys));
                                         last_held = s.keys;
                                     }
-                                    *status.lock().unwrap() = Some(s);
+                                    if gen_ref.load(Ordering::SeqCst) == generation {
+                                        *status.lock().unwrap() = Some(s);
+                                    }
                                     ctx.request_repaint();
                                 }
                             }
                         };
                         tokio::select! { _ = dev.closed() => {}, _ = poll => {} }
-                        *status.lock().unwrap() = None;
+                        if gen_ref.load(Ordering::SeqCst) == generation {
+                            *status.lock().unwrap() = None;
+                        }
                         conn.disconnect().await;
                         if publish(Link::Failed("link lost, reconnecting…".into())) {
                             ctx.request_repaint();
@@ -254,6 +276,7 @@ impl App {
         if matches!(&*link, Link::Connecting(_) | Link::Failed(_)) {
             self.link_gen.fetch_add(1, Ordering::SeqCst);
             *link = Link::Disconnected;
+            *self.status.lock().unwrap() = None;
         }
     }
 
@@ -262,6 +285,7 @@ impl App {
         let previous = {
             let mut l = self.link.lock().unwrap();
             self.link_gen.fetch_add(1, Ordering::SeqCst);
+            *self.status.lock().unwrap() = None;
             std::mem::replace(&mut *l, Link::Disconnected)
         };
         if let Link::Connected { dev, .. } = previous {

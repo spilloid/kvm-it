@@ -419,3 +419,21 @@ Verdict "do not ship yet": F5, F9, F10, F12, F13 incomplete, two regressions of 
   window is a few microseconds); it is covered by construction (one lock) and by the hardware run below.
 - Hardware after the fixes (Windows 11 VM, COM bridge, the board): CLI flash; GUI Scan > Connect > wizard blocks while connected >
   Disconnect > flash verified.
+
+### Round 10 (re-review of the round-9 fixes, `7b8eafa..18f2916`)
+
+Verdict: "Medium BLE lifecycle defects remain; no High defect remains within the reviewed scope and stated accepted residuals". The reviewer
+re-derived that the shipped firmware passes every check and found no path to the wrong port, a default erase of the pairing, or typing into the
+flashing machine. 3 Medium, 2 Low, all confirmed, all in `gui.rs` start/cancel and the parser boundary:
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | Med | A superseded attempt (`start_link(B)` while A is mid-publish) can still publish: the bump did not take the link lock | **Confirmed.** `start_link` bumps the generation and sets `Connecting` under the link lock, in the same step |
+| 2 | Med | An attempt queued but not yet running (state still `Disconnected`) escapes the wizard's cancel | **Confirmed.** Same change: the attempt is registered as `Connecting` synchronously, so `cancel_pending_link` always sees it |
+| 3 | Med | A pairing that succeeds after cancellation leaves BlueZ's link open with no owner | **Confirmed (Linux).** After a cancelled pairing succeeds the controller calls the new `backend::release(id)` (BlueZ `Disconnect`; no-op elsewhere). **Compiled, not exercised**: the Bluetooth adapter belongs to the VM |
+| 4 | Low | Cancelled attempts can still write status and notices | **Confirmed.** Writes check the generation; `stop_link` and `cancel_pending_link` clear the status |
+| 5 | Low | The public parser accepts a slice longer than the 0xC00 window | **Confirmed**, not exploitable (callers cap at 0xC00). The parser now refuses it |
+
+- Tests: 29 flash-crate tests (new: the 0xC00 window); clippy clean. The cancellation interleavings still have no automated test (they are
+  covered by construction: one lock, one registration step) and the hardware GUI flow (Scan > Connect > wizard blocks > Disconnect > flash)
+  passes on the real board. **Not exercised:** the wizard opening while an attempt is mid-flight, and `backend::release`.

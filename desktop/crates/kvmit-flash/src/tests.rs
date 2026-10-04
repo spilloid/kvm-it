@@ -449,3 +449,12 @@ fn a_fifo_is_refused_without_hanging_and_oversize_files_are_errors_not_truncatio
     assert_eq!(read_limited(&big, 2000, "big").unwrap().len(), 2000);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+#[test]
+fn the_parser_enforces_the_bootloaders_0xc00_window() {
+    // round 10: an erased terminator entry *outside* the window does not count; the table itself may not be longer than the window
+    let mut t = project_table();
+    t.extend([0xFF; 32]);
+    assert!(parse(&t).unwrap_err().0.contains("0xC00"));
+    assert!(parse(&project_table()).is_ok());
+}
