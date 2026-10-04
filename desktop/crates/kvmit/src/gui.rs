@@ -290,6 +290,7 @@ impl App {
                         }
                     };
                     if let Err(e) = r {
+                        debug_log(&format!("input not delivered: {e}"));
                         *notice.lock().unwrap() = format!("input not delivered: {e}");
                     }
                     done.fetch_sub(1, Ordering::SeqCst);
