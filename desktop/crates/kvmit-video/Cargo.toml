@@ -11,3 +11,6 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 v4l = "0.14"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com"] }

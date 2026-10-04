@@ -12,6 +12,13 @@ pub const RETRY_AFTER: Duration = Duration::from_millis(350);
 pub const ATTEMPTS: usize = 4;
 pub const KEEPALIVE_EVERY: Duration = Duration::from_secs(1);
 pub const MOTION_FLUSH_EVERY: Duration = Duration::from_millis(8);
+/// The adapter turns each MOUSE_MOVE frame into one USB HID report per 127 units of travel, back to back inside its
+/// BLE handler. One frame never carries more than this per axis, so its work is bounded (a huge frame stalls the
+/// adapter's link: seen with an absolute-position pointer, whose "deltas" are thousands of units per event).
+pub const MOTION_MAX_PER_FRAME: i32 = 127;
+/// Unsent motion beyond this is dropped (about 16 frames, ~130 ms of catch-up): a flood shows as brief pointer lag,
+/// which the video feedback loop corrects, instead of a growing backlog.
+pub const MOTION_MAX_BACKLOG: i32 = MOTION_MAX_PER_FRAME * 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkError {
@@ -72,23 +79,27 @@ impl Drop for Inner {
 }
 
 impl Inner {
-    fn take_motion(&self) -> (i16, i16) {
+    /// Take the next motion frame (at most `MOTION_MAX_PER_FRAME` per axis; the rest stays for the next flush) and
+    /// put it on the wire while still holding the accumulator lock. A click that arrives next therefore either finds
+    /// the motion already queued or waits for it: taking and sending in two steps let a click slip in between and
+    /// overtake the movement that preceded it. Motion needs no reply, so nothing here waits.
+    fn send_motion_frame(&self) -> bool {
         let mut m = self.motion.lock().unwrap();
-        let dx = m.0.clamp(i16::MIN as i32, i16::MAX as i32);
-        let dy = m.1.clamp(i16::MIN as i32, i16::MAX as i32);
+        let dx = m.0.clamp(-MOTION_MAX_PER_FRAME, MOTION_MAX_PER_FRAME);
+        let dy = m.1.clamp(-MOTION_MAX_PER_FRAME, MOTION_MAX_PER_FRAME);
+        if (dx == 0 && dy == 0) || self.closed.load(Ordering::SeqCst) {
+            return false;
+        }
         *m = (m.0 - dx, m.1 - dy);
-        (dx as i16, dy as i16)
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
+        let _ = self.tx.send(Request::MouseMove { dx: dx as i16, dy: dy as i16 }.encode(seq));
+        true
     }
 
-    /// Send all accumulated motion now, in order, before anything that must not overtake it (clicks).
+    /// Send all accumulated motion now, in order, before anything that must not overtake it (clicks). At most
+    /// `MOTION_MAX_BACKLOG / MOTION_MAX_PER_FRAME` frames, since the accumulator is capped.
     async fn flush_motion(&self) {
-        loop {
-            let (dx, dy) = self.take_motion();
-            if dx == 0 && dy == 0 {
-                return;
-            }
-            let _ = self.request(&Request::MouseMove { dx, dy }).await;
-        }
+        while self.send_motion_frame() {}
     }
 
     fn close(&self) {
@@ -211,6 +222,9 @@ impl Device {
                     Ok(_) => misses = 0,
                     Err(_) => {
                         misses += 1;
+                        if std::env::var_os("KVMIT_DEBUG").is_some() {
+                            eprintln!("[debug] keepalive ping got no reply ({misses} in a row)");
+                        }
                         if misses >= 3 {
                             ka.close();
                             return;
@@ -228,10 +242,7 @@ impl Device {
                 if mo.closed.load(Ordering::SeqCst) {
                     return;
                 }
-                let (dx, dy) = mo.take_motion();
-                if dx != 0 || dy != 0 {
-                    let _ = mo.request(&Request::MouseMove { dx, dy }).await;
-                }
+                mo.send_motion_frame();
             }
         });
 
@@ -303,8 +314,8 @@ impl Device {
     /// Relative motion; accumulated and flushed every few ms, never blocks, loss shows as lag not as a missed click.
     pub fn mouse_move(&self, dx: i32, dy: i32) {
         let mut m = self.inner.motion.lock().unwrap();
-        m.0 = m.0.saturating_add(dx);
-        m.1 = m.1.saturating_add(dy);
+        m.0 = m.0.saturating_add(dx).clamp(-MOTION_MAX_BACKLOG, MOTION_MAX_BACKLOG);
+        m.1 = m.1.saturating_add(dy).clamp(-MOTION_MAX_BACKLOG, MOTION_MAX_BACKLOG);
     }
     /// Best-effort release then close; used on capture exit, app close and abort.
     pub async fn shutdown(&self) {
@@ -324,8 +335,14 @@ mod tests {
         keys: Vec<u8>,
         key_downs_applied: usize,
         motion: (i32, i32),
+        /// Largest per-axis size of any single MOUSE_MOVE frame seen.
+        max_frame: i32,
         replies_to_drop: usize,
         seen_frames: usize,
+        /// Message types in the order the device saw them.
+        order: Vec<u8>,
+        /// Total x motion the device had seen when each button-down arrived.
+        motion_at_button: Vec<i32>,
         silent: bool,
         released: usize,
     }
@@ -342,6 +359,11 @@ mod tests {
                 };
                 let mut st = state.lock().unwrap();
                 st.seen_frames += 1;
+                st.order.push(f.msg_type);
+                if f.msg_type == msg::MOUSE_BUTTON_DOWN {
+                    let seen = st.motion.0;
+                    st.motion_at_button.push(seen);
+                }
                 if st.silent {
                     continue;
                 }
@@ -356,8 +378,10 @@ mod tests {
                     msg::PING => Some(encode_vec(msg::PING, FLAG_RESPONSE, f.seq, f.payload).unwrap()),
                     msg::STATUS => Some(encode_vec(msg::STATUS, FLAG_RESPONSE, f.seq, &[1, st.keys.len() as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap()),
                     msg::MOUSE_MOVE => {
-                        st.motion.0 += i16::from_le_bytes([f.payload[0], f.payload[1]]) as i32;
-                        st.motion.1 += i16::from_le_bytes([f.payload[2], f.payload[3]]) as i32;
+                        let (dx, dy) = (i16::from_le_bytes([f.payload[0], f.payload[1]]) as i32, i16::from_le_bytes([f.payload[2], f.payload[3]]) as i32);
+                        st.motion.0 += dx;
+                        st.motion.1 += dy;
+                        st.max_frame = st.max_frame.max(dx.abs()).max(dy.abs());
                         None
                     }
                     t => {
@@ -448,15 +472,26 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn motion_is_accumulated_and_clamped() {
+    async fn motion_is_accumulated_in_bounded_frames() {
         let st = Arc::new(Mutex::new(MockState::default()));
         let dev = Device::connect(spawn_mock(st.clone())).await.unwrap();
         for _ in 0..10 {
             dev.mouse_move(3, -2);
         }
-        dev.mouse_move(40_000, 0);
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(st.lock().unwrap().motion, (40_030, -20));
+        assert_eq!(st.lock().unwrap().motion, (30, -20));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_huge_motion_is_capped_and_sent_in_frames_of_at_most_127() {
+        let st = Arc::new(Mutex::new(MockState::default()));
+        let dev = Device::connect(spawn_mock(st.clone())).await.unwrap();
+        // an absolute-position device reports thousands of units per event; the backlog is capped, never flooded
+        dev.mouse_move(40_000, -40_000);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let m = st.lock().unwrap().motion;
+        assert_eq!(m, (MOTION_MAX_BACKLOG, -MOTION_MAX_BACKLOG));
+        assert!(st.lock().unwrap().max_frame <= MOTION_MAX_PER_FRAME, "no frame may exceed {MOTION_MAX_PER_FRAME}");
     }
 
     #[tokio::test(start_paused = true)]
@@ -484,6 +519,61 @@ mod tests {
         // button(): the mock does not implement buttons (answers UNSUPPORTED) but must have seen the motion first
         let _ = dev.button(1, true).await;
         assert_eq!(st.lock().unwrap().motion, (100, 0));
+        // and in that order on the wire: the move frame arrives before the button frame, never after it
+        let order = st.lock().unwrap().order.clone();
+        let mv = order.iter().position(|t| *t == msg::MOUSE_MOVE).expect("a move frame");
+        let btn = order.iter().position(|t| *t == msg::MOUSE_BUTTON_DOWN).expect("a button frame");
+        assert!(mv < btn, "the click overtook the movement: {order:?}");
+    }
+
+    /// Real threads and real time: the motion timer runs concurrently with the producer and its clicks. By the time
+    /// the device sees the k-th click it must already have seen all the motion submitted before that click (each
+    /// step is 1 unit, so nothing is dropped by the backlog cap). The timer-takes-then-sends bug this guards against
+    /// lets a click slip in between; it is a race, so this is a stress test, not a proof.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn clicks_never_overtake_motion_while_the_timer_flushes_concurrently() {
+        let st = Arc::new(Mutex::new(MockState::default()));
+        let dev = Device::connect(spawn_mock(st.clone())).await.unwrap();
+        let (mut submitted, mut at_click) = (0i32, Vec::new());
+        for i in 0..1500u32 {
+            dev.mouse_move(1, 0);
+            submitted += 1;
+            if i % 5 == 0 {
+                at_click.push(submitted);
+                let _ = dev.button(1, true).await;
+            }
+            tokio::time::sleep(Duration::from_micros(300)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let seen = st.lock().unwrap().motion_at_button.clone();
+        assert_eq!(seen.len(), at_click.len());
+        for (k, (moved, need)) in seen.iter().zip(&at_click).enumerate() {
+            assert!(moved >= need, "click {k} reached the device after only {moved} of the {need} units submitted before it");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn many_clicks_interleaved_with_motion_keep_their_order() {
+        let st = Arc::new(Mutex::new(MockState::default()));
+        let dev = Device::connect(spawn_mock(st.clone())).await.unwrap();
+        for _ in 0..50 {
+            dev.mouse_move(7, 0);
+            let _ = dev.button(1, true).await;
+            let _ = dev.button(1, false).await;
+        }
+        let order = st.lock().unwrap().order.clone();
+        // the i-th click must arrive after the move that was queued just before it
+        let (mut moves, mut downs) = (0usize, 0usize);
+        for t in &order {
+            if *t == msg::MOUSE_MOVE {
+                moves += 1;
+            } else if *t == msg::MOUSE_BUTTON_DOWN {
+                downs += 1;
+                assert!(moves >= downs, "click {downs} overtook its movement (only {moves} move frames had arrived)");
+            }
+        }
+        assert_eq!(downs, 50);
+        assert_eq!(st.lock().unwrap().motion, (350, 0), "all motion arrives, none lost or doubled");
     }
 
     #[tokio::test(start_paused = true)]

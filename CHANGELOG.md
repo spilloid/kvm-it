@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.2.0] - 2026-10-04 (Windows controller)
+
+The controller app now runs on Windows. Firmware and wire protocol are unchanged (firmware 0.1.0, protocol v1).
+
+Verification: see the README status table. Everything Windows was run in a **Windows 11 virtual machine** on a Linux
+host with the Bluetooth adapter and the HDMI capture card passed through over USB (real radio, real card); nothing
+here is verified on bare-metal Windows. The shared client change (mouse motion) was not re-run on a Linux board.
+The code was adversarially reviewed in two rounds (docs/dev-process.md, round 4: 16 findings, two deferred).
+
+### Added
+- **Windows controller**: `kvmit.exe` (CLI) and `kvmit-gui.exe` (GUI, no console window; a failed start shows a
+  dialog explaining it, e.g. when the graphics driver lacks OpenGL 2.0).
+- **Windows pairing with no system dialog**: `kvmit pair` / `unpair` and the GUI's *Pair & connect* use the WinRT
+  custom-pairing API and accept only the Just Works ceremony. The adapter's physical pairing window is still required.
+- **Windows video**: a Media Foundation backend on the card's native MJPEG/YUY2 modes (same decode path as Linux).
+- **Keyboard grab on Windows**: while input is captured, Win, Alt+Tab, Ctrl+Esc, Alt+F4 and the other keys the OS
+  would keep go to the target and not to the controller. Ctrl+Alt+Esc is the only chord that gives the keyboard
+  back, and is never forwarded. Ctrl+Alt+Del and Win+L cannot be intercepted by any program: use the *Keys* menu.
+  It runs in a small helper process (the app starts itself with a hidden flag) that stops swallowing if the GUI
+  stops responding for 3 s, handles the release chord itself, and passes keys that were already held before
+  capture through to the controller.
+- **Accessibility tree**: the GUI exposes its controls to screen readers and UI Automation (named buttons).
+- Release packaging for Windows: `scripts/build-release.ps1` (signed-if-configured exes, MSI, zip, SHA-256 files),
+  `scripts/sign.ps1`, `scripts/verify-release.py`, `installer/kvmit.wxs`, and a release runbook (docs/RELEASING.md).
+- `examples/linkstress` (acked-request latency and failures under mouse-motion and video load) and
+  `examples/hookcheck` (keyboard grab on real Windows; prints counts only, never keys).
+
+### Changed
+- **GUI layout**: the left sidebar is gone and the preview fills the window. Adapter, Target USB, Video and Input
+  are colour-coded status chips (green working, amber in progress, red broken, grey idle); Adapter, Video and Input
+  open the controls that used to be in the sidebar, and *Keys*, *Type* and *Scripts* are buttons with popups. A
+  running script's log moves to a bottom strip that stays visible while it runs.
+- **Scanning** returns as soon as the adapter is heard and waits up to 15 s by default on Windows (a 5 s scan found
+  it in about 2 of 5 runs there).
+- **Mouse motion** is sent in frames of at most 127 units per axis with a bounded backlog, and a click can no longer
+  overtake the movement before it (the firmware turns each motion frame into one USB report per 127 units inside its
+  Bluetooth handler, so huge frames stalled the link). This changes Linux behaviour too.
+- A failed *release all keys* at the end of capture now closes the session, so the adapter's own link-drop release
+  takes over instead of keepalives holding a stuck key.
+
+### Fixed
+- On Windows the Bluetooth link collapsed under ordinary mouse movement (above about 30-60 motion frames per
+  second): Windows' default 60 ms connection interval cannot carry it. The app now requests the fast connection
+  mode (15 ms interval; round trip 120 ms to 30 ms in the VM) while connected.
+- A vanished capture card (Windows) now stops the capture and says so, instead of leaving a frozen frame that looks
+  live; stopping the capture can no longer hang the GUI; COM is initialised and released in balance.
+- Windows scancodes for Alt+PrintScreen and Ctrl+Pause are mapped.
+
+### Known limitations
+- Modifier+click ordering can break while capturing on Windows if a GUI frame takes longer than the click: keyboard
+  and mouse buttons reach the app through two paths (planned fix: one ordered stream, review round 4 finding 6).
+- The end-to-end transport queue for mouse motion is not bounded; only the work per frame is (finding 8).
+- Keys held across the instant capture begins are handled by virtual key, so an alias pair that shares one (Enter and
+  keypad Enter) can be misattributed once (review round 5, finding 4).
+- Windows 10, non-US keyboard layouts and IMEs, and bare-metal Windows are untested. The Linux GUI has not been
+  re-checked since the redesign. The V4L2 (Linux) backend still shows its last frame if the card vanishes.
+- Releases may be unsigned; the release notes say so. An unsigned build makes Windows SmartScreen warn.
+
 ## [0.1.0] - 2026-10-03 (MVP)
 
 Verification: see the README status table. Short version: USB HID, BLE pairing and the GATT link

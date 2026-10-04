@@ -104,20 +104,40 @@ pub async fn scan(timeout: Duration) -> Result<Vec<Found>> {
     Ok(found)
 }
 
-/// Scan for adapters advertising the kvm-it service. Returns when `timeout` elapses.
+/// How long a discovery scan runs by default. WinRT surfaces advertisements slowly (a 5 s scan found the adapter
+/// in about 2 of 5 runs on Windows 11, 15 s in 4 of 4), so non-Linux platforms get a longer limit.
+#[cfg(target_os = "linux")]
+pub const DEFAULT_SCAN_SECS: u64 = 5;
+#[cfg(not(target_os = "linux"))]
+pub const DEFAULT_SCAN_SECS: u64 = 15;
+
+/// Scan for adapters advertising the kvm-it service. Returns up to `timeout` after starting, or about a second
+/// after the first adapter is heard (so a longer limit costs nothing when the adapter is in range).
 #[cfg(not(target_os = "linux"))]
 pub async fn scan(timeout: Duration) -> Result<Vec<Found>> {
     let ad = adapter().await?;
     ad.start_scan(ScanFilter::default()).await?;
-    tokio::time::sleep(timeout).await;
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut settle_until = None;
     let mut found = Vec::new();
-    for p in ad.peripherals().await? {
-        if std::env::var_os("KVMIT_DEBUG").is_some() {
-            eprintln!("seen: {:?}", p.properties().await.ok().flatten().map(|x| (x.address.to_string(), x.local_name, x.services, x.rssi)));
+    loop {
+        found.clear();
+        for p in ad.peripherals().await? {
+            if std::env::var_os("KVMIT_DEBUG").is_some() {
+                eprintln!("seen: {:?}", p.properties().await.ok().flatten().map(|x| (x.address.to_string(), x.local_name, x.services, x.rssi)));
+            }
+            if let Some(f) = describe(&p).await {
+                found.push(f);
+            }
         }
-        if let Some(f) = describe(&p).await {
-            found.push(f);
+        let now = tokio::time::Instant::now();
+        if !found.is_empty() {
+            settle_until.get_or_insert(now + Duration::from_secs(1));
         }
+        if now >= deadline || settle_until.is_some_and(|t| now >= t) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let _ = ad.stop_scan().await;
     found.sort_by_key(|f| std::cmp::Reverse(f.rssi.unwrap_or(i16::MIN)));
@@ -158,6 +178,9 @@ async fn find(ad: &Adapter, id: &str, wait: Duration) -> Result<Peripheral> {
 pub struct Connection {
     pub io: Option<LinkIo>,
     peripheral: Peripheral,
+    /// Windows: holds the fast-connection request for as long as the link is open.
+    #[cfg(windows)]
+    _fast: Option<FastLink>,
 }
 
 impl Connection {
@@ -174,6 +197,8 @@ pub async fn connect(id: &str) -> Result<Connection> {
     let ad = adapter().await?;
     let p = find(&ad, id, Duration::from_secs(20)).await?;
     p.connect().await?;
+    #[cfg(windows)]
+    let fast = request_fast_link(id).await;
     p.discover_services().await?;
     let chars = p.characteristics();
     let rx_char = chars.iter().find(|c| c.uuid == RX_UUID).cloned();
@@ -189,22 +214,42 @@ pub async fn connect(id: &str) -> Result<Connection> {
     let (client_tx, mut from_client) = mpsc::unbounded_channel::<Vec<u8>>();
 
     tokio::spawn(async move {
+        let debug = std::env::var_os("KVMIT_DEBUG").is_some();
+        let mut last = std::time::Instant::now();
         while let Some(n) = notifications.next().await {
+            if debug && last.elapsed() > Duration::from_millis(1500) {
+                eprintln!("[debug] no notification for {} ms", last.elapsed().as_millis());
+            }
+            last = std::time::Instant::now();
             if n.uuid == TX_UUID && to_client.send(n.value).is_err() {
                 break;
             }
+        }
+        if debug {
+            eprintln!("[debug] notification stream ended after {} ms of silence", last.elapsed().as_millis());
         }
         // stream end = disconnect; dropping `to_client` tells the client the link is gone
     });
     let writer = p.clone();
     tokio::spawn(async move {
+        let debug = std::env::var_os("KVMIT_DEBUG").is_some();
         while let Some(frame) = from_client.recv().await {
-            if writer.write(&rx_char, &frame, WriteType::WithoutResponse).await.is_err() {
+            let t = std::time::Instant::now();
+            let r = writer.write(&rx_char, &frame, WriteType::WithoutResponse).await;
+            if debug && (t.elapsed() > Duration::from_millis(100) || r.is_err()) {
+                eprintln!("[debug] gatt write took {} ms, ok={}", t.elapsed().as_millis(), r.is_ok());
+            }
+            if r.is_err() {
                 break; // drops from_client; client sees sends fail as Closed
             }
         }
     });
-    Ok(Connection { io: Some(LinkIo { tx: client_tx, rx: client_rx }), peripheral: p })
+    Ok(Connection {
+        io: Some(LinkIo { tx: client_tx, rx: client_rx }),
+        peripheral: p,
+        #[cfg(windows)]
+        _fast: fast,
+    })
 }
 
 /// Pair and trust an adapter through BlueZ. Pairing is Just Works, so the adapter only accepts it
@@ -260,10 +305,86 @@ async fn wait_for_device(adapter: &bluer::Adapter, addr: bluer::Address, wait: D
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+impl From<windows::core::Error> for BackendError {
+    fn from(e: windows::core::Error) -> Self {
+        BackendError(e.to_string())
+    }
+}
+
+#[cfg(windows)]
+async fn le_device(id: &str) -> Result<windows::Devices::Bluetooth::BluetoothLEDevice> {
+    let addr = u64::from_str_radix(&id.replace(':', ""), 16).map_err(|_| BackendError(format!("bad address {id}")))?;
+    Ok(windows::Devices::Bluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(addr)?.await?)
+}
+
+/// Keeps the Windows "throughput optimised" connection request alive; dropping it lets the stack relax the link.
+#[cfg(windows)]
+pub struct FastLink {
+    _dev: windows::Devices::Bluetooth::BluetoothLEDevice,
+    _req: windows::Devices::Bluetooth::BluetoothLEPreferredConnectionParametersRequest,
+}
+
+/// Windows 11: ask for the shortest connection interval while the link is open. Windows' default interval (about
+/// 60 ms here) cannot carry a moving pointer's motion frames plus acks; the link collapses above ~30-60 frames/s.
+/// Best effort: older Windows lacks the API, and a refusal just leaves the default behaviour.
+#[cfg(windows)]
+async fn request_fast_link(id: &str) -> Option<FastLink> {
+    use windows::Devices::Bluetooth::{BluetoothLEDevice, BluetoothLEPreferredConnectionParameters};
+    let debug = std::env::var_os("KVMIT_DEBUG").is_some();
+    let interval = |d: &BluetoothLEDevice| d.GetConnectionParameters().and_then(|p| p.ConnectionInterval()).ok();
+    let dev = le_device(id).await.ok()?;
+    if debug {
+        eprintln!("[debug] connection interval before: {:?} (x1.25 ms)", interval(&dev));
+    }
+    let req = dev.RequestPreferredConnectionParameters(&BluetoothLEPreferredConnectionParameters::ThroughputOptimized().ok()?).ok()?;
+    if debug {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        eprintln!("[debug] fast-link request status {:?}; interval now: {:?} (x1.25 ms)", req.Status(), interval(&dev));
+    }
+    Some(FastLink { _dev: dev, _req: req })
+}
+
+/// Windows: pair through the WinRT custom-pairing API, accepting the Just Works confirmation in code, so no
+/// toast or Settings dialog is needed. The adapter must be in its pairing window (physical presence).
+#[cfg(windows)]
+pub async fn pair(id: &str) -> Result<()> {
+    use windows::Devices::Enumeration::{
+        DeviceInformationCustomPairing, DevicePairingKinds, DevicePairingProtectionLevel, DevicePairingRequestedEventArgs,
+        DevicePairingResultStatus,
+    };
+    use windows::Foundation::TypedEventHandler;
+    let dev = le_device(id).await?;
+    let pairing = dev.DeviceInformation()?.Pairing()?;
+    if pairing.IsPaired()? {
+        return Ok(());
+    }
+    let custom = pairing.Custom()?;
+    let token = custom.PairingRequested(&TypedEventHandler::<DeviceInformationCustomPairing, DevicePairingRequestedEventArgs>::new(
+        |_, args| {
+            // Just Works only: a peer asking for numeric comparison would need a real comparison, which this
+            // headless adapter cannot show, so it is not accepted (the pairing then fails safely).
+            if let Some(a) = args.as_ref() {
+                if a.PairingKind()? == DevicePairingKinds::ConfirmOnly {
+                    a.Accept()?;
+                }
+            }
+            Ok(())
+        },
+    ))?;
+    let res = custom
+        .PairWithProtectionLevelAsync(DevicePairingKinds::ConfirmOnly, DevicePairingProtectionLevel::Encryption)?
+        .await;
+    let _ = custom.RemovePairingRequested(token);
+    match res?.Status()? {
+        DevicePairingResultStatus::Paired | DevicePairingResultStatus::AlreadyPaired => Ok(()),
+        s => err(format!("Windows could not pair with {id}: {s:?}. Is the adapter's pairing window open (BOOT short press, or just re-plugged)?")),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub async fn pair(_id: &str) -> Result<()> {
-    // Windows pairs when the first encrypted characteristic is accessed (the OS shows its own prompt).
-    Ok(())
+    err("pairing is not implemented on this platform")
 }
 
 /// Remove the OS-level bond (Linux). The adapter-side bond is erased with a 10 s BOOT hold.
@@ -276,7 +397,17 @@ pub async fn unpair(id: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+pub async fn unpair(id: &str) -> Result<()> {
+    use windows::Devices::Enumeration::DeviceUnpairingResultStatus;
+    let dev = le_device(id).await?;
+    match dev.DeviceInformation()?.Pairing()?.UnpairAsync()?.await?.Status()? {
+        DeviceUnpairingResultStatus::Unpaired | DeviceUnpairingResultStatus::AlreadyUnpaired => Ok(()),
+        s => err(format!("Windows could not unpair {id}: {s:?}")),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub async fn unpair(_id: &str) -> Result<()> {
-    err("remove the device in Windows Bluetooth settings")
+    err("remove the device in the OS Bluetooth settings")
 }

@@ -251,3 +251,59 @@ Hardware-verified after 3f (release build): reset, wait past 15 s, `kvmit pair` 
   Ctrl+Alt+Esc release, sidebar disabled during capture, Type): all worked as described.
 - 0.1.0 (Linux controller) released from `main`; the Windows controller app is 0.2.0.
 
+
+## 2026-10-04 — 0.2.0 (Windows controller): review round 4
+
+- Asked: Windows pairing/scan, Media Foundation capture, BLE link fix (fast connection interval, bounded motion
+  frames), top-bar GUI, OS-level keyboard grab (Win/Alt+Tab to the target, Ctrl+Alt+Esc releases).
+- Adversarial review: astra (`codex exec -m gpt-6-astra`, high effort, read-only, static; ~147k tokens) of
+  `main...windows-0.2.0` through `d19559d`: 16 findings, verdict "do not merge" until keyboard release, release-chord
+  ordering and a key-logging violation were fixed. Orchestrator (Claude) adjudicated each against source; a
+  finding right about the problem got the fix the orchestrator chose, not necessarily the reviewer's.
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | High | A hung GUI keeps the hook swallowing the controller's keyboard (release depended on the GUI) | **Confirmed; my "a hung GUI cannot trap the keyboard" comment was false.** Fixed: the helper handles the release chord itself (stops swallowing in the hook), and stops swallowing if the GUI's heartbeat (sent from the input-handling thread) stops for 3 s, telling the parent to release. **Hardware-verified in the VM**: GUI frozen with NtSuspendProcess, Win swallowed during the grace period, then opened the controller's Start menu after the timeout; the thawed GUI ended capture |
+| 2 | Med | Keys held before capture: repeat becomes a captured press, release swallowed (stuck key); pre-held Ctrl breaks the chord | **Confirmed.** Fixed: the helper seeds the tracker from `GetAsyncKeyState`; pre-held keys' repeats/releases pass to the OS and count for the chord. Unit-tested, not hardware-tested |
+| 3 | Med | Alt+PrintScreen (0x54) and Ctrl+Pause (ext 0x46) scan codes missing | **Confirmed.** Fixed + test |
+| 4 | Med | Windows silently removes a slow hook; capture stays "on" | **Plausible.** Mitigated: a key press that reaches egui while the grab is on means the hook is not swallowing, so the GUI drops the grab and falls back to egui keys. Not hardware-tested (cannot force a hook timeout) |
+| 5 | High | Keys/clicks queued after the release chord are still forwarded | **Confirmed.** Fixed: `until_release` makes the chord a terminal boundary (keys and the frame's mouse events); unit-tested. The helper also stops swallowing at the chord |
+| 6 | Med | Hook keys and egui mouse buttons are two streams: Ctrl-click can reorder | **Confirmed; deferred.** Needs one ordered stream (mouse buttons through the helper's WH_MOUSE_LL). Documented limit: modifier+click ordering can break if a GUI frame takes longer than the click. Tracked in the roadmap backlog |
+| 7 | Med | Keyboard-only capture without video: no prompt GUI wakeup | **Plausible, fixed**: the helper's reader wakes the GUI per event, and capture repaints every 100 ms (also the heartbeat) |
+| 8 | Med | The 16-frame motion cap does not bound the unbounded transport queue | **Confirmed (inherited); deferred.** The cap bounds work per frame (the observed link-killing failure); end-to-end backpressure needs a bounded transport channel. Backlog |
+| 9 | Med | Timer vs click: a click can overtake motion between take and send | **Confirmed (inherited, affects Linux).** Fixed: motion is taken and sent under the accumulator lock; a test asserts wire order for 50 interleaved clicks. Linux not re-run on hardware |
+| 10 | High | A lost ReleaseAll at capture end leaves target keys held while keepalives continue | **Confirmed (inherited).** Fixed: a failed ReleaseAll closes the session so the adapter's link-drop release takes over |
+| 11 | Med | Pairing accepts numeric comparison without comparing | **Confirmed.** Fixed: only `ConfirmOnly` (Just Works) is offered and accepted |
+| 12 | High | Dropping a Media Foundation capture can hang the GUI (blocking `ReadSample`) | **Plausible.** Fixed: bounded wait (1.5 s) then detach. Not hardware-tested |
+| 13 | Med | `MF_SOURCE_READERF_ERROR` retried forever; frozen video stays "good" | **Confirmed.** Fixed: terminal on ERROR/EOS or 20 failed reads; `Capture::failed()`; the GUI drops it and says so. **Hardware-verified in the VM** by unplugging the card mid-stream. The V4L2 backend has no equivalent yet |
+| 14 | Low | `CoInitializeEx` never balanced | **Confirmed.** Fixed (guard calls `CoUninitialize`) |
+| 15 | High | `hookcheck` prints pressed-key identities | **Confirmed: a violation of the no-logging rule by my own example.** Fixed: counts only, ends at the chord |
+| 16 | Low | `linkstress` can exit 0 despite failed pings/no video frames; `hz` misdescribed | **Confirmed.** Fixed |
+
+- What the reviewer found sound: motion arithmetic, normal hook state, process launch (no argument injection),
+  Media Foundation ownership of the enumerated activates, privacy of the added diagnostics.
+- Test grading (the reviewer's point that a green suite is evidence about the tests): the hook tests are pure
+  tracker calls; the helper, heartbeat and process teardown are covered only by the hardware checks above. New unit
+  tests cover pre-held keys, the full chord, the release boundary, the added scan codes and motion/click ordering.
+- Not verified: bare-metal Windows; non-US keyboards/IME; the hook-removal fallback; capture-stall shutdown.
+
+### Review round 5 (re-review of the round-4 fix commit `d73c0b5`)
+
+astra (`gpt-6-astra`, high effort, read-only, static; `git diff d19559d d73c0b5`): 6 findings, 3 High, all in the fixes
+themselves (the reason STD-001 re-reviews after a fix round). Verdict "do not merge yet". Adjudicated by the orchestrator:
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | High | The egui fallback after a failed grab can leave a forwarded right-hand modifier held on the target | **Confirmed.** Fixed differently from the suggestion: no fallback at all; the GUI ends capture (which sends release-all and drops the grab) |
+| 2 | High | A pre-held key's repeat counted as "hook failed"; a late release notice could be lost in the same fallback | **Confirmed.** Fixed: the evidence is now only a fresh (non-repeat) press of a key the grab maps, and the response is the same safe end-capture; unit-tested predicate |
+| 3 | High | The release chord and a click in the same frame re-capture at once | **Confirmed.** Fixed: `released_this_frame` blocks `begin_capture` for that frame |
+| 4 | Med | Seeding held keys from virtual keys cannot tell Enter from keypad Enter (shared VK) | **Confirmed, inherent; accepted and documented** (CHANGELOG known limitations): a key of such an alias held across the instant capture begins can misbehave once |
+| 5 | Med | The held-keys snapshot is taken before the hook is installed | **Confirmed (small).** Fixed: sampled and installed under the state lock inside the hook thread |
+| 6 | Med | A blocked stdout write stops the heartbeat watchdog | **Confirmed.** Fixed: the watchdog is its own thread and turns swallowing off itself |
+
+- Test grading from the review: the motion-order tests were "D for race coverage, B for serial ordering". Added a
+  multi-thread, real-time stress test (clicks vs the concurrent motion timer; a race, so a stress test, not a proof).
+- Hardware (Windows 11 VM) after the fixes: normal capture (Win x2 and Alt+Tab swallowed, chord releases, Win reaches the
+  controller afterwards); helper process killed mid-capture (capture ends, keyboard returns); GUI process frozen
+  (keyboard returns after the helper's timeout). Not hardware-tested: the same-frame release+click case, the new
+  end-capture-on-unswallowed-key path, the held-key snapshot reordering.

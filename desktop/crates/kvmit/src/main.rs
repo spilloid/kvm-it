@@ -28,7 +28,7 @@ enum Cmd {
     Gui,
     /// List adapters in range
     Scan {
-        #[arg(long, default_value_t = 5)]
+        #[arg(long, default_value_t = backend::DEFAULT_SCAN_SECS)]
         seconds: u64,
     },
     /// Pair with an adapter (within 15 s of plugging it in, or after a brief BOOT press)
@@ -98,6 +98,9 @@ fn parse_kv(s: &str) -> Result<(String, String), String> {
 type R<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 fn main() {
+    if kvmit::syskeys::run_helper_if_requested() {
+        return; // started as the keyboard-grab helper (Windows)
+    }
     let cli = Cli::parse();
     if let Err(e) = real_main(cli) {
         eprintln!("error: {e}");

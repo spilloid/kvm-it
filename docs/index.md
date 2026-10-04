@@ -28,4 +28,4 @@ Your keyboard/mouse ──► kvm-it ──► Bluetooth LE ──► ESP32-S3 �
 ## What is verified
 
 Every claim on this site is labelled **built**, **host-tested** or **hardware-verified**. The authoritative
-table is in the [README](https://github.com/spilloid/kvm-it#status--v010-mvp-in-progress).
+table is in the [README](https://github.com/spilloid/kvm-it#status-v020).

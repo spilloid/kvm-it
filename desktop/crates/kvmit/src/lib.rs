@@ -4,3 +4,4 @@ pub mod host;
 pub mod keymap;
 pub mod library;
 pub mod session;
+pub mod syskeys;

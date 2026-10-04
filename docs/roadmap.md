@@ -20,12 +20,23 @@ Status key: done = built and software-verified; **hw?** = built, awaiting verifi
 | 11 | Pairing window, bond, BOOT trust reset | done — hardware-verified (15 s power-on window, BOOT window, 10 s trust reset, LED); residual risk in docs/security.md |
 | 12 | Hotplug/reconnect hardening | basic auto-reconnect built; soak testing outstanding |
 | 13 | Linux release build | **v0.1.0**: `scripts/rs.sh build`; no packaging yet |
-| 14 | Windows controller app | **v0.2.0**: cross-compiles; no video backend, never run (Windows as a *target* already works: it is plain USB HID) |
+| 14 | Windows controller app | **v0.2.0**, in progress on `windows-0.2.0`: native pairing, scan, Media Foundation capture, the GUI and a BLE link fix have run in a Windows 11 VM (adapter and capture card passed through over USB); keyboard grab in progress; **not yet verified on bare-metal Windows** (Windows as a *target* already works: it is plain USB HID) |
+
+## Planned releases
+
+Direction, not commitments; each release is cut with its own notes and only claims what was verified.
+
+| Release | Theme | Notes |
+|---|---|---|
+| **0.2.0** | Windows controller | See row 14. Also: top-bar GUI, native keyboard grab on Windows. |
+| **0.3.0** | Flash the adapter from the app | A technician plugs the board's COM port into the controller, presses Flash, then moves the board to the target. Embeds one merged firmware image built by CI and writes it with the `espflash` library; needs a Rust toolchain >= 1.95. The wizard must warn against plugging the board's native USB port into the flashing computer (its self-test types into whatever it is attached to). |
+| **0.5.0** (candidate) | Network boot through the adapter | The adapter also presents a **read-only USB drive carrying an iPXE image**, so a target can boot from the network and reach WinPE, an installer ISO or anything else a boot server offers. There is no on-board image storage and no SD/TF slot: *virtual-media ISO mounting is intentionally not planned.* The first design step is whether the ESP32-S3 can expose a read-only mass-storage interface alongside HID without disturbing BIOS keyboard enumeration. |
+| **0.6.0** | Multi-probe | One running app attaches several adapters and capture cards, associates each adapter with its capture card, switches between the pairs and coordinates script runs across them (an IP-KVM-style fleet view). Builds on the multi-controller/multi-device groundwork noted below. |
 
 ## Backlog / known gaps
 
-- v0.2.0 (Windows controller): capture backend (Media Foundation), native pairing call, running and
-  hardware-verifying the app on Windows.
+- v0.2.0 (Windows controller): bare-metal verification, the OS-level keyboard grab (Win, Alt+Tab, ... go to the
+  target; Ctrl+Alt+Esc releases), YUY2 capture path, Linux hardware regression run for the motion-frame cap.
 - GUI video upload is a full-frame texture copy per frame; 1080p60 cost unmeasured.
 - Only the US layout.
 - Privacy-enabled (RPA) controllers are handled by identity-address lookup in the bond store; untested.
@@ -39,7 +50,7 @@ Status key: done = built and software-verified; **hw?** = built, awaiting verifi
   signed images + `ota_0/ota_1` partition layout (needs a custom partition table), then optional USB DFU.
 - Boot-compatible 4-byte mouse report fallback if BIOS testing shows it is needed.
 - PSRAM enablement, if ever needed.
-- Multi-controller trust and multi-device UI (architecture avoids singletons; not built).
+- Multi-controller trust and multi-device UI (architecture avoids singletons; not built; see 0.6.0 above).
 - Windows Secure Attention Sequence (Ctrl+Alt+Del): the macro will send it as an ordinary USB HID chord.
   Whether a given Windows/secure-desktop environment honours it is unverified and will be documented per
   environment once tested on real hardware.
