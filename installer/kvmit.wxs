@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Windows installer for kvm-it (WiX v5). Build: wix build installer/kvmit.wxs -arch x64 -d Version=<x.y.z> -d SourceDir=<dir with kvmit.exe, kvmit-gui.exe, LICENSE> -o <out.msi>
+     The UpgradeCode identifies the product across versions: NEVER change it. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="kvm-it" Manufacturer="Joseph Spillers" Version="$(Version)" UpgradeCode="199D829B-CDC7-4224-B87A-C95054B45DCE" Scope="perMachine" Language="1033">
+    <SummaryInformation Description="kvm-it: drive a computer through a Bluetooth USB-HID adapter and an HDMI capture card" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of kvm-it is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="kvm-it" />
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="kvm-it" Level="1" Display="expand" ConfigurableDirectory="INSTALLFOLDER">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <Feature Id="AddToPath" Title="Add kvmit to PATH (command line)" Level="1">
+        <ComponentRef Id="PathEntry" />
+      </Feature>
+    </Feature>
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Component Id="CliExe" Guid="*">
+        <File Id="KvmitExe" Source="$(SourceDir)\kvmit.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="GuiExe" Guid="*">
+        <File Id="KvmitGuiExe" Source="$(SourceDir)\kvmit-gui.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="LicenseFile" Guid="*">
+        <File Id="LicenseTxt" Source="$(SourceDir)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="*">
+        <Shortcut Id="StartMenuKvmit" Name="kvm-it" Description="kvm-it controller" Target="[INSTALLFOLDER]kvmit-gui.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\kvm-it" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Component Id="PathEntry" Directory="INSTALLFOLDER" Guid="*">
+      <Environment Id="KvmitPath" Name="PATH" Value="[INSTALLFOLDER]" Part="last" Action="set" System="yes" Permanent="no" />
+      <RegistryValue Root="HKLM" Key="Software\kvm-it" Name="PathEntry" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+  </Package>
+</Wix>
