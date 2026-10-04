@@ -2299,10 +2299,12 @@ name = "kvmit-flash"
 version = "0.2.1"
 dependencies = [
  "espflash",
+ "md-5 0.11.0",
  "nusb",
  "serde",
  "serde_json",
  "serialport",
+ "sha2",
 ]
 
 [[package]]

@@ -34,7 +34,8 @@ pub struct Wizard {
 }
 
 /// Where the firmware to flash is looked for: `KVMIT_FIRMWARE`, then the `firmware` folder that ships beside the program
-/// (installer, zip and AppImage all carry one), then the committed release images of a source checkout.
+/// (installer, zip and AppImage all carry one). Only a development (debug) build also tries `firmware/release` in the working
+/// directory; a release build never picks firmware out of whatever folder it was started from. Empty means "not found".
 pub fn default_firmware_dir() -> String {
     if let Some(p) = std::env::var_os("KVMIT_FIRMWARE").filter(|p| !p.is_empty()) {
         return PathBuf::from(p).to_string_lossy().into_owned();
@@ -42,7 +43,8 @@ pub fn default_firmware_dir() -> String {
     let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("firmware")));
     match beside {
         Some(d) if d.join("flasher_args.json").exists() => d.to_string_lossy().into_owned(),
-        _ => "firmware/release".into(),
+        _ if cfg!(debug_assertions) => "firmware/release".into(),
+        _ => String::new(),
     }
 }
 
@@ -227,6 +229,9 @@ impl Wizard {
                 ui.colored_label(RED, e);
             }
         }
+        if self.firmware.trim().is_empty() {
+            ui.colored_label(RED, "No firmware folder found next to the program: type the folder that holds flasher_args.json.");
+        }
         ui.separator();
         ui.horizontal(|ui| {
             ui.label("Board");
@@ -250,6 +255,9 @@ impl Wizard {
         }
         if pick.is_some() {
             self.port = pick;
+        }
+        if self.selected().is_some_and(|p| p.serial.as_deref().is_none_or(str::is_empty)) {
+            ui.weak("This USB bridge reports no serial number, so two identical boards cannot be told apart: do not swap cables after choosing.");
         }
         ui.separator();
         ui.checkbox(&mut self.erase_all, "Erase everything first (also erases the pairing and settings)");

@@ -1,0 +1,2 @@
+# The bundled adapter firmware is hashed (SHA256SUMS) and shipped byte for byte: no line-ending conversion on any platform.
+firmware/release/** -text

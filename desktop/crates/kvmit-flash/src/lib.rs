@@ -5,14 +5,15 @@
 //! - Only the board's UART bridge (the "COM" port) is flashable, and the device is re-identified (name *and* USB identity)
 //!   at the moment of flashing, because port names such as `/dev/ttyACM0` are reused when cables are swapped.
 //! - The adapter's own USB port is a keyboard and mouse toward the *target*; one plugged into the flashing computer would
-//!   type into it. That port is HID only, so it is not a serial port: it is found by enumerating USB devices.
+//!   type into it. That port is HID only (so not a serial port) and in the chip's ROM download mode looks like a generic
+//!   Espressif device, so it is found by enumerating USB devices and *any* Espressif (303a) device blocks flashing.
 //! - What answers on the port must be an ESP32-S3 with the image's flash size; the bridge chip alone proves nothing.
 //! - Only the bootloader, partition table and app are written. Unless a full erase is requested, the settings partition
 //!   (the Bluetooth bond) must lie outside every erased sector *and* be identical in the installed and the new table.
 //! - Files named by the manifest must stay inside the firmware folder, be regular files and be of sane size, and the
 //!   images must look like ESP32-S3 images with an app that fits its partition.
 use serde::Deserialize;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 
 pub use espflash::target::ProgressCallbacks;
 
@@ -21,6 +22,8 @@ const CHIP: &str = "esp32s3";
 /// `chip_id` field of an ESP image header for the ESP32-S3.
 const ESP32S3_CHIP_ID: u16 = 9;
 const SECTOR: u32 = 4096;
+/// Where the bootloader reads the partition table, and so where the table part must be written and the installed one read.
+const PARTITION_TABLE_OFFSET: u32 = 0x8000;
 const MAX_MANIFEST: u64 = 64 * 1024;
 const MAX_ENTRIES: usize = 8;
 const MAX_FLASH: u32 = 16 * 1024 * 1024;
@@ -29,9 +32,6 @@ const PARTITION_TABLE_BYTES: u32 = 0xC00;
 /// The USB identity of the board's UART bridge (CH343) and of the ESP32-S3's own USB peripheral.
 const UART_VID_PID: (u16, u16) = (0x1a86, 0x55d3);
 const ESPRESSIF_VID: u16 = 0x303a;
-/// The adapter firmware's own USB product id (a keyboard and mouse), and its descriptor strings.
-const ADAPTER_PID: u16 = 0x4008;
-const ADAPTER_NAME: &str = "kvm-it";
 
 #[derive(Debug)]
 pub struct FlashError(pub String);
@@ -133,22 +133,27 @@ fn check_relative(rel: &str) -> Result<(), FlashError> {
     Ok(())
 }
 
-/// Read a file the manifest names: inside `dir` (symlinks resolved), a regular file, no bigger than the flash.
+/// Read a file the manifest names: inside `dir` (symlinks resolved), a regular file, no bigger than the flash. The checks are
+/// made on the opened handle and the read is bounded, so a file swapped after the check cannot lift the size limit.
 fn read_contained(dir: &Path, rel: &str) -> Result<Vec<u8>, FlashError> {
+    use std::io::Read;
     check_relative(rel)?;
     let root = dir.canonicalize().or_else(|e| err(format!("{}: {e}", dir.display())))?;
     let path = root.join(rel).canonicalize().or_else(|e| err(format!("{rel}: {e}")))?;
     if !path.starts_with(&root) {
         return err(format!("{rel} resolves outside the firmware folder"));
     }
-    let meta = std::fs::metadata(&path).or_else(|e| err(format!("{rel}: {e}")))?;
+    let file = std::fs::File::open(&path).or_else(|e| err(format!("{rel}: {e}")))?;
+    let meta = file.metadata().or_else(|e| err(format!("{rel}: {e}")))?;
     if !meta.is_file() {
         return err(format!("{rel} is not a regular file"));
     }
-    if meta.len() > MAX_FLASH as u64 {
+    let mut data = Vec::new();
+    file.take(MAX_FLASH as u64 + 1).read_to_end(&mut data).or_else(|e| err(format!("{rel}: {e}")))?;
+    if data.len() > MAX_FLASH as usize {
         return err(format!("{rel} is larger than the flash"));
     }
-    std::fs::read(&path).or_else(|e| err(format!("{rel}: {e}")))
+    Ok(data)
 }
 
 /// One entry of the partition table.
@@ -158,27 +163,83 @@ pub struct Partition {
     pub subtype: u8,
     pub offset: u32,
     pub size: u32,
+    pub name: String,
+    pub flags: u32,
 }
 
-/// Parse an ESP-IDF partition table (32-byte entries starting `AA 50`, ended by the MD5 entry or erased flash).
-pub fn parse_partition_table(table: &[u8]) -> Vec<Partition> {
+/// Parse an ESP-IDF partition table strictly: 32-byte entries (`AA 50`), then the MD5 entry (`EB EB`, ones, then the MD5 of
+/// the entries, which is verified), then erased flash. Anything else is an error: the bootloader rejects such a table and the
+/// board would not boot.
+pub fn parse_partition_table(table: &[u8]) -> Result<Vec<Partition>, FlashError> {
+    use md5::{Digest, Md5};
     let mut out = Vec::new();
-    for e in table.as_chunks::<32>().0 {
-        if e[0..2] != [0xAA, 0x50] {
-            break;
+    let mut md5_seen = false;
+    for (i, e) in table.chunks(32).enumerate() {
+        if e.len() < 32 {
+            return err("the partition table ends in a partial entry");
         }
-        out.push(Partition {
-            ptype: e[2],
-            subtype: e[3],
-            offset: u32::from_le_bytes([e[4], e[5], e[6], e[7]]),
-            size: u32::from_le_bytes([e[8], e[9], e[10], e[11]]),
-        });
+        if md5_seen {
+            if e.iter().any(|&b| b != 0xFF) {
+                return err("the partition table has data after its MD5 entry");
+            }
+            continue;
+        }
+        match e[0..2] {
+            [0xAA, 0x50] => {
+                let name_bytes = &e[12..28];
+                let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(16);
+                out.push(Partition {
+                    ptype: e[2],
+                    subtype: e[3],
+                    offset: u32::from_le_bytes([e[4], e[5], e[6], e[7]]),
+                    size: u32::from_le_bytes([e[8], e[9], e[10], e[11]]),
+                    name: String::from_utf8_lossy(&name_bytes[..end]).into_owned(),
+                    flags: u32::from_le_bytes([e[28], e[29], e[30], e[31]]),
+                });
+            }
+            [0xEB, 0xEB] => {
+                if e[2..16].iter().any(|&b| b != 0xFF) || Md5::digest(&table[..i * 32]).as_slice() != &e[16..32] {
+                    return err("the partition table's MD5 does not match its entries");
+                }
+                md5_seen = true;
+            }
+            _ => return err(format!("the partition table has a bad entry at index {i}")),
+        }
     }
-    out
+    if !md5_seen {
+        return err("the partition table has no MD5 entry");
+    }
+    check_partitions(&out)?;
+    Ok(out)
 }
 
-fn nvs_of(table: &[Partition]) -> Vec<(u32, u32)> {
-    table.iter().filter(|p| p.ptype == 1 && p.subtype == 2).map(|p| (p.offset, p.offset.saturating_add(p.size))).collect()
+fn check_partitions(t: &[Partition]) -> Result<(), FlashError> {
+    if t.is_empty() {
+        return err("the partition table has no entries");
+    }
+    let mut spans: Vec<(u32, u32, &str)> = Vec::new();
+    for p in t {
+        if p.size == 0 || p.offset % SECTOR != 0 || p.offset as u64 + p.size as u64 > MAX_FLASH as u64 {
+            return err(format!("partition {:?} has a bad range (offset 0x{:x}, size 0x{:x})", p.name, p.offset, p.size));
+        }
+        spans.push((p.offset, p.offset + p.size, &p.name));
+    }
+    spans.sort();
+    for w in spans.windows(2) {
+        if w[0].1 > w[1].0 {
+            return err(format!("partitions {:?} and {:?} overlap", w[0].2, w[1].2));
+        }
+    }
+    let nvs = t.iter().filter(|p| p.ptype == 1 && p.subtype == 2).count();
+    if nvs != 1 || !t.iter().any(|p| p.ptype == 1 && p.subtype == 2 && p.name == "nvs") {
+        return err("the partition table needs exactly one nvs partition, named \"nvs\" (the name the firmware opens)");
+    }
+    Ok(())
+}
+
+/// The settings partition as it must be identical before and after: where, how big, what it is called, its flags.
+fn nvs_of(table: &[Partition]) -> Vec<&Partition> {
+    table.iter().filter(|p| p.ptype == 1 && p.subtype == 2).collect()
 }
 
 impl Image {
@@ -211,8 +272,9 @@ impl Image {
         Ok(image)
     }
 
-    /// Structure checks: three parts, in range and disjoint; ESP32-S3 image headers; a partition table that has an nvs
-    /// partition and an app partition at the app's offset that the app fits in.
+    /// Structure checks: three parts at supported, sector-aligned places; ESP32-S3 images that are intact (segments, checksum,
+    /// SHA-256); a valid partition table at 0x8000 with one `nvs` partition and an app partition at the app's offset that the
+    /// app fits in.
     pub fn validate(&self) -> Result<(), FlashError> {
         if self.parts.len() != 3 {
             return err(format!("expected bootloader, partition table and app (3 parts), found {}", self.parts.len()));
@@ -220,11 +282,17 @@ impl Image {
         if self.parts[0].offset != 0 {
             return err("the first part must be the bootloader at 0x0");
         }
+        if self.parts[1].offset != PARTITION_TABLE_OFFSET {
+            return err(format!("the partition table must be at 0x{PARTITION_TABLE_OFFSET:x}, where the bootloader reads it"));
+        }
         for p in &self.parts {
+            if p.offset % SECTOR != 0 {
+                return err(format!("{} is not aligned to an erase sector (4 KiB)", p.name));
+            }
             if p.data.is_empty() {
                 return err(format!("{} is empty", p.name));
             }
-            if p.offset as u64 + p.data.len().next_multiple_of(4) as u64 > self.flash_bytes as u64 {
+            if p.offset as u64 + p.data.len().next_multiple_of(SECTOR as usize) as u64 > self.flash_bytes as u64 {
                 return err(format!("{} does not fit in {} MB of flash", p.name, self.flash_bytes / (1024 * 1024)));
             }
         }
@@ -236,16 +304,13 @@ impl Image {
             }
         }
         for p in [&self.parts[0], &self.parts[2]] {
-            check_esp_header(p)?;
+            check_esp_image(p)?;
         }
         let table_part = &self.parts[1];
         if table_part.data.len() as u32 > PARTITION_TABLE_BYTES {
             return err("the partition table is larger than 0xC00 bytes");
         }
-        let table = parse_partition_table(&table_part.data);
-        if table.is_empty() {
-            return err("the partition table has no entries");
-        }
+        let table = parse_partition_table(&table_part.data)?;
         let app = &self.parts[2];
         let need = app.data.len() as u32;
         match table.iter().find(|p| p.ptype == 0 && p.offset == app.offset) {
@@ -256,14 +321,18 @@ impl Image {
         Ok(())
     }
 
-    /// The flash regions (start, end) the image's own partition table gives to settings storage (data/nvs): where the
-    /// Bluetooth bond lives.
-    pub fn nvs_regions(&self) -> Vec<(u32, u32)> {
-        nvs_of(&parse_partition_table(&self.parts[1].data))
+    /// The new image's partition table (valid, because [`Image::validate`] passed).
+    fn table(&self) -> Result<Vec<Partition>, FlashError> {
+        parse_partition_table(&self.parts[1].data)
     }
 
-    /// Check "the pairing and settings are kept" against this very image: no part, rounded up to whole erase sectors, may
-    /// touch an nvs partition. Needed only when not erasing everything anyway.
+    /// The flash regions (start, end) the image's own partition table gives to the settings (data/nvs): where the pairing lives.
+    pub fn nvs_regions(&self) -> Vec<(u32, u32)> {
+        self.table().map(|t| nvs_of(&t).iter().map(|p| (p.offset, p.offset + p.size)).collect()).unwrap_or_default()
+    }
+
+    /// Check "the pairing and settings are kept" against this very image: no part, rounded out to whole erase sectors, may touch
+    /// an nvs partition. Needed only when not erasing everything anyway.
     pub fn check_keeps_settings(&self) -> Result<(), FlashError> {
         let nvs = self.nvs_regions();
         if nvs.is_empty() {
@@ -280,15 +349,15 @@ impl Image {
         Ok(())
     }
 
-    /// The installed partition table (read from the chip) must give the settings the same place as the new one, or the
-    /// new firmware would not find the old pairing (or, if shrunk, would erase it on start).
+    /// The installed partition table (read from the chip) must give the settings exactly the same place, size, name and flags as
+    /// the new one, or the new firmware would not find the old pairing (or, if shrunk, would erase it on start).
     pub fn check_matches_installed(&self, installed_table: &[u8]) -> Result<(), FlashError> {
-        let installed = nvs_of(&parse_partition_table(installed_table));
-        if installed.is_empty() {
-            return err("the board has no readable partition table (blank or foreign): flash it with a full erase");
-        }
-        if installed != self.nvs_regions() {
-            return err("the new firmware puts the settings (pairing) somewhere other than where the board has them: use a full erase to do that on purpose");
+        let installed = parse_partition_table(installed_table).or_else(|e| {
+            err(format!("the board's partition table is not valid ({e}): flash it with a full erase"))
+        })?;
+        let new = self.table()?;
+        if nvs_of(&installed) != nvs_of(&new) {
+            return err("the new firmware puts the settings (pairing) somewhere other than where the board has them, or under another name: use a full erase to do that on purpose");
         }
         Ok(())
     }
@@ -303,18 +372,44 @@ impl Image {
     }
 }
 
-/// ESP image header: magic, a plausible segment count, and the chip id of the ESP32-S3.
-fn check_esp_header(p: &Part) -> Result<(), FlashError> {
+/// An ESP image, walked the way the ROM bootloader reads it: header (magic, segment count, the ESP32-S3 chip id), each segment
+/// inside the file, the XOR checksum byte, and the appended SHA-256 when the header says there is one.
+fn check_esp_image(p: &Part) -> Result<(), FlashError> {
+    use sha2::{Digest, Sha256};
     let d = &p.data;
+    let bad = |why: &str| err(format!("{} is not an intact ESP32-S3 image: {why}", p.name));
     if d.len() < 24 || d[0] != IMAGE_MAGIC {
-        return err(format!("{} is not an ESP32 image (bad magic byte or too short)", p.name));
+        return bad("bad magic byte or too short");
     }
-    if d[1] == 0 || d[1] > 16 {
-        return err(format!("{} is not an ESP32 image (segment count {})", p.name, d[1]));
+    let segments = d[1] as usize;
+    if segments == 0 || segments > 16 {
+        return bad(&format!("segment count {segments}"));
     }
     let chip = u16::from_le_bytes([d[12], d[13]]);
     if chip != ESP32S3_CHIP_ID {
         return err(format!("{} is built for another chip (id {chip}), not the ESP32-S3", p.name));
+    }
+    let mut pos = 24usize;
+    let mut xor = 0xEFu8;
+    for _ in 0..segments {
+        let Some(h) = d.get(pos..pos + 8) else { return bad("truncated segment header") };
+        let len = u32::from_le_bytes([h[4], h[5], h[6], h[7]]) as usize;
+        let Some(data) = d.get(pos + 8..pos + 8 + len) else { return bad("a segment runs past the end of the file") };
+        xor = data.iter().fold(xor, |a, &b| a ^ b);
+        pos += 8 + len;
+    }
+    let checksum_at = (pos + 1).next_multiple_of(16) - 1;
+    match d.get(checksum_at) {
+        Some(&c) if c == xor => {}
+        Some(_) => return bad("checksum mismatch"),
+        None => return bad("truncated before the checksum"),
+    }
+    let end = checksum_at + 1;
+    if d[23] == 1 {
+        let Some(hash) = d.get(end..end + 32) else { return bad("truncated before the appended SHA-256") };
+        if Sha256::digest(&d[..end]).as_slice() != hash {
+            return bad("appended SHA-256 mismatch");
+        }
     }
     Ok(())
 }
@@ -400,28 +495,22 @@ pub fn usb_devices() -> Result<Vec<UsbDevice>, FlashError> {
         .collect())
 }
 
-/// Devices that are, or may be, the adapter's own USB port (its keyboard and mouse). An Espressif device is one when it has
-/// the adapter's product id, names itself kvm-it, or its name could not be read (it cannot be ruled out); a different
-/// named Espressif board is not.
+/// Espressif USB devices (vendor 303a) on the bus. Any of them may be an adapter's own USB port: running firmware shows as a
+/// keyboard and mouse (`303a:4008`, "kvm-it"), a chip held in download mode as a generic "USB JTAG/serial debug unit"
+/// (`303a:1001`) that cannot be told from a developer board by its descriptor. Flashing the chip through its COM port restarts
+/// it into the keyboard and mouse, so every one of them blocks flashing. (Limits: a device the operating system will not let
+/// the enumerator describe can be missing from the list, and a cable plugged in after the check is not seen.)
 pub fn adapter_native_ports(devices: &[UsbDevice]) -> Vec<&UsbDevice> {
-    devices
-        .iter()
-        .filter(|d| {
-            d.vid == ESPRESSIF_VID
-                && (d.pid == ADAPTER_PID
-                    || (d.product.is_none() && d.manufacturer.is_none())
-                    || [&d.product, &d.manufacturer].iter().any(|s| s.as_deref().is_some_and(|s| s.to_ascii_lowercase().contains(ADAPTER_NAME))))
-        })
-        .collect()
+    devices.iter().filter(|d| d.vid == ESPRESSIF_VID).collect()
 }
 
-/// Refuse while the adapter's native USB port is plugged into this computer.
+/// Refuse while an Espressif USB device (possibly an adapter's own USB port) is plugged into this computer.
 pub fn check_no_native_adapter(devices: &[UsbDevice]) -> Result<(), FlashError> {
     match adapter_native_ports(devices).first() {
         None => Ok(()),
         Some(d) => err(format!(
-            "an adapter's native USB port ({:04x}:{:04x} {}) is plugged into this computer. It presents a keyboard and mouse and would type into this machine. \
-             Unplug that cable and keep only the board's COM port connected.",
+            "an Espressif USB device ({:04x}:{:04x} {}) is plugged into this computer. If it is an adapter's own USB port (the one that is not COM) it presents a keyboard and mouse \
+             and would type into this machine. Unplug it, and keep only the board's COM port connected.",
             d.vid,
             d.pid,
             d.product.clone().unwrap_or_default()
@@ -500,12 +589,12 @@ pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut d
     }
     if !opts.erase_all {
         // read the installed partition table and require the settings to stay where they are
-        let tmp = std::env::temp_dir().join(format!("kvmit-flash-pt-{}.bin", std::process::id()));
-        let read = flasher.read_flash(0x8000, PARTITION_TABLE_BYTES, 0x1000, 64, tmp.clone());
-        let table = std::fs::read(&tmp);
-        let _ = std::fs::remove_file(&tmp);
-        read.map_err(|e| fail("could not read the board's partition table", &e))?;
-        image.check_matches_installed(&table.map_err(|e| fail("could not read the board's partition table", &e))?)?;
+        let scratch = Scratch::new().map_err(|e| fail("could not make a private scratch folder", &e))?;
+        let file = scratch.path().join("partition-table.bin");
+        flasher.read_flash(PARTITION_TABLE_OFFSET, PARTITION_TABLE_BYTES, 0x1000, 64, file.clone()).map_err(|e| fail("could not read the board's partition table", &e))?;
+        let table = read_small(&file).map_err(|e| fail("could not read the board's partition table", &e))?;
+        drop(scratch);
+        image.check_matches_installed(&table)?;
     } else {
         flasher.erase_flash().map_err(|e| fail("erase failed", &e))?;
     }
@@ -522,6 +611,46 @@ pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut d
         .collect();
     flasher.write_bins_to_flash(&segments, progress).map_err(|e| fail("writing the firmware failed", &e))?;
     Ok(Report { mac: info.mac_address })
+}
+
+/// A private, freshly created folder (owner-only on Unix, created exclusively so nothing can be pre-planted in it), removed on
+/// drop. espflash writes the bytes it reads to a path, so that path must not be one another user can choose or swap.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new() -> std::io::Result<Scratch> {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("kvmit-flash-{}-{nanos}", std::process::id()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new().mode(0o700).create(&path)?; // fails if it exists
+        }
+        #[cfg(not(unix))]
+        std::fs::create_dir(&path)?; // fails if it exists; the per-user temp folder is private on Windows
+        Ok(Scratch(path))
+    }
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Read a small regular file, refusing anything else or anything big.
+fn read_small(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let f = std::fs::File::open(path)?;
+    if !f.metadata()?.is_file() {
+        return Err(std::io::Error::other("not a regular file"));
+    }
+    let mut v = Vec::new();
+    f.take(64 * 1024).read_to_end(&mut v)?;
+    Ok(v)
 }
 
 #[cfg(test)]

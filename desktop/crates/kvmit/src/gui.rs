@@ -184,6 +184,11 @@ impl App {
                 ctx.request_repaint();
                 match session::connect(&id).await {
                     Ok((dev, conn)) => {
+                        if gen_ref.load(Ordering::SeqCst) != generation {
+                            // cancelled (e.g. the flasher opened) while this attempt was in flight: never publish it
+                            conn.disconnect().await;
+                            break;
+                        }
                         let name = dev.info().name.clone();
                         *link.lock().unwrap() = Link::Connected { dev: dev.clone(), name, id: id.clone() };
                         notice.lock().unwrap().clear();
@@ -206,17 +211,31 @@ impl App {
                         tokio::select! { _ = dev.closed() => {}, _ = poll => {} }
                         *status.lock().unwrap() = None;
                         conn.disconnect().await;
-                        *link.lock().unwrap() = Link::Failed("link lost, reconnecting…".into());
-                        ctx.request_repaint();
+                        if gen_ref.load(Ordering::SeqCst) == generation {
+                            *link.lock().unwrap() = Link::Failed("link lost, reconnecting…".into());
+                            ctx.request_repaint();
+                        }
                     }
                     Err(e) => {
-                        *link.lock().unwrap() = Link::Failed(e.to_string());
-                        ctx.request_repaint();
+                        if gen_ref.load(Ordering::SeqCst) == generation {
+                            *link.lock().unwrap() = Link::Failed(e.to_string());
+                            ctx.request_repaint();
+                        }
                     }
                 }
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
         });
+    }
+
+    /// Cancel any connection attempt or retry loop without forgetting which adapter was last used (the flasher needs the
+    /// adapter quiet, not forgotten). A live connection is left to the person to Disconnect.
+    fn cancel_pending_link(&mut self) {
+        let mut link = self.link.lock().unwrap();
+        if matches!(&*link, Link::Connecting(_) | Link::Failed(_)) {
+            self.link_gen.fetch_add(1, Ordering::SeqCst);
+            *link = Link::Disconnected;
+        }
     }
 
     fn stop_link(&mut self) {
@@ -821,7 +840,8 @@ impl App {
             }
             _ => {
                 let scanning = matches!(&*self.scan.lock().unwrap(), Scan::Scanning);
-                if ui.add_enabled(!scanning, egui::Button::new(if scanning { "Scanning…" } else { "Scan for adapters" })).clicked() {
+                let flashing = self.flash.is_some(); // no new connection while the flasher window is open
+                if ui.add_enabled(!scanning && !flashing, egui::Button::new(if scanning { "Scanning…" } else { "Scan for adapters" })).clicked() {
                     *self.scan.lock().unwrap() = Scan::Scanning;
                     let (scan, ctx2) = (self.scan.clone(), ctx.clone());
                     self.rt.spawn(async move {
@@ -841,10 +861,10 @@ impl App {
                         for f in list {
                             ui.horizontal(|ui| {
                                 ui.label(format!("{} ({} dBm)", f.name, f.rssi.map(|r| r.to_string()).unwrap_or("?".into())));
-                                if ui.button("Pair & connect").clicked() {
+                                if ui.add_enabled(!flashing, egui::Button::new("Pair & connect")).clicked() {
                                     chosen = Some((f.id.clone(), true));
                                 }
-                                if ui.button("Connect").clicked() {
+                                if ui.add_enabled(!flashing, egui::Button::new("Connect")).clicked() {
                                     chosen = Some((f.id.clone(), false));
                                 }
                             });
@@ -862,10 +882,8 @@ impl App {
         }
         ui.separator();
         if ui.add_enabled(self.flash.is_none(), egui::Button::new("Flash adapter…")).on_hover_text("Write the adapter's firmware through its COM USB port").clicked() {
-            if matches!(link, Link::Connecting(_)) {
-                // a connection attempt in progress (it keeps retrying, with no Disconnect to press) would block flashing
-                self.stop_link();
-            }
+            // a connection attempt in progress or waiting to retry (no Disconnect to press) must not outlive this
+            self.cancel_pending_link();
             self.flash = Some(crate::flashwiz::Wizard::new());
         }
     }

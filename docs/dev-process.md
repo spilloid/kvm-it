@@ -368,3 +368,30 @@ fixed in the commit after this log.
   firmware commit (the pairing-window-once-per-boot fix), and builds are not byte-reproducible (the build time is embedded), so it
   cannot be said whether that board had the fix. `firmware/release` was rebuilt from current sources and flashed; pairing and
   reconnect were re-checked with exactly those bytes.
+
+### Round 8 (re-review of the round-7 fixes, `8bc17e9..59a6f22`)
+
+The reviewer's verdict: "do not ship until wrong-device/native-port gaps, temporary-file safety, validation/preservation holes and
+BLE cancellation are fixed and re-reviewed". Of the 13 round-7 fixes it called 4 fully fixed, 7 partial and 1 regressed (round 7's
+findings 3, 9, 11, 12, 13 fixed; 1, 2, 4, 5, 6, 8 partial; 10 regressed by the wizard's own connection cancel). 13 new findings (F1-F13):
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| F1 | High | Bridges with no (or duplicate) USB serial number: a swapped board under the same port name compares equal | **Confirmed; narrowed, not closed.** Without a serial two identical boards cannot be told apart by software. The app now says so beside the choice (GUI and CLI), re-checks the chip is an ESP32-S3 of the right flash size with a compatible settings layout, and prints the chip's MAC when done. The residual (a physical cable swap in the seconds between choosing and confirming, onto a board that passes all of those) is accepted |
+| F2 | High | The adapter's ROM-mode native port (`303a:1001`, generic debug unit) was explicitly allowed | **Confirmed.** My test blessed it as "unrelated". Now *any* Espressif USB device blocks flashing (an adapter's own port cannot be told from another ESP board), documented |
+| F3 | High | USB enumeration is not a complete inventory (nusb drops unreadable devices on Linux; half-readable descriptors slipped through) | **Partly fixed.** The descriptor-string heuristics are gone (vendor id alone decides). A device the OS will not let nusb describe can still be missing from the list, and a cable plugged in after the check is not seen: stated limits |
+| F4 | High | The installed-table temp file is a predictable, replaceable path | **Confirmed.** A private, exclusively created, owner-only folder, removed on drop; the file is read as a bounded regular file |
+| F5 | High | Invalid images pass (bare 24-byte header; partition table with a flipped MD5) | **Confirmed.** Images are walked like the ROM does (segments inside the file, XOR checksum, appended SHA-256); the table is parsed strictly (bad entries, MD5 verified, data after the MD5, ranges, overlaps, one `nvs`). The committed release images are checked by an always-on test |
+| F6 | High | Equal NVS ranges do not prove the pairing stays reachable (labels, flags ignored) | **Confirmed.** The settings partition must be identical (offset, size, name, flags) in the installed and new tables; exactly one nvs partition, named `nvs` (what the firmware opens) |
+| F7 | Med | Table location accepted anywhere, read-back always at 0x8000 | **Confirmed.** The table part must be at 0x8000 |
+| F8 | Med | Erase footprint arithmetic assumes aligned offsets | **Confirmed.** Every part and partition must be 4 KiB aligned |
+| F9 | Med | Opening the wizard does not cancel or exclude BLE work (retry in `Failed`, in-flight connect publishing late, Adapter popup still usable) | **Confirmed.** An attempt cancelled while in flight disconnects and never publishes (also on its error paths); the wizard cancels `Connecting` and `Failed` loops without forgetting the remembered adapter; Scan/Connect are disabled while it is open. A live connection must still be Disconnected by the person |
+| F10 | Med | Containment/size checks race the actual open | **Partly fixed.** One open, checks on the handle, bounded read. A concurrent swap of a directory component needs write access to the firmware folder: accepted |
+| F11 | Med | Implicit firmware lookup can pick attacker-controlled firmware (cwd; env var wins) | **Partly fixed.** Release builds never look in the working directory; only a debug build tries `firmware/release`. `KVMIT_FIRMWARE` still overrides on purpose (shown in the wizard and the CLI before confirming); there is no runtime signature on firmware |
+| F12 | Med | The CI freshness guard compares commit ids (stale images pass, squash merges fail, scripts not covered) | **Confirmed.** A content hash of the firmware build inputs (sources, patches, lockfile, `scripts/fw.sh`) is recorded in `FIRMWARE.txt` and checked by CI and by `verify-release.py` (which the signed release runs). It binds the inputs to the record, not to the output bytes (builds are not reproducible) |
+| F13 | Med | Windows `autocrlf` can rewrite the bundled JSON so its checksum is stale; verification never checks the inner sums | **Confirmed.** `.gitattributes` marks `firmware/release/**` as `-text`; `verify-release.py` verifies the zip's inner `SHA256SUMS` against its files |
+
+- Tests after the fixes: 23 flash-crate tests (strict images and tables built with real checksums/SHA-256/MD5, the real release images
+  always validated, label/size/move refusals, ROM-mode and half-readable USB devices, scratch folder), wizard rules; clippy clean.
+- Hardware after the fixes (Windows 11 VM, COM bridge): the CLI default flash read back and strictly parsed the board's installed
+  table; the GUI wizard blocked while connected ("Disconnect first"), then after Disconnect flashed and verified.

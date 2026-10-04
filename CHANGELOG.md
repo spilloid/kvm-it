@@ -7,8 +7,8 @@
   It validates the image first, refuses the board's native USB port (which would type into the flashing computer), keeps the
   pairing and settings unless `--erase-all` is given, and asks for confirmation. Host-tested (image and port rules);
   **hardware-verified once** on one board over its CH343 UART. Before writing it re-checks that the chosen port is still the same
-  device, that no adapter's own USB port (a keyboard and mouse, which is HID-only and not a serial port) is plugged into the
-  computer, that the chip is an ESP32-S3 with the image's flash size, and that the installed partition table keeps the settings
+  device, that no Espressif USB device (which may be an adapter's own USB port: a keyboard and mouse, HID-only so not a serial port,
+  or the generic debug unit it shows in download mode) is plugged into the computer, that the chip is an ESP32-S3 with the image's flash size, and that the installed partition table keeps the settings
   where they are; it validates the image (headers, partition table, file paths inside the firmware folder). Hardware
   results: on Linux with a physical board the pairing survives a default flash and is wiped by `--erase-all`, and the native-USB
   refusal works (also with `--any-port`); on Windows 11 (VM, the board's COM bridge passed through) the CLI and the GUI wizard

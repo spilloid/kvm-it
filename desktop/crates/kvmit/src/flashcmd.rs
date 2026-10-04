@@ -63,6 +63,9 @@ pub fn run(a: Args) -> R<()> {
     // fail early and loudly; flash() checks again at the moment of writing
     check_no_native_adapter(&usb_devices()?)?;
     let firmware = a.firmware.clone().unwrap_or_else(|| PathBuf::from(crate::flashwiz::default_firmware_dir()));
+    if firmware.as_os_str().is_empty() {
+        return Err("no firmware folder found next to the program (and none given): pass --firmware <dir> or set KVMIT_FIRMWARE".into());
+    }
     let image = Image::from_build_dir(&firmware)?;
     let port = match &a.port {
         Some(name) => ports.iter().find(|p| &p.name == name).cloned().ok_or_else(|| format!("{name} is not a USB serial port here (see `kvmit flash --list`)"))?,
@@ -80,6 +83,9 @@ pub fn run(a: Args) -> R<()> {
     }
     println!("firmware: {} parts, {} bytes, from {}", image.parts.len(), image.total_bytes(), firmware.display());
     println!("port:     {} ({})", port.name, port.description);
+    if port.serial.as_deref().is_none_or(str::is_empty) {
+        println!("note:     this USB bridge reports no serial number, so identical boards cannot be told apart: do not swap cables now.");
+    }
     println!(
         "{}",
         if a.erase_all {

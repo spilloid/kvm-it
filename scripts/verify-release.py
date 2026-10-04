@@ -8,7 +8,7 @@ right subsystem (kvmit.exe console, kvmit-gui.exe GUI), that the version stamp, 
 CHANGELOG agree with the tag (STD-003 rule 1), and reports whether a signature blob is present. A signature blob is
 NOT proof the signature is valid: validity is checked by Get-AuthenticodeSignature in build-release.ps1 on Windows.
 """
-import hashlib, pathlib, re, struct, sys, zipfile
+import hashlib, pathlib, re, struct, subprocess, sys, zipfile
 
 def die(msg):
     print("FAIL:", msg)
@@ -77,6 +77,21 @@ def main():
             if z.read(f"kvmit/firmware/{n}") != (fw_dir / n).read_bytes():
                 die(f"kvmit/firmware/{n} differs from firmware/release/{n}")
         print(f"ok  firmware: {len(fw_files)} files identical to firmware/release")
+        inner = {}
+        for line in z.read("kvmit/firmware/SHA256SUMS").decode().splitlines():
+            if line.strip():
+                digest, name = line.split(None, 1)
+                inner[name.strip().lstrip("*")] = digest
+        if not inner:
+            die("firmware/SHA256SUMS in the zip is empty")
+        for name, digest in inner.items():
+            if hashlib.sha256(z.read(f"kvmit/firmware/{name}")).hexdigest() != digest:
+                die(f"firmware/SHA256SUMS in the zip does not match {name} (line endings changed by a checkout?)")
+        print(f"ok  firmware/SHA256SUMS in the zip matches its {len(inner)} files")
+        try:
+            subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve().parent / "fw-source-hash.py"), "--check"], check=True)
+        except (subprocess.CalledProcessError, OSError):
+            die("the bundled firmware does not match the firmware sources (scripts/fw-source-hash.py --check)")
         for exe, want_subsystem in (("kvmit.exe", 3), ("kvmit-gui.exe", 2)):
             data = z.read(f"kvmit/{exe}")
             machine, subsystem, sec = pe_info(data, exe)
