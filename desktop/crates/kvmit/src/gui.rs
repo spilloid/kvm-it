@@ -107,6 +107,7 @@ pub struct App {
     run_log: Vec<String>,
     type_text: String,
     type_secret: bool,
+    flash: Option<crate::flashwiz::Wizard>,
 }
 
 impl App {
@@ -144,6 +145,7 @@ impl App {
             run_log: Vec::new(),
             type_text: String::new(),
             type_secret: false,
+            flash: None,
             cfg,
         };
         // Zero-step reconnect: the last adapter and capture device come back on their own.
@@ -692,6 +694,14 @@ impl eframe::App for App {
             ui.add_space(2.0);
         });
 
+        // the flasher window (opened from the Adapter popup); it owns its own progress, so it can stay up while idle
+        if self.flash.is_some() && !self.capturing {
+            let keep = self.flash.as_mut().is_some_and(|w| w.show(ctx));
+            if !keep {
+                self.flash = None;
+            }
+        }
+
         // confirm dialog from a running script
         if let Some(h) = &self.run_handle {
             let pending = h.confirm.lock().unwrap().clone();
@@ -837,6 +847,10 @@ impl App {
                     self.start_link(id, ctx.clone(), pair);
                 }
             }
+        }
+        ui.separator();
+        if ui.button("Flash adapter…").on_hover_text("Write the adapter's firmware through its COM USB port").clicked() {
+            self.flash = Some(crate::flashwiz::Wizard::new());
         }
     }
 

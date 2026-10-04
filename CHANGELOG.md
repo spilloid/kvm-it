@@ -9,6 +9,10 @@
   **hardware-verified once** on one board over its CH343 UART (all three parts written and verified in one session; the board
   booted the result and advertised). Bond preservation and `--erase-all` were not exercised on a bonded board. The GUI flasher is
   not written yet.
+- **Flash adapter…** in the GUI's Adapter popup (`flashwiz.rs`): a window that finds the board's COM port, checks the firmware
+  folder, blocks while any Espressif native USB port is plugged into the computer, requires a second tick before erasing the
+  pairing, flashes on a worker thread with a progress bar, and says how to recover if it fails. Its rules are unit-tested; the
+  window itself has not yet been looked at or driven in a running GUI.
 
 ### Changed
 - Build toolchain is Rust 1.99 (was 1.90), needed for the in-app flasher planned for 0.3.0; clippy lints fixed (`as_chunks`, an
