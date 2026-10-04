@@ -388,28 +388,6 @@ pub async fn pair(_id: &str) -> Result<()> {
 }
 
 /// Remove the OS-level bond (Linux). The adapter-side bond is erased with a 10 s BOOT hold.
-/// Drop any link the system is still holding to this adapter. Pairing on Linux leaves BlueZ's connection open; a pairing that
-/// finishes after the controller stopped wanting it (the flasher opened) must not leave that behind. A no-op where pairing opens
-/// no link.
-#[cfg(target_os = "linux")]
-pub async fn release(id: &str) -> Result<()> {
-    let session = bluer::Session::new().await?;
-    let adapter = session.default_adapter().await?;
-    let addr: bluer::Address = id.parse().map_err(|_| BackendError(format!("bad address {id}")))?;
-    if adapter.device_addresses().await?.contains(&addr) {
-        let dev = adapter.device(addr)?;
-        if dev.is_connected().await? {
-            dev.disconnect().await?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-pub async fn release(_id: &str) -> Result<()> {
-    Ok(())
-}
-
 #[cfg(target_os = "linux")]
 pub async fn unpair(id: &str) -> Result<()> {
     let session = bluer::Session::new().await?;

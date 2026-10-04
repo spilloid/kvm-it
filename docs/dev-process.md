@@ -430,10 +430,30 @@ flashing machine. 3 Medium, 2 Low, all confirmed, all in `gui.rs` start/cancel a
 |---|---|---|---|
 | 1 | Med | A superseded attempt (`start_link(B)` while A is mid-publish) can still publish: the bump did not take the link lock | **Confirmed.** `start_link` bumps the generation and sets `Connecting` under the link lock, in the same step |
 | 2 | Med | An attempt queued but not yet running (state still `Disconnected`) escapes the wizard's cancel | **Confirmed.** Same change: the attempt is registered as `Connecting` synchronously, so `cancel_pending_link` always sees it |
-| 3 | Med | A pairing that succeeds after cancellation leaves BlueZ's link open with no owner | **Confirmed (Linux).** After a cancelled pairing succeeds the controller calls the new `backend::release(id)` (BlueZ `Disconnect`; no-op elsewhere). **Compiled, not exercised**: the Bluetooth adapter belongs to the VM |
+| 3 | Med | A pairing that succeeds after cancellation leaves BlueZ's link open with no owner | **Confirmed (Linux).** After a cancelled pairing succeeds the controller calls the new `backend::release(id)` (BlueZ `Disconnect`; no-op elsewhere). **Compiled, not exercised**: the Bluetooth adapter belongs to the VM. (Superseded in round 11: removed.) |
 | 4 | Low | Cancelled attempts can still write status and notices | **Confirmed.** Writes check the generation; `stop_link` and `cancel_pending_link` clear the status |
 | 5 | Low | The public parser accepts a slice longer than the 0xC00 window | **Confirmed**, not exploitable (callers cap at 0xC00). The parser now refuses it |
 
 - Tests: 29 flash-crate tests (new: the 0xC00 window); clippy clean. The cancellation interleavings still have no automated test (they are
   covered by construction: one lock, one registration step) and the hardware GUI flow (Scan > Connect > wizard blocks > Disconnect > flash)
   passes on the real board. **Not exercised:** the wizard opening while an attempt is mid-flight, and `backend::release`.
+
+### Round 11 (re-review of the round-10 fixes, `18f2916..21aa7c1`)
+
+Round-10 findings 1, 2 and 5 verified fixed. The new `backend::release` (round-10 finding 3) drew three Medium findings and the status-guard fix
+a Low one:
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | Med | Cancel between pairing success and the connection loop bypasses the `release` cleanup | **Confirmed.** |
+| 2 | Med | `release` identifies an address, not an owner: a stale pairing's cleanup can disconnect a newer attempt's wanted connection | **Confirmed (regression from round 10).** |
+| 3 | Med | `release` re-resolves the default controller and can miss the one used for pairing (hci0/hci1); errors are discarded | **Confirmed (conditional on controller hotplug).** |
+| 4 | Low | Generation checks are separate from the writes: a stale status/notice write can still land after a cancel | **Confirmed.** |
+
+Decision: **`backend::release` is removed rather than patched.** It was Linux-only code that cannot be exercised on this rig and each fix
+invited another ownership question. A pairing cannot be cancelled and takes seconds, so the case is removed by construction: the Flash
+adapter button is disabled while a pairing is in flight (and Pair & connect is already disabled while the wizard is open). For finding 4,
+all writes an attempt makes (link state, status, notices) now run under the link lock only if the attempt is still current, and the cancels
+clear state under the same lock (lock order: link, then status/notice), so a write cannot slip between a check and the cancel.
+- Tests: unchanged (29 flash-crate tests); clippy clean; hardware GUI flow (Scan > Connect > wizard blocks > Disconnect > flash) passes. The
+  pairing-in-flight guard is not exercised (the test board was already paired, and Windows pairing returns at once).
