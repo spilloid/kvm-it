@@ -181,7 +181,53 @@ mod imp {
     }
 }
 
-pub use imp::{list_devices, Capture};
+use imp::Capture as PlatformCapture;
+
+/// A capture device: the platform's real backend, or the synthetic demo source (`demo::PREFIX` paths).
+pub struct Capture {
+    inner: Inner,
+    pub mode: Mode,
+    pub info: DeviceInfo,
+}
+
+enum Inner {
+    Platform(PlatformCapture),
+    Demo(crate::demo::DemoCapture),
+}
+
+impl Capture {
+    pub fn open(path: &str) -> Result<Capture, CaptureError> {
+        if let Some(png) = path.strip_prefix(crate::demo::PREFIX) {
+            let c = crate::demo::DemoCapture::open(png)?;
+            let info = DeviceInfo { path: path.to_string(), name: "Demo target (synthetic picture)".into() };
+            return Ok(Capture { mode: c.mode, info, inner: Inner::Demo(c) });
+        }
+        let c = PlatformCapture::open(path)?;
+        Ok(Capture { mode: c.mode, info: c.info.clone(), inner: Inner::Platform(c) })
+    }
+
+    pub fn latest(&self) -> Option<crate::SharedFrame> {
+        match &self.inner {
+            Inner::Platform(c) => c.latest(),
+            Inner::Demo(c) => c.latest(),
+        }
+    }
+
+    /// True once the capture gave up (card unplugged or reset, stream ended): the last frame is stale.
+    pub fn failed(&self) -> bool {
+        match &self.inner {
+            Inner::Platform(c) => c.failed(),
+            Inner::Demo(_) => false,
+        }
+    }
+}
+
+/// All capture devices: the platform's, plus the demo source when `KVMIT_DEMO_VIDEO` names a picture.
+pub fn list_devices() -> Vec<DeviceInfo> {
+    let mut v = imp::list_devices();
+    v.extend(crate::demo::devices());
+    v
+}
 
 #[cfg(test)]
 mod tests {

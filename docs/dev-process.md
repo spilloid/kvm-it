@@ -307,3 +307,26 @@ themselves (the reason STD-001 re-reviews after a fix round). Verdict "do not me
   controller afterwards); helper process killed mid-capture (capture ends, keyboard returns); GUI process frozen
   (keyboard returns after the helper's timeout). Not hardware-tested: the same-frame release+click case, the new
   end-capture-on-unswallowed-key path, the held-key snapshot reordering.
+
+## 2026-10-04 — Video-device switch, logo, Linux AppImage: review round 6
+
+Three branches reviewed read-only by a different model (codex `gpt-6-astra`) before merging: `fix/video-device-switch`
+(A), `branding/logo` (B), `linux-appimage` (C). Findings were adjudicated by reading the code; each fix is in the branch it
+belongs to.
+
+| Br | Sev | Finding | Verdict |
+|---|---|---|---|
+| A | Med | Switching back to the demo after a failed open leaves the picture blank (`last_seq` kept, still source always `seq 1`) | **Confirmed.** Fixed: sequence reset on every switch |
+| A | Med | No way to reopen a stalled device now that the dropdown's Open is gone | **Confirmed.** Fixed: clicking the open row reopens it |
+| A | Med | Demo path saved as `last_video`; `video snap` opens `demo:` without the env var | **Confirmed.** Fixed: never saved; opening is opt-in like listing |
+| A | Med | Oversized PNG can assert in the texture upload | **Confirmed.** Fixed: dimensions checked (max 8192 a side) before decode; regular files only (also covers the FIFO remark) |
+| A | Low | Non-UTF-8 demo path corrupted by lossy conversion | **Confirmed.** Fixed: such a path disables the source |
+| A | High (inherited) | Dropping the old capture under the shared mutex can hang on a stalled V4L card | **Partly fixed.** The drop now happens outside the lock, so scripts' `screen()` is not blocked; the V4L thread's unbounded frame wait is unchanged and stays a known limitation (no hardware occurrence) |
+| B | — | No substantive finding | — |
+| C | Med | `--runtime-file` not given: the embedded runtime floats | **Confirmed.** Fixed: runtime pinned by URL and sha256 (digest taken on first use from the tagged release) |
+| C | Med | glibc check passes if `objdump` fails (no pipefail in the container shell) | **Confirmed.** Fixed: inspect separately, failure is an error |
+| C | Med | Host libraries not bundled (e.g. `libxkbcommon-x11`) | **Confirmed, by design.** Documented in README; the script prints what the binaries link; no bundling |
+| C | Med | Not reproducible: floating base image, apt, file times | **Partly fixed.** Base pinned by digest, times from the commit; apt floats and is documented as such |
+
+- Tests after the fixes: `scripts/rs.sh test` green (new: oversized and non-file demo pictures); the AppImage rebuilt with
+  the changed script, `cli --version` run from it. The GUI popup interaction (reopen click) is not covered by a test.
