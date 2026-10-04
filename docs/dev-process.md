@@ -362,4 +362,9 @@ fixed in the commit after this log.
   the adapter's native USB port plugged in, `kvmit flash` and `--any-port` both refused. Windows 11 VM (COM bridge passed through,
   COM3): `kvmit flash` and the GUI wizard each wrote and verified. Fixed in passing: the wizard was blocked by a connection
   attempt that keeps retrying. A write killed halfway through the app (Windows CLI) left a half-written app; flashing again recovered it with no BOOT button. **Not exercised on hardware:** the Linux GUI wizard, bare-metal Windows.
-- The new MSI component (`THIRD_PARTY_NOTICES.md`) is built only by CI/the release machine, not tried here.
+- The new MSI component (`THIRD_PARTY_NOTICES.md`) is built only by CI/the release machine, not tried here. (Later, in the VM: the
+  zip and MSI built with `build-release.ps1`, the MSI installed, uninstalled, and `verify-release.py` passed.)
+- Found while bundling the firmware: the local `firmware/build` that had been flashed so far was built 2.5 minutes before the last
+  firmware commit (the pairing-window-once-per-boot fix), and builds are not byte-reproducible (the build time is embedded), so it
+  cannot be said whether that board had the fix. `firmware/release` was rebuilt from current sources and flashed; pairing and
+  reconnect were re-checked with exactly those bytes.

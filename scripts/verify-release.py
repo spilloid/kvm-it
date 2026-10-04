@@ -60,7 +60,12 @@ def main():
             die(f"SHA256SUMS disagrees with {a.name}")
         print(f"ok  sha256 {actual[:16]}...  {a.name}")
 
+    fw_dir = pathlib.Path(__file__).resolve().parent.parent / "firmware" / "release"
+    fw_files = sorted(str(p.relative_to(fw_dir)).replace("\\", "/") for p in fw_dir.rglob("*") if p.is_file())
+    if not fw_files:
+        die(f"{fw_dir} holds no firmware: the app's Flash adapter... would have nothing to flash")
     expected = {f"kvmit/{n}" for n in ("kvmit.exe", "kvmit-gui.exe", "README.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md")}
+    expected |= {f"kvmit/firmware/{n}" for n in fw_files}
     zpath = dist / f"{base}.zip"
     signed = {}
     with zipfile.ZipFile(zpath) as z:
@@ -68,6 +73,10 @@ def main():
             die(f"zip entries are {sorted(z.namelist())}, expected {sorted(expected)}")
         if z.testzip() is not None:
             die("zip CRC check failed")
+        for n in fw_files:  # the shipped firmware is exactly what is committed in firmware/release
+            if z.read(f"kvmit/firmware/{n}") != (fw_dir / n).read_bytes():
+                die(f"kvmit/firmware/{n} differs from firmware/release/{n}")
+        print(f"ok  firmware: {len(fw_files)} files identical to firmware/release")
         for exe, want_subsystem in (("kvmit.exe", 3), ("kvmit-gui.exe", 2)):
             data = z.read(f"kvmit/{exe}")
             machine, subsystem, sec = pe_info(data, exe)

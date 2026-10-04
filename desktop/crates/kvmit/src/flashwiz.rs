@@ -33,16 +33,16 @@ pub struct Wizard {
     running: bool,
 }
 
-/// Where the firmware to flash is looked for: `KVMIT_FIRMWARE`, then a `firmware` folder beside the program, then the
-/// build directory of a source checkout.
-fn default_firmware_dir() -> String {
+/// Where the firmware to flash is looked for: `KVMIT_FIRMWARE`, then the `firmware` folder that ships beside the program
+/// (installer, zip and AppImage all carry one), then the committed release images of a source checkout.
+pub fn default_firmware_dir() -> String {
     if let Some(p) = std::env::var_os("KVMIT_FIRMWARE").filter(|p| !p.is_empty()) {
         return PathBuf::from(p).to_string_lossy().into_owned();
     }
     let beside = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("firmware")));
     match beside {
         Some(d) if d.join("flasher_args.json").exists() => d.to_string_lossy().into_owned(),
-        _ => "firmware/build".into(),
+        _ => "firmware/release".into(),
     }
 }
 

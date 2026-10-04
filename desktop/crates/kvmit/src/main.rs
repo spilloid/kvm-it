@@ -52,9 +52,10 @@ enum Cmd {
     },
     /// Flash the adapter's firmware through its UART (COM) port. Never use the board's native USB port for this.
     Flash {
-        /// A firmware build directory (contains flasher_args.json)
-        #[arg(long, default_value = "firmware/build")]
-        firmware: PathBuf,
+        /// A firmware folder (contains flasher_args.json). Default: $KVMIT_FIRMWARE, else the `firmware` folder next to
+        /// the program, else firmware/release in a source checkout
+        #[arg(long)]
+        firmware: Option<PathBuf>,
         /// Serial port (default: the one adapter UART port found)
         #[arg(long)]
         port: Option<String>,

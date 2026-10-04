@@ -32,6 +32,25 @@
       <Component Id="NoticesFile" Guid="*">
         <File Id="ThirdPartyNotices" Source="$(SourceDir)\THIRD_PARTY_NOTICES.md" Name="THIRD_PARTY_NOTICES.md" KeyPath="yes" />
       </Component>
+      <!-- the adapter firmware that Flash adapter... writes; the app looks for a "firmware" folder next to itself -->
+      <Component Id="FwManifest" Guid="*" Subdirectory="firmware">
+        <File Id="FwManifestFile" Source="$(SourceDir)\firmware\flasher_args.json" KeyPath="yes" />
+      </Component>
+      <Component Id="FwApp" Guid="*" Subdirectory="firmware">
+        <File Id="FwAppFile" Source="$(SourceDir)\firmware\kvm-it-firmware.bin" KeyPath="yes" />
+      </Component>
+      <Component Id="FwSums" Guid="*" Subdirectory="firmware">
+        <File Id="FwSumsFile" Source="$(SourceDir)\firmware\SHA256SUMS" KeyPath="yes" />
+      </Component>
+      <Component Id="FwInfo" Guid="*" Subdirectory="firmware">
+        <File Id="FwInfoFile" Source="$(SourceDir)\firmware\FIRMWARE.txt" KeyPath="yes" />
+      </Component>
+      <Component Id="FwBootloader" Guid="*" Subdirectory="firmware\bootloader">
+        <File Id="FwBootloaderFile" Source="$(SourceDir)\firmware\bootloader\bootloader.bin" KeyPath="yes" />
+      </Component>
+      <Component Id="FwPartitions" Guid="*" Subdirectory="firmware\partition_table">
+        <File Id="FwPartitionsFile" Source="$(SourceDir)\firmware\partition_table\partition-table.bin" KeyPath="yes" />
+      </Component>
     </ComponentGroup>
 
     <StandardDirectory Id="ProgramMenuFolder">

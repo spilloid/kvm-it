@@ -31,6 +31,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Bundled adapter firmware is current and intact
+        run: |
+          want=$(git log -1 --format=%H -- firmware/main firmware/CMakeLists.txt firmware/sdkconfig.defaults firmware/patches firmware/dependencies.lock)
+          grep -q "$want" firmware/release/FIRMWARE.txt || { echo "firmware sources last changed in $want but firmware/release was not rebuilt from them (scripts/fw.sh build, copy firmware/build, update FIRMWARE.txt and SHA256SUMS)"; exit 1; }
+          cd firmware/release && sha256sum -c SHA256SUMS
       - name: Vectors are up to date
         run: python3 protocol/gen_vectors.py && git diff --exit-code protocol
       - name: Test, lint, cross-build (container)

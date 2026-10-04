@@ -92,9 +92,9 @@ The controller can flash the adapter itself, on Linux and Windows, with no ESP-I
 
 1. Plug the board's **COM** USB port into the computer. **Keep its other (native USB) port unplugged**: it is the keyboard and
    mouse and would type into this computer. The app refuses to flash while it can see an adapter's USB port attached.
-2. GUI: Adapter chip > **Flash adapter…**; or CLI: `kvmit flash --list`, then `kvmit flash`. The firmware comes from a build
-   folder (`flasher_args.json` with the three images): the GUI looks at `KVMIT_FIRMWARE`, then a `firmware` folder next to the
-   program, then `firmware/build`; the CLI takes `--firmware <dir>`.
+2. GUI: Adapter chip > **Flash adapter…**; or CLI: `kvmit flash --list`, then `kvmit flash`. The firmware that ships with the app
+   (a `firmware` folder next to the program, from `firmware/release` in the repo) is used by default; set `KVMIT_FIRMWARE` or
+   pass `--firmware <dir>` (a folder with `flasher_args.json` and the three images, e.g. `firmware/build`) to use another.
 3. By default only the bootloader, partition table and app are written and the **pairing and settings are kept**. The tool
    checks, from the board itself, that the settings stay where they are. `--erase-all` (GUI: the tick box plus a second
    confirmation) erases everything including the pairing; pair again afterwards.

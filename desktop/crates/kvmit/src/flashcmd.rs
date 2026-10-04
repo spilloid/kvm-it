@@ -5,7 +5,7 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 pub struct Args {
-    pub firmware: PathBuf,
+    pub firmware: Option<PathBuf>,
     pub port: Option<String>,
     pub any_port: bool,
     pub erase_all: bool,
@@ -62,7 +62,8 @@ pub fn run(a: Args) -> R<()> {
     }
     // fail early and loudly; flash() checks again at the moment of writing
     check_no_native_adapter(&usb_devices()?)?;
-    let image = Image::from_build_dir(&a.firmware)?;
+    let firmware = a.firmware.clone().unwrap_or_else(|| PathBuf::from(crate::flashwiz::default_firmware_dir()));
+    let image = Image::from_build_dir(&firmware)?;
     let port = match &a.port {
         Some(name) => ports.iter().find(|p| &p.name == name).cloned().ok_or_else(|| format!("{name} is not a USB serial port here (see `kvmit flash --list`)"))?,
         None => {
@@ -77,7 +78,7 @@ pub fn run(a: Args) -> R<()> {
     if let Some(w) = check_port(&port, a.any_port)? {
         eprintln!("warning: {w}");
     }
-    println!("firmware: {} parts, {} bytes, from {}", image.parts.len(), image.total_bytes(), a.firmware.display());
+    println!("firmware: {} parts, {} bytes, from {}", image.parts.len(), image.total_bytes(), firmware.display());
     println!("port:     {} ({})", port.name, port.description);
     println!(
         "{}",

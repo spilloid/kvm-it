@@ -1,0 +1,4 @@
+kvm-it adapter firmware 0.1.0 (ESP32-S3, 16 MB flash), the images the app flashes (Flash adapter... / kvmit flash).
+Built with scripts/fw.sh build (the pinned ESP-IDF container) from the firmware sources as of commit 0c6d003210d17c55a9207038c8b36c0670f1bac0,
+on 2026-10-04. Release builds are not byte-for-byte reproducible (the build time is embedded), so these exact files are
+what ships; verify with SHA256SUMS. Rebuild from source with scripts/fw.sh build and copy firmware/build over this folder.

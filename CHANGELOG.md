@@ -18,6 +18,10 @@
   pairing, refuses while a script runs or the adapter is connected, flashes on a worker thread with a progress bar (no close button
   and no app exit while writing), and says how to recover if it fails. Its rules are unit-tested; a flash through the window was run end to end in the
   Windows 11 VM. Opening it cancels a pending connection attempt (which would otherwise block it with nothing to press).
+- The adapter firmware ships with the app: `firmware/release/` (the exact images, with provenance and checksums) is installed
+  beside the program by the MSI, included in the zip and the AppImage, and found by `kvmit flash` and **Flash adapter…** with no
+  setup (`KVMIT_FIRMWARE` or `--firmware` override it). CI checks that the bundled images are not older than the firmware sources;
+  `verify-release.py` checks the zip carries them. Windows executables grew from ~21 MB to ~35 MB with the flasher (espflash).
 - `THIRD_PARTY_NOTICES.md` (MPL-2.0 notice for `serialport`) ships in the zip, the MSI and the AppImage; the AppImage builder moved to Rust 1.99.
 
 ### Changed

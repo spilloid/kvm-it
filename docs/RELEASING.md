@@ -15,6 +15,10 @@ to the same release. Treat this file as a checklist: each numbered step is a ste
 - [ ] Hardware claims are labelled exactly: *built*, *host-tested*, *VM-verified* or *hardware-verified*. Nothing is
       called hardware-verified unless it ran on a physical board. The README status table, the CHANGELOG entry and
       `CLAUDE.md`'s dated "re-verify" list agree with each other.
+- [ ] **Bundled firmware.** `firmware/release/` holds the exact adapter images the app flashes (and every package ships). If
+      anything under `firmware/` changed: `scripts/fw.sh build`, copy `firmware/build/{flasher_args.json,kvm-it-firmware.bin,
+      bootloader/bootloader.bin,partition_table/partition-table.bin}` over it, update `FIRMWARE.txt` (the source commit) and
+      `SHA256SUMS`. CI fails if the sources moved on without this; `verify-release.py` checks the packages carry these files.
 - [ ] **Docs step (STD-003).** `README.md`, `docs/*.md` and the docs site describe the *current* app, not history.
       `VERSION`, `desktop/Cargo.toml` (`[workspace.package] version`), the README's `## Status: vX.Y.Z` heading and the
       top CHANGELOG entry all state the same version (`scripts/verify-release.py` checks this).
