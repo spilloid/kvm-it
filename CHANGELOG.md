@@ -9,13 +9,15 @@
   **hardware-verified once** on one board over its CH343 UART. Before writing it re-checks that the chosen port is still the same
   device, that no adapter's own USB port (a keyboard and mouse, which is HID-only and not a serial port) is plugged into the
   computer, that the chip is an ESP32-S3 with the image's flash size, and that the installed partition table keeps the settings
-  where they are; it validates the image (headers, partition table, file paths inside the firmware folder). Not exercised on
-  hardware: the native-USB refusal, `--erase-all`, bond preservation on a bonded board, an interrupted flash, Windows.
+  where they are; it validates the image (headers, partition table, file paths inside the firmware folder). Hardware
+  results: on Linux with a physical board the pairing survives a default flash and is wiped by `--erase-all`, and the native-USB
+  refusal works (also with `--any-port`); on Windows 11 (VM, the board's COM bridge passed through) the CLI and the GUI wizard
+  flash end to end. Not exercised: an interrupted flash, the Linux GUI wizard, bare-metal Windows.
 - **Flash adapter…** in the GUI's Adapter popup (`flashwiz.rs`): a window that finds the board's COM port, checks the firmware
   folder, blocks while any Espressif native USB port is plugged into the computer, requires a second tick before erasing the
   pairing, refuses while a script runs or the adapter is connected, flashes on a worker thread with a progress bar (no close button
-  and no app exit while writing), and says how to recover if it fails. Its rules are unit-tested; the window was seen in the
-  Windows 11 VM without a board (flash disabled, blockers listed); a flash through the window has not been run.
+  and no app exit while writing), and says how to recover if it fails. Its rules are unit-tested; a flash through the window was run end to end in the
+  Windows 11 VM. Opening it cancels a pending connection attempt (which would otherwise block it with nothing to press).
 - `THIRD_PARTY_NOTICES.md` (MPL-2.0 notice for `serialport`) ships in the zip, the MSI and the AppImage; the AppImage builder moved to Rust 1.99.
 
 ### Changed

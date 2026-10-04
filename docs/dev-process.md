@@ -356,7 +356,10 @@ fixed in the commit after this log.
 - Tests after the fixes: 21 flash-crate tests (traversal incl. symlink, duplicate keys, sector sharing, headers, partition rules,
   same-name-other-device, the real board's HID-only descriptor, installed-vs-new tables) and the wizard's blocker rules;
   clippy clean; real firmware build validated by the tests.
-- Hardware: the hardened `kvmit flash` ran on the second board (UART only): chip and flash-size identity, installed-table read-back,
-  verified write of all three parts. **Not exercised on hardware:** the native-USB refusal (needs the board's USB port plugged in),
-  `--erase-all`, a bonded board (bond preserved), a failed or interrupted flash, Windows.
+- Hardware (second board; evening of 2026-10-04): the hardened `kvmit flash` on Linux: chip and flash-size identity, installed-table
+  read-back, verified write of all three parts; the pairing survived a default flash (boot log "trusted controller stored", and a
+  Windows controller reconnected after the pairing window closed) and was wiped by `--erase-all` ("trusted controller none"); with
+  the adapter's native USB port plugged in, `kvmit flash` and `--any-port` both refused. Windows 11 VM (COM bridge passed through,
+  COM3): `kvmit flash` and the GUI wizard each wrote and verified. Fixed in passing: the wizard was blocked by a connection
+  attempt that keeps retrying. **Not exercised on hardware:** a failed or interrupted flash, the Linux GUI wizard, bare-metal Windows.
 - The new MSI component (`THIRD_PARTY_NOTICES.md`) is built only by CI/the release machine, not tried here.

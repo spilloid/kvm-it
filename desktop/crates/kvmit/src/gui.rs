@@ -701,8 +701,8 @@ impl eframe::App for App {
             if running {
                 external.push("A script is running: wait for it to finish or abort it.".to_string());
             }
-            if !matches!(link, Link::Disconnected | Link::Failed(_)) {
-                external.push("The controller is connected (or connecting) to an adapter: use Disconnect in the Adapter popup first.".to_string());
+            if matches!(link, Link::Connected { .. }) {
+                external.push("The controller is connected to an adapter: use Disconnect in the Adapter popup first.".to_string());
             }
             let keep = self.flash.as_mut().is_some_and(|w| w.show(ctx, &external));
             if !keep {
@@ -862,6 +862,10 @@ impl App {
         }
         ui.separator();
         if ui.add_enabled(self.flash.is_none(), egui::Button::new("Flash adapter…")).on_hover_text("Write the adapter's firmware through its COM USB port").clicked() {
+            if matches!(link, Link::Connecting(_)) {
+                // a connection attempt in progress (it keeps retrying, with no Disconnect to press) would block flashing
+                self.stop_link();
+            }
             self.flash = Some(crate::flashwiz::Wizard::new());
         }
     }

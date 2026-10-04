@@ -86,6 +86,22 @@ If `usermod` reports the group is missing, `getent group dialout` shows whether 
 > `sg dialout -c ".../esptool --chip esp32s3 --port /dev/ttyACM0 -b 460800 write-flash @flash_args"`.
 > This is how the first flash was done on the development host (hash-verified).
 
+### Flash from the app (0.3.0)
+
+The controller can flash the adapter itself, on Linux and Windows, with no ESP-IDF install:
+
+1. Plug the board's **COM** USB port into the computer. **Keep its other (native USB) port unplugged**: it is the keyboard and
+   mouse and would type into this computer. The app refuses to flash while it can see an adapter's USB port attached.
+2. GUI: Adapter chip > **Flash adapter…**; or CLI: `kvmit flash --list`, then `kvmit flash`. The firmware comes from a build
+   folder (`flasher_args.json` with the three images): the GUI looks at `KVMIT_FIRMWARE`, then a `firmware` folder next to the
+   program, then `firmware/build`; the CLI takes `--firmware <dir>`.
+3. By default only the bootloader, partition table and app are written and the **pairing and settings are kept**. The tool
+   checks, from the board itself, that the settings stay where they are. `--erase-all` (GUI: the tick box plus a second
+   confirmation) erases everything including the pairing; pair again afterwards.
+4. It checks before writing that the chip is an ESP32-S3 with 16 MB of flash, and verifies what it wrote. A flash cannot be
+   interrupted safely: do not unplug the board or close the app while it runs. If it fails or is interrupted, hold **BOOT**
+   while plugging the COM cable in and flash again.
+
 ### Flash and watch
 
 ```bash
