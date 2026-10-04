@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Switching video devices in the GUI did nothing: the device dropdown was a second popup inside the Video popup, so opening it
+  counted as a click outside and closed the Video popup before anything was chosen. Devices are now rows in the popup (one click
+  switches), and a **Rescan** button re-reads the device list (it was only read at startup, so a card plugged in later never appeared).
+
+### Added
+- A synthetic demo video source for documentation screenshots and tests: with `KVMIT_DEMO_VIDEO=<picture.png>` the GUI lists a
+  "Demo target (synthetic picture)" device that shows that picture, so screenshots never need a real machine's screen.
+
 ## [0.2.0] - 2026-10-04 (Windows controller)
 
 The controller app now runs on Windows. Firmware and wire protocol are unchanged (firmware 0.1.0, protocol v1).

@@ -314,6 +314,25 @@ impl App {
         self.input_tx.clone()
     }
 
+    /// Switch to device `i`: close whatever is open, then open that one, so the old picture never lingers.
+    fn switch_video(&mut self, i: usize) {
+        if i >= self.video_devices.len() {
+            return;
+        }
+        self.video_sel = i;
+        *self.capture.lock().unwrap() = None;
+        self.texture = None;
+        self.open_video();
+    }
+
+    /// Enumerate the capture devices again (a card plugged in or reset after the app started), keeping the selection
+    /// on the same device when it is still there.
+    fn rescan_video(&mut self) {
+        let previous = self.video_devices.get(self.video_sel).map(|d| d.path.clone());
+        self.video_devices = kvmit_video::list_devices();
+        self.video_sel = selection_after_rescan(previous.as_deref(), &self.video_devices);
+    }
+
     fn open_video(&mut self) {
         let Some(d) = self.video_devices.get(self.video_sel) else { return };
         match Capture::open(&d.path) {
@@ -815,23 +834,32 @@ impl App {
     }
 
     fn video_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.horizontal(|ui| {
+            ui.strong("Capture device");
+            if ui.small_button("Rescan").clicked() {
+                self.rescan_video();
+            }
+        });
         if self.video_devices.is_empty() {
-            ui.label("No capture devices.");
+            ui.label("No capture devices found. Plug in an HDMI capture card, then Rescan.");
         } else {
-            egui::ComboBox::from_label("Device")
-                .selected_text(self.video_devices.get(self.video_sel).map(|d| d.name.clone()).unwrap_or_default())
-                .show_ui(ui, |ui| {
-                    for (i, d) in self.video_devices.iter().enumerate() {
-                        ui.selectable_value(&mut self.video_sel, i, format!("{} ({})", d.name, d.path));
-                    }
-                });
-            if ui.button("Open").clicked() {
-                *self.capture.lock().unwrap() = None;
-                self.texture = None;
-                self.open_video();
+            // One row per device, right here: a dropdown would be a second popup, and clicking one of its entries
+            // counts as a click outside this popup, which closes it before the choice is applied.
+            let open = self.capture.lock().unwrap().as_ref().map(|c| c.info.path.clone());
+            let mut chosen = None;
+            for (i, d) in self.video_devices.iter().enumerate() {
+                let is_open = open.as_deref() == Some(d.path.as_str());
+                let text = if is_open { format!("{}  (open)", d.name) } else { d.name.clone() };
+                if ui.selectable_label(is_open, text).on_hover_text(&d.path).clicked() && !is_open {
+                    chosen = Some(i);
+                }
+            }
+            if let Some(i) = chosen {
+                self.switch_video(i);
             }
             if let Some(c) = self.capture.lock().unwrap().as_ref() {
-                ui.label(format!("{}×{} @ {} fps {}", c.mode.width, c.mode.height, c.mode.fps, if c.mode.mjpeg { "MJPEG" } else { "YUYV" }));
+                let kind = if c.info.path.starts_with("demo:") { "still picture" } else if c.mode.mjpeg { "MJPEG" } else { "YUYV" };
+                ui.label(format!("{}×{} @ {} fps {}", c.mode.width, c.mode.height, c.mode.fps, kind));
             }
         }
         if ui.add_enabled(self.device().is_some(), egui::Button::new("Capture keyboard & mouse")).clicked() {
@@ -988,6 +1016,11 @@ fn popup(anchor: &egui::Response, width: f32, add_contents: impl FnOnce(&mut egu
     egui::Popup::menu(anchor).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(width).show(add_contents);
 }
 
+/// Where the selection should point after the device list was re-read: the same device if it is still there, else the first.
+fn selection_after_rescan(previous: Option<&str>, devices: &[DeviceInfo]) -> usize {
+    previous.and_then(|p| devices.iter().position(|d| d.path == p)).unwrap_or(0)
+}
+
 /// A fresh press of a key the OS-level grab forwards (one that maps to a HID usage), as egui sees it. With the grab in
 /// control such a press is swallowed before egui can see it, so seeing one means the grab is not in control.
 /// Auto-repeats (a key held before capture began) and keys the grab cannot map legitimately reach egui and do not count.
@@ -1016,6 +1049,16 @@ mod tests {
 
     fn key(k: egui::Key, pressed: bool, repeat: bool) -> egui::Event {
         egui::Event::Key { key: k, physical_key: Some(k), pressed, repeat, modifiers: egui::Modifiers::NONE }
+    }
+
+    #[test]
+    fn a_rescan_keeps_the_selection_on_the_same_device() {
+        let dev = |path: &str| DeviceInfo { path: path.into(), name: path.into() };
+        let after = vec![dev("/dev/video4"), dev("/dev/video0"), dev("/dev/video2")];
+        assert_eq!(selection_after_rescan(Some("/dev/video0"), &after), 1, "same device, new position");
+        assert_eq!(selection_after_rescan(Some("/dev/video9"), &after), 0, "gone: back to the first");
+        assert_eq!(selection_after_rescan(None, &after), 0);
+        assert_eq!(selection_after_rescan(Some("/dev/video0"), &[]), 0, "no devices at all");
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! only for display; there is no transcoding. The Linux backend is V4L2; other platforms report "unsupported"
 //! until their backend lands (docs/roadmap.md).
 pub mod convert;
+mod demo;
 mod device;
 
 pub use device::{list_devices, Capture, CaptureError, DeviceInfo, Mode};
