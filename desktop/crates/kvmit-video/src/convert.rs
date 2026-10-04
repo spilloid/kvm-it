@@ -8,7 +8,7 @@ pub fn yuyv_to_rgba(width: usize, height: usize, data: &[u8]) -> Option<Vec<u8>>
     }
     let mut out = vec![255u8; width * height * 4];
     let clamp = |v: i32| v.clamp(0, 255) as u8;
-    for (i, px) in data[..width * height * 2].chunks_exact(4).enumerate() {
+    for (i, px) in data[..width * height * 2].as_chunks::<4>().0.iter().enumerate() {
         let (y0, u, y1, v) = (px[0] as i32, px[1] as i32 - 128, px[2] as i32, px[3] as i32 - 128);
         for (j, y) in [y0, y1].into_iter().enumerate() {
             let c = 298 * (y - 16);
@@ -29,7 +29,9 @@ pub fn decode_mjpeg(data: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
 /// Rec.601 luma, integer math.
 pub fn rgba_to_gray_frame(width: usize, height: usize, rgba: &[u8]) -> Frame {
     let gray = rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .take(width * height)
         .map(|p| ((p[0] as u32 * 77 + p[1] as u32 * 150 + p[2] as u32 * 29) >> 8) as u8)
         .collect();

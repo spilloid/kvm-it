@@ -745,7 +745,7 @@ impl eframe::App for App {
                     let size = if avail.x / avail.y > ratio { egui::vec2(avail.y * ratio, avail.y) } else { egui::vec2(avail.x, avail.x / ratio) };
                     let resp = ui.centered_and_justified(|ui| ui.add(egui::Image::new((tex.id(), size)).sense(egui::Sense::click()))).inner;
                     if self.capturing {
-                        ui.painter().rect_stroke(resp.rect, 0.0, egui::Stroke::new(4.0, egui::Color32::from_rgb(220, 70, 60)), egui::StrokeKind::Inside);
+                        ui.painter().rect_stroke(resp.rect, 0.0, egui::Stroke::new(4.0_f32, egui::Color32::from_rgb(220, 70, 60)), egui::StrokeKind::Inside);
                     } else if resp.clicked() {
                         self.begin_capture(ctx);
                     } else if resp.hovered() {
@@ -761,7 +761,7 @@ impl eframe::App for App {
                     ui.painter().text(rect.center() - egui::vec2(0.0, 10.0), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(16.0), ui.visuals().text_color());
                     ui.painter().text(rect.center() + egui::vec2(0.0, 14.0), egui::Align2::CENTER_CENTER, hint, egui::FontId::proportional(13.0), ui.visuals().weak_text_color());
                     if self.capturing {
-                        ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(4.0, egui::Color32::from_rgb(220, 70, 60)), egui::StrokeKind::Inside);
+                        ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(4.0_f32, egui::Color32::from_rgb(220, 70, 60)), egui::StrokeKind::Inside);
                     } else if resp.clicked() && can_capture {
                         self.begin_capture(ctx);
                     }
