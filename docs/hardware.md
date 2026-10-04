@@ -99,8 +99,9 @@ The controller can flash the adapter itself, on Linux and Windows, with no ESP-I
    checks, from the board itself, that the settings stay where they are. `--erase-all` (GUI: the tick box plus a second
    confirmation) erases everything including the pairing; pair again afterwards.
 4. It checks before writing that the chip is an ESP32-S3 with 16 MB of flash, and verifies what it wrote. A flash cannot be
-   interrupted safely: do not unplug the board or close the app while it runs. If it fails or is interrupted, hold **BOOT**
-   while plugging the COM cable in and flash again.
+   interrupted safely: do not unplug the board or close the app while it runs. If it fails or is interrupted, just flash
+   again (the chip is put into its bootloader by the COM port itself; this recovered a write killed halfway through the app on
+   2026-10-04). Only if the board is not found, hold **BOOT** while plugging the COM cable in.
 
 ### Flash and watch
 

@@ -12,7 +12,7 @@
   where they are; it validates the image (headers, partition table, file paths inside the firmware folder). Hardware
   results: on Linux with a physical board the pairing survives a default flash and is wiped by `--erase-all`, and the native-USB
   refusal works (also with `--any-port`); on Windows 11 (VM, the board's COM bridge passed through) the CLI and the GUI wizard
-  flash end to end. Not exercised: an interrupted flash, the Linux GUI wizard, bare-metal Windows.
+  flash end to end. An interrupted flash (the Windows flasher killed halfway through the app) was recovered by flashing again, no BOOT button. Not exercised: the Linux GUI wizard, bare-metal Windows.
 - **Flash adapter…** in the GUI's Adapter popup (`flashwiz.rs`): a window that finds the board's COM port, checks the firmware
   folder, blocks while any Espressif native USB port is plugged into the computer, requires a second tick before erasing the
   pairing, refuses while a script runs or the adapter is connected, flashes on a worker thread with a progress bar (no close button

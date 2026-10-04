@@ -361,5 +361,5 @@ fixed in the commit after this log.
   Windows controller reconnected after the pairing window closed) and was wiped by `--erase-all` ("trusted controller none"); with
   the adapter's native USB port plugged in, `kvmit flash` and `--any-port` both refused. Windows 11 VM (COM bridge passed through,
   COM3): `kvmit flash` and the GUI wizard each wrote and verified. Fixed in passing: the wizard was blocked by a connection
-  attempt that keeps retrying. **Not exercised on hardware:** a failed or interrupted flash, the Linux GUI wizard, bare-metal Windows.
+  attempt that keeps retrying. A write killed halfway through the app (Windows CLI) left a half-written app; flashing again recovered it with no BOOT button. **Not exercised on hardware:** the Linux GUI wizard, bare-metal Windows.
 - The new MSI component (`THIRD_PARTY_NOTICES.md`) is built only by CI/the release machine, not tried here.

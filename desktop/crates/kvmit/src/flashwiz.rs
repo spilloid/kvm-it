@@ -199,7 +199,7 @@ impl Wizard {
                 Some(Err(e)) => {
                     ui.colored_label(RED, "Flashing failed.");
                     ui.label(&e);
-                    ui.weak("The board can be recovered: hold BOOT while plugging in the COM cable, then flash again.");
+                    ui.weak("The board can be recovered: flash again. If it is not found, hold BOOT while plugging in the COM cable, then flash again.");
                     if ui.button("Try again").clicked() {
                         *self.outcome.lock().unwrap() = None;
                     }
