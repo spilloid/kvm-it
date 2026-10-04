@@ -100,6 +100,12 @@ impl ProgressCallbacks for Bar {
     }
 }
 
+impl Default for Wizard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Wizard {
     pub fn new() -> Wizard {
         let firmware = default_firmware_dir();

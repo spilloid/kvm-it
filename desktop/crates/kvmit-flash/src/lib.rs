@@ -141,6 +141,44 @@ impl Image {
         Ok(())
     }
 
+    /// The flash regions (start, end) the image's own partition table gives to non-volatile storage (type data, subtype
+    /// nvs): where the Bluetooth bond and settings live.
+    pub fn nvs_regions(&self) -> Result<Vec<(u32, u32)>, FlashError> {
+        let table = &self.parts[1].data;
+        let mut out = Vec::new();
+        for e in table.as_chunks::<32>().0 {
+            if e[0..2] != [0xAA, 0x50] {
+                break; // MD5 entry or the erased tail
+            }
+            let (ptype, subtype) = (e[2], e[3]);
+            let offset = u32::from_le_bytes([e[4], e[5], e[6], e[7]]);
+            let size = u32::from_le_bytes([e[8], e[9], e[10], e[11]]);
+            if ptype == 1 && subtype == 2 {
+                out.push((offset, offset.saturating_add(size)));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Check the "the pairing and settings are kept" promise against this very image: no part, rounded up to whole 4 KiB
+    /// erase sectors (flash is erased by sector before it is written), may touch an nvs partition. Needed only when not
+    /// erasing everything anyway.
+    pub fn check_keeps_settings(&self) -> Result<(), FlashError> {
+        let nvs = self.nvs_regions()?;
+        if nvs.is_empty() {
+            return err("the image's partition table has no nvs partition, so it cannot be shown that the pairing is kept: use a full erase");
+        }
+        for p in &self.parts {
+            let (start, end) = (p.offset, p.offset.saturating_add((p.data.len() as u32).next_multiple_of(4096)));
+            for &(ns, ne) in &nvs {
+                if start < ne && ns < end {
+                    return err(format!("{} would overwrite the settings partition (0x{ns:x}-0x{ne:x}), erasing the pairing: use a full erase to do that on purpose", p.name));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn total_bytes(&self) -> usize {
         self.parts.iter().map(|p| p.data.len()).sum()
     }
@@ -220,6 +258,9 @@ pub fn flash(port: &str, image: &Image, opts: Options, progress: &mut dyn Progre
     use espflash::flasher::Flasher;
     use espflash::image_format::Segment;
     image.validate()?;
+    if !opts.erase_all {
+        image.check_keeps_settings()?;
+    }
     let fail = |what: &str, e: &dyn std::fmt::Display| FlashError(format!("{what}: {e}"));
     let serial = serialport::new(port, 115_200)
         .flow_control(serialport::FlowControl::None)

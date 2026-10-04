@@ -113,3 +113,65 @@ fn the_real_firmware_build_loads_when_present() {
         assert_eq!(im.parts.len(), 3);
     }
 }
+
+fn table(entries: &[(u8, u8, u32, u32)]) -> Vec<u8> {
+    let mut v = Vec::new();
+    for &(t, st, off, sz) in entries {
+        let mut e = vec![0xAA, 0x50, t, st];
+        e.extend(off.to_le_bytes());
+        e.extend(sz.to_le_bytes());
+        e.resize(32, 0);
+        v.extend(e);
+    }
+    v.extend([0xEB, 0xEB]);
+    v.resize(v.len().next_multiple_of(32).max(3072), 0xFF);
+    v
+}
+
+fn image_with(table: Vec<u8>, bootloader_len: usize, app_off: u32) -> Image {
+    Image {
+        flash_bytes: 16 << 20,
+        parts: vec![
+            Part { name: "bootloader".into(), offset: 0, data: [vec![IMAGE_MAGIC], vec![0; bootloader_len - 1]].concat() },
+            Part { name: "partition-table".into(), offset: 0x8000, data: table },
+            Part { name: "app".into(), offset: app_off, data: vec![IMAGE_MAGIC; 600_000] },
+        ],
+    }
+}
+
+#[test]
+fn this_projects_layout_keeps_the_settings() {
+    let t = table(&[(1, 2, 0x9000, 0x6000), (1, 1, 0xf000, 0x1000), (0, 0, 0x10000, 0x100000)]);
+    let im = image_with(t, 21_088, 0x10000);
+    assert_eq!(im.nvs_regions().unwrap(), vec![(0x9000, 0xf000)]);
+    im.check_keeps_settings().unwrap();
+}
+
+#[test]
+fn a_part_that_reaches_into_nvs_is_refused() {
+    let t = table(&[(1, 2, 0x9000, 0x6000)]);
+    // app placed on top of nvs
+    assert!(image_with(t.clone(), 21_088, 0x9000).check_keeps_settings().unwrap_err().0.contains("settings partition"));
+    // a bootloader grown past 0x9000
+    assert!(image_with(t, 0x9100, 0x10000).check_keeps_settings().is_err());
+}
+
+#[test]
+fn the_partition_table_sector_ends_before_nvs_even_when_rounded_up() {
+    let t = table(&[(1, 2, 0x9000, 0x6000)]);
+    image_with(t, 21_088, 0x10000).check_keeps_settings().unwrap(); // 0x8000 + 4096 == 0x9000: adjacent, not overlapping
+}
+
+#[test]
+fn no_nvs_partition_means_it_cannot_be_shown_and_is_refused() {
+    let t = table(&[(0, 0, 0x10000, 0x100000)]);
+    assert!(image_with(t, 21_088, 0x10000).check_keeps_settings().unwrap_err().0.contains("no nvs partition"));
+}
+
+#[test]
+fn the_real_build_keeps_the_settings_when_present() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../firmware/build");
+    if dir.join("flasher_args.json").exists() {
+        Image::from_build_dir(&dir).unwrap().check_keeps_settings().unwrap();
+    }
+}
