@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+- `kvmit flash` (in progress for 0.3.0): writes the adapter's firmware through its UART (COM) port with the `espflash` library.
+  It validates the image first, refuses the board's native USB port (which would type into the flashing computer), keeps the
+  pairing and settings unless `--erase-all` is given, and asks for confirmation. Host-tested (image and port rules); **not yet
+  run against a board**. The GUI flasher is not written yet.
+
 ### Changed
 - Build toolchain is Rust 1.99 (was 1.90), needed for the in-app flasher planned for 0.3.0; clippy lints fixed (`as_chunks`, an
   always-true `min` in a test, explicit `f32` for stroke widths). No behaviour change. The AppImage builder stays on 1.90 for now.

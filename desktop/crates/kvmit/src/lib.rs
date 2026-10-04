@@ -1,4 +1,5 @@
 pub mod config;
+pub mod flashcmd;
 pub mod gui;
 pub mod host;
 pub mod keymap;

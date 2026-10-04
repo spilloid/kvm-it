@@ -50,6 +50,27 @@ enum Cmd {
         #[arg(long, value_parser = kvmit_script::parse_duration)]
         hold: Option<Duration>,
     },
+    /// Flash the adapter's firmware through its UART (COM) port. Never use the board's native USB port for this.
+    Flash {
+        /// A firmware build directory (contains flasher_args.json)
+        #[arg(long, default_value = "firmware/build")]
+        firmware: PathBuf,
+        /// Serial port (default: the one adapter UART port found)
+        #[arg(long)]
+        port: Option<String>,
+        /// Flash through a USB serial port that is not a known adapter UART (the native USB port is still refused)
+        #[arg(long)]
+        any_port: bool,
+        /// Erase everything first, including the pairing (bond) and settings
+        #[arg(long)]
+        erase_all: bool,
+        /// List USB serial ports and exit
+        #[arg(long)]
+        list: bool,
+        /// Skip the confirmation
+        #[arg(long)]
+        yes: bool,
+    },
     /// Run a script file
     Run {
         file: PathBuf,
@@ -139,6 +160,9 @@ fn real_main(cli: Cli) -> R<()> {
             conn.disconnect().await;
             Ok(())
         }),
+        Cmd::Flash { firmware, port, any_port, erase_all, list, yes } => {
+            kvmit::flashcmd::run(kvmit::flashcmd::Args { firmware, port, any_port, erase_all, yes, list })
+        }
         Cmd::Unpair => rt().block_on(async {
             let id = session::resolve(cli.device, cfg.last_device.clone()).await?;
             backend::unpair(&id).await?;
