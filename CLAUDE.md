@@ -51,6 +51,8 @@ self-test types into the machine it is plugged into.
 - 2026-10-04: untested: the keyboard grab's hook-removal fallback and pre-held-key handling on real keys, the Media
   Foundation stalled-card shutdown, YUY2 capture, Windows 10, non-US layouts/IMEs. Deferred findings (review round 4):
   modifier+click ordering, end-to-end motion backpressure.
+- 2026-10-04: 0.2.1's video-switch fixes after review round 6 (reopen click, sequence reset) are host-tested only; the
+  AppImage's GUI start and a Linux board pass are unrun.
 - 2026-10-04: releases are unsigned until a signing certificate is configured on the release machine; never state a
   release is signed unless `dist/SIGNATURES.txt` (from Get-AuthenticodeSignature) says Valid.
 - 2026-10-03: BLE pairing + GATT and HDMI capture (one MacroSilicon card) were hardware-verified on Linux; LED

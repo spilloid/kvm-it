@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-04 (video switching, logo, Linux AppImage)
+
+Patch release on 0.2.0; firmware (0.1.0) and wire protocol (v1) are unchanged. Verification: the video-switch fix was
+VM-verified (Windows 11 VM, real capture card) before the round-6 review fixes; after them it is host-tested only (the
+reopen click has no test). Nothing new was run on a Linux board or the Linux GUI; the AppImage was built and `cli --version`
+run, the GUI not started from it. See the README status table.
+
 ### Fixed
 - Switching video devices in the GUI did nothing: the device dropdown was a second popup inside the Video popup, so opening it
   counted as a click outside and closed the Video popup before anything was chosen. Devices are now rows in the popup (one click
