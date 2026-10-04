@@ -83,7 +83,7 @@ which USB-C port goes where, what the LED and button mean.
 The CLI does everything the app does:
 `kvmit scan | status | type "text" | key ctrl alt delete | run script.toml [--dry-run] | import payload.txt`.
 
-## Status: v0.2.0
+## Status: v0.2.1
 
 Labels are strict: **built** = compiles; **host-tested** = automated tests pass in CI/containers;
 **hardware-verified** = run on a physical board; **VM-verified** = run in a Windows 11 virtual machine on a Linux
@@ -106,7 +106,7 @@ not bare-metal Windows).
 | Desktop: egui GUI, v0.2.0 layout (top-bar status chips, popups, run-log strip) | **VM-verified** on Windows (chips, popups, capture, error dialog). **Not yet checked on Linux** since the redesign; exposes a UI Automation tree for screen readers and tests. No automated GUI tests |
 | Desktop: Windows keyboard grab (Win, Alt+Tab, ... go to the target while captured) | **VM-verified**: Win and Alt+Tab never reach the controller while captured, a held key reaches the adapter, Ctrl+Alt+Esc releases and the keyboard returns, and a hung GUI cannot trap the keyboard (the helper stops swallowing after 3 s). Not verified: non-US layouts and IMEs, bare metal. Linux has no equivalent |
 | Desktop: shared client change (mouse motion split into 127-unit frames, ordered before clicks) | host-tested; **not re-run on a Linux board yet** |
-| Windows as the controller (app) | **v0.2.0**: runs in a Windows 11 VM with real hardware passed through (rows above); **not verified on bare-metal Windows**. Windows as the *target* works as before: it only sees a USB keyboard and mouse |
+| Windows as the controller (app) | **v0.2.1**: runs in a Windows 11 VM with real hardware passed through (rows above); **not verified on bare-metal Windows**. Windows as the *target* works as before: it only sees a USB keyboard and mouse |
 | Built-in OOBE script | template only, never run on a real OOBE |
 | Session recording | planned |
 
