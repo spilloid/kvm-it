@@ -320,8 +320,12 @@ impl App {
             return;
         }
         self.video_sel = i;
-        *self.capture.lock().unwrap() = None;
+        // take the old capture out and drop it after the lock is released: closing one can wait on a stalled card, and
+        // scripts need this mutex for `screen()`
+        let old = self.capture.lock().unwrap().take();
+        drop(old);
         self.texture = None;
+        self.last_seq = 0; // a still source always reports the same sequence number
         self.open_video();
     }
 
@@ -337,8 +341,11 @@ impl App {
         let Some(d) = self.video_devices.get(self.video_sel) else { return };
         match Capture::open(&d.path) {
             Ok(c) => {
-                self.cfg.last_video = Some(d.path.clone());
-                self.cfg.save();
+                if !d.path.starts_with(kvmit_video::DEMO_PREFIX) {
+                    // the synthetic demo source is never the remembered card
+                    self.cfg.last_video = Some(d.path.clone());
+                    self.cfg.save();
+                }
                 *self.capture.lock().unwrap() = Some(c);
             }
             Err(e) => self.set_notice(format!("video: {e}")),
@@ -849,8 +856,8 @@ impl App {
             let mut chosen = None;
             for (i, d) in self.video_devices.iter().enumerate() {
                 let is_open = open.as_deref() == Some(d.path.as_str());
-                let text = if is_open { format!("{}  (open)", d.name) } else { d.name.clone() };
-                if ui.selectable_label(is_open, text).on_hover_text(&d.path).clicked() && !is_open {
+                let text = if is_open { format!("{}  (open; click to reopen)", d.name) } else { d.name.clone() };
+                if ui.selectable_label(is_open, text).on_hover_text(&d.path).clicked() {
                     chosen = Some(i);
                 }
             }

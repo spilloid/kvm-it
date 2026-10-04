@@ -9,11 +9,20 @@ pub const PREFIX: &str = "demo:";
 
 /// The demo device, if `KVMIT_DEMO_VIDEO` names a picture.
 pub fn devices() -> Vec<DeviceInfo> {
-    match std::env::var_os("KVMIT_DEMO_VIDEO") {
-        Some(p) if !p.is_empty() => vec![DeviceInfo { path: format!("{PREFIX}{}", p.to_string_lossy()), name: "Demo target (synthetic picture)".into() }],
-        _ => Vec::new(),
+    match enabled_path() {
+        Some(p) => vec![DeviceInfo { path: format!("{PREFIX}{p}"), name: "Demo target (synthetic picture)".into() }],
+        None => Vec::new(),
     }
 }
+
+/// The picture named by `KVMIT_DEMO_VIDEO`; none if unset, empty, or not valid UTF-8 (a lossy path would open a
+/// different file than the one named).
+fn enabled_path() -> Option<String> {
+    std::env::var_os("KVMIT_DEMO_VIDEO").filter(|p| !p.is_empty()).and_then(|p| p.into_string().ok())
+}
+
+/// Larger than any GPU's texture limit we would upload; also bounds the decode.
+const MAX_SIDE: u32 = 8192;
 
 pub struct DemoCapture {
     frame: SharedFrame,
@@ -22,6 +31,21 @@ pub struct DemoCapture {
 
 impl DemoCapture {
     pub fn open(png: &str) -> Result<DemoCapture, CaptureError> {
+        // opening is as opt-in as listing: a saved "demo:" path does nothing unless the environment variable is set
+        if enabled_path().is_none() {
+            return Err(CaptureError("the demo video source is off (KVMIT_DEMO_VIDEO is not set)".into()));
+        }
+        Self::open_checked(png)
+    }
+
+    fn open_checked(png: &str) -> Result<DemoCapture, CaptureError> {
+        if !std::fs::metadata(png).map(|m| m.is_file()).unwrap_or(false) {
+            return Err(CaptureError(format!("demo picture {png}: not a regular file")));
+        }
+        let (iw, ih) = image::image_dimensions(png).map_err(|e| CaptureError(format!("demo picture {png}: {e}")))?;
+        if iw == 0 || ih == 0 || iw > MAX_SIDE || ih > MAX_SIDE {
+            return Err(CaptureError(format!("demo picture {png}: {iw}x{ih} is outside 1..={MAX_SIDE} per side")));
+        }
         let img = image::open(png).map_err(|e| CaptureError(format!("demo picture {png}: {e}")))?.into_rgba8();
         let (w, h) = (img.width() as usize, img.height() as usize);
         let frame = Arc::new(VideoFrame { width: w, height: h, rgba: img.into_raw(), seq: 1 });
@@ -41,7 +65,7 @@ mod tests {
     fn serves_the_picture_it_was_given() {
         let path = std::env::temp_dir().join(format!("kvmit-demo-test-{}.png", std::process::id()));
         image::save_buffer(&path, &[10u8, 20, 30, 255].repeat(6), 3, 2, image::ColorType::Rgba8).unwrap();
-        let c = DemoCapture::open(path.to_str().unwrap()).unwrap();
+        let c = DemoCapture::open_checked(path.to_str().unwrap()).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!((c.mode.width, c.mode.height), (3, 2));
         let f = c.latest().unwrap();
@@ -51,6 +75,20 @@ mod tests {
 
     #[test]
     fn a_missing_picture_is_an_error_not_a_blank_card() {
-        assert!(DemoCapture::open("/nonexistent/demo.png").is_err());
+        assert!(DemoCapture::open_checked("/nonexistent/demo.png").is_err());
+    }
+
+    #[test]
+    fn a_picture_wider_than_any_texture_is_refused() {
+        let path = std::env::temp_dir().join(format!("kvmit-demo-wide-{}.png", std::process::id()));
+        image::save_buffer(&path, &vec![0u8; 9000 * 4], 9000, 1, image::ColorType::Rgba8).unwrap();
+        let r = DemoCapture::open_checked(path.to_str().unwrap());
+        let _ = std::fs::remove_file(&path);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn a_directory_is_not_a_picture() {
+        assert!(DemoCapture::open_checked(std::env::temp_dir().to_str().unwrap()).is_err());
     }
 }
