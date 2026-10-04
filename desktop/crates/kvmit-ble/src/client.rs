@@ -12,6 +12,13 @@ pub const RETRY_AFTER: Duration = Duration::from_millis(350);
 pub const ATTEMPTS: usize = 4;
 pub const KEEPALIVE_EVERY: Duration = Duration::from_secs(1);
 pub const MOTION_FLUSH_EVERY: Duration = Duration::from_millis(8);
+/// The adapter turns each MOUSE_MOVE frame into one USB HID report per 127 units of travel, back to back inside its
+/// BLE handler. One frame never carries more than this per axis, so its work is bounded (a huge frame stalls the
+/// adapter's link: seen with an absolute-position pointer, whose "deltas" are thousands of units per event).
+pub const MOTION_MAX_PER_FRAME: i32 = 127;
+/// Unsent motion beyond this is dropped (about 16 frames, ~130 ms of catch-up): a flood shows as brief pointer lag,
+/// which the video feedback loop corrects, instead of a growing backlog.
+pub const MOTION_MAX_BACKLOG: i32 = MOTION_MAX_PER_FRAME * 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkError {
@@ -72,10 +79,11 @@ impl Drop for Inner {
 }
 
 impl Inner {
+    /// The next motion frame: at most `MOTION_MAX_PER_FRAME` per axis; the rest stays for the next flush.
     fn take_motion(&self) -> (i16, i16) {
         let mut m = self.motion.lock().unwrap();
-        let dx = m.0.clamp(i16::MIN as i32, i16::MAX as i32);
-        let dy = m.1.clamp(i16::MIN as i32, i16::MAX as i32);
+        let dx = m.0.clamp(-MOTION_MAX_PER_FRAME, MOTION_MAX_PER_FRAME);
+        let dy = m.1.clamp(-MOTION_MAX_PER_FRAME, MOTION_MAX_PER_FRAME);
         *m = (m.0 - dx, m.1 - dy);
         (dx as i16, dy as i16)
     }
@@ -211,6 +219,9 @@ impl Device {
                     Ok(_) => misses = 0,
                     Err(_) => {
                         misses += 1;
+                        if std::env::var_os("KVMIT_DEBUG").is_some() {
+                            eprintln!("[debug] keepalive ping got no reply ({misses} in a row)");
+                        }
                         if misses >= 3 {
                             ka.close();
                             return;
@@ -303,8 +314,8 @@ impl Device {
     /// Relative motion; accumulated and flushed every few ms, never blocks, loss shows as lag not as a missed click.
     pub fn mouse_move(&self, dx: i32, dy: i32) {
         let mut m = self.inner.motion.lock().unwrap();
-        m.0 = m.0.saturating_add(dx);
-        m.1 = m.1.saturating_add(dy);
+        m.0 = m.0.saturating_add(dx).clamp(-MOTION_MAX_BACKLOG, MOTION_MAX_BACKLOG);
+        m.1 = m.1.saturating_add(dy).clamp(-MOTION_MAX_BACKLOG, MOTION_MAX_BACKLOG);
     }
     /// Best-effort release then close; used on capture exit, app close and abort.
     pub async fn shutdown(&self) {
@@ -324,6 +335,8 @@ mod tests {
         keys: Vec<u8>,
         key_downs_applied: usize,
         motion: (i32, i32),
+        /// Largest per-axis size of any single MOUSE_MOVE frame seen.
+        max_frame: i32,
         replies_to_drop: usize,
         seen_frames: usize,
         silent: bool,
@@ -356,8 +369,10 @@ mod tests {
                     msg::PING => Some(encode_vec(msg::PING, FLAG_RESPONSE, f.seq, f.payload).unwrap()),
                     msg::STATUS => Some(encode_vec(msg::STATUS, FLAG_RESPONSE, f.seq, &[1, st.keys.len() as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0]).unwrap()),
                     msg::MOUSE_MOVE => {
-                        st.motion.0 += i16::from_le_bytes([f.payload[0], f.payload[1]]) as i32;
-                        st.motion.1 += i16::from_le_bytes([f.payload[2], f.payload[3]]) as i32;
+                        let (dx, dy) = (i16::from_le_bytes([f.payload[0], f.payload[1]]) as i32, i16::from_le_bytes([f.payload[2], f.payload[3]]) as i32);
+                        st.motion.0 += dx;
+                        st.motion.1 += dy;
+                        st.max_frame = st.max_frame.max(dx.abs()).max(dy.abs());
                         None
                     }
                     t => {
@@ -448,15 +463,26 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn motion_is_accumulated_and_clamped() {
+    async fn motion_is_accumulated_in_bounded_frames() {
         let st = Arc::new(Mutex::new(MockState::default()));
         let dev = Device::connect(spawn_mock(st.clone())).await.unwrap();
         for _ in 0..10 {
             dev.mouse_move(3, -2);
         }
-        dev.mouse_move(40_000, 0);
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(st.lock().unwrap().motion, (40_030, -20));
+        assert_eq!(st.lock().unwrap().motion, (30, -20));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_huge_motion_is_capped_and_sent_in_frames_of_at_most_127() {
+        let st = Arc::new(Mutex::new(MockState::default()));
+        let dev = Device::connect(spawn_mock(st.clone())).await.unwrap();
+        // an absolute-position device reports thousands of units per event; the backlog is capped, never flooded
+        dev.mouse_move(40_000, -40_000);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let m = st.lock().unwrap().motion;
+        assert_eq!(m, (MOTION_MAX_BACKLOG, -MOTION_MAX_BACKLOG));
+        assert!(st.lock().unwrap().max_frame <= MOTION_MAX_PER_FRAME, "no frame may exceed {MOTION_MAX_PER_FRAME}");
     }
 
     #[tokio::test(start_paused = true)]

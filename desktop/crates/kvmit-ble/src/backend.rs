@@ -178,6 +178,9 @@ async fn find(ad: &Adapter, id: &str, wait: Duration) -> Result<Peripheral> {
 pub struct Connection {
     pub io: Option<LinkIo>,
     peripheral: Peripheral,
+    /// Windows: holds the fast-connection request for as long as the link is open.
+    #[cfg(windows)]
+    _fast: Option<FastLink>,
 }
 
 impl Connection {
@@ -194,6 +197,8 @@ pub async fn connect(id: &str) -> Result<Connection> {
     let ad = adapter().await?;
     let p = find(&ad, id, Duration::from_secs(20)).await?;
     p.connect().await?;
+    #[cfg(windows)]
+    let fast = request_fast_link(id).await;
     p.discover_services().await?;
     let chars = p.characteristics();
     let rx_char = chars.iter().find(|c| c.uuid == RX_UUID).cloned();
@@ -209,22 +214,42 @@ pub async fn connect(id: &str) -> Result<Connection> {
     let (client_tx, mut from_client) = mpsc::unbounded_channel::<Vec<u8>>();
 
     tokio::spawn(async move {
+        let debug = std::env::var_os("KVMIT_DEBUG").is_some();
+        let mut last = std::time::Instant::now();
         while let Some(n) = notifications.next().await {
+            if debug && last.elapsed() > Duration::from_millis(1500) {
+                eprintln!("[debug] no notification for {} ms", last.elapsed().as_millis());
+            }
+            last = std::time::Instant::now();
             if n.uuid == TX_UUID && to_client.send(n.value).is_err() {
                 break;
             }
+        }
+        if debug {
+            eprintln!("[debug] notification stream ended after {} ms of silence", last.elapsed().as_millis());
         }
         // stream end = disconnect; dropping `to_client` tells the client the link is gone
     });
     let writer = p.clone();
     tokio::spawn(async move {
+        let debug = std::env::var_os("KVMIT_DEBUG").is_some();
         while let Some(frame) = from_client.recv().await {
-            if writer.write(&rx_char, &frame, WriteType::WithoutResponse).await.is_err() {
+            let t = std::time::Instant::now();
+            let r = writer.write(&rx_char, &frame, WriteType::WithoutResponse).await;
+            if debug && (t.elapsed() > Duration::from_millis(100) || r.is_err()) {
+                eprintln!("[debug] gatt write took {} ms, ok={}", t.elapsed().as_millis(), r.is_ok());
+            }
+            if r.is_err() {
                 break; // drops from_client; client sees sends fail as Closed
             }
         }
     });
-    Ok(Connection { io: Some(LinkIo { tx: client_tx, rx: client_rx }), peripheral: p })
+    Ok(Connection {
+        io: Some(LinkIo { tx: client_tx, rx: client_rx }),
+        peripheral: p,
+        #[cfg(windows)]
+        _fast: fast,
+    })
 }
 
 /// Pair and trust an adapter through BlueZ. Pairing is Just Works, so the adapter only accepts it
@@ -291,6 +316,33 @@ impl From<windows::core::Error> for BackendError {
 async fn le_device(id: &str) -> Result<windows::Devices::Bluetooth::BluetoothLEDevice> {
     let addr = u64::from_str_radix(&id.replace(':', ""), 16).map_err(|_| BackendError(format!("bad address {id}")))?;
     Ok(windows::Devices::Bluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(addr)?.await?)
+}
+
+/// Keeps the Windows "throughput optimised" connection request alive; dropping it lets the stack relax the link.
+#[cfg(windows)]
+pub struct FastLink {
+    _dev: windows::Devices::Bluetooth::BluetoothLEDevice,
+    _req: windows::Devices::Bluetooth::BluetoothLEPreferredConnectionParametersRequest,
+}
+
+/// Windows 11: ask for the shortest connection interval while the link is open. Windows' default interval (about
+/// 60 ms here) cannot carry a moving pointer's motion frames plus acks; the link collapses above ~30-60 frames/s.
+/// Best effort: older Windows lacks the API, and a refusal just leaves the default behaviour.
+#[cfg(windows)]
+async fn request_fast_link(id: &str) -> Option<FastLink> {
+    use windows::Devices::Bluetooth::{BluetoothLEDevice, BluetoothLEPreferredConnectionParameters};
+    let debug = std::env::var_os("KVMIT_DEBUG").is_some();
+    let interval = |d: &BluetoothLEDevice| d.GetConnectionParameters().and_then(|p| p.ConnectionInterval()).ok();
+    let dev = le_device(id).await.ok()?;
+    if debug {
+        eprintln!("[debug] connection interval before: {:?} (x1.25 ms)", interval(&dev));
+    }
+    let req = dev.RequestPreferredConnectionParameters(&BluetoothLEPreferredConnectionParameters::ThroughputOptimized().ok()?).ok()?;
+    if debug {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        eprintln!("[debug] fast-link request status {:?}; interval now: {:?} (x1.25 ms)", req.Status(), interval(&dev));
+    }
+    Some(FastLink { _dev: dev, _req: req })
 }
 
 /// Windows: pair through the WinRT custom-pairing API, accepting the Just Works confirmation in code, so no
