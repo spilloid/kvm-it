@@ -53,6 +53,28 @@ statically). A software OpenGL (Mesa) is only needed on a machine without a GPU,
   - optionally `$env:KVMIT_TIMESTAMP_URL` (an RFC 3161 server; the default is `http://timestamp.digicert.com`).
   With no provider set the build still works but is **unsigned**, says so loudly and records it in `SIGNATURES.txt`.
 
+## 3b. CI signing (preferred)
+
+`.github/workflows/release.yml` does steps 2, 4 and the attach half of 6 on GitHub: it cross-builds the executables
+with `scripts/rs.sh windows`, signs them and the MSI with **Azure Artifact Signing**, verifies every signature
+(valid, timestamped, expected signer), runs `verify-release.py --require-signed`, and attaches the assets. It runs when
+a release is published, or by hand (`workflow_dispatch` with the tag) to rebuild an existing one. No key, PFX or password
+exists anywhere (STD-006): the job authenticates with a GitHub OIDC federated credential, and Artifact Signing issues
+three-day certificates, which is why every signature is RFC 3161 timestamped.
+
+One-time setup, from a checkout of `spoolsmith` (the script is repo-agnostic; every repo gets its own app registration,
+so access is revocable per repo):
+
+```powershell
+az login
+./scripts/setup-signing.ps1 -AccountName jdspille -ResourceGroup RG0 -ProfileName primary-profile -Repo spilloid/kvm-it
+```
+
+It creates `kvm-it-release-signing`, trusts only `repo:spilloid/kvm-it:environment:release`, grants *Artifact Signing
+Certificate Profile Signer* on the certificate profile only, and creates the `release` environment (restricted to
+`main` and `v*` tags) with `SIGNING_*` variables and the three Azure identifiers. The workflow refuses to run, rather
+than ship unsigned, if any of them is missing. Steps 5 (smoke test) and the release notes stay manual.
+
 ## 4. Build the assets
 
 ```powershell

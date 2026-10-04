@@ -1,12 +1,16 @@
 # Build the Windows release assets from already-built executables: signed (if configured) kvmit.exe + kvmit-gui.exe,
 # an MSI, a zip, and SHA-256 files. Run on the release machine; see docs/RELEASING.md.
-#   ./scripts/build-release.ps1 -Tag v0.2.0 [-ExeDir <dir>] [-OutDir dist] [-SkipMsi]
+#   ./scripts/build-release.ps1 -Tag v0.2.0 [-ExeDir <dir>] [-OutDir dist] [-SkipMsi] [-Stage all|stage|msi|package]
+# -Stage all (default) does everything on one machine, signing through scripts/sign.ps1. CI runs the stages separately
+# (stage -> sign the exes -> msi -> sign the MSI -> package) so Azure Artifact Signing can sit between them; see
+# .github/workflows/release.yml.
 # The executables are NOT built here on purpose: release what was tested. docs/RELEASING.md says how they are built.
 param(
     [Parameter(Mandatory)][string]$Tag,
     [string]$ExeDir = 'desktop/target/x86_64-pc-windows-gnu/release',
     [string]$OutDir = 'dist',
-    [switch]$SkipMsi
+    [switch]$SkipMsi,
+    [ValidateSet('all', 'stage', 'msi', 'package')][string]$Stage = 'all'
 )
 $ErrorActionPreference = 'Stop'
 if ($Tag -notmatch '^v(\d+\.\d+\.\d+)$') { throw 'Tag must look like v1.2.3' }
@@ -15,30 +19,38 @@ $declared = (Get-Content VERSION -Raw).Trim()
 if ($declared -ne $ver) { throw "VERSION says $declared but the tag is $ver" }
 $cargoVer = (Select-String -Path desktop/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
 if ($cargoVer -ne $ver) { throw "desktop/Cargo.toml says $cargoVer but the tag is $ver" }
-foreach ($f in 'kvmit.exe', 'kvmit-gui.exe') {
-    if (-not (Test-Path (Join-Path $ExeDir $f))) { throw "$f not found in $ExeDir" }
-}
 
 $out = New-Item -ItemType Directory -Force $OutDir
-$stage = Join-Path $out 'stage'
-if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-$app = New-Item -ItemType Directory -Force (Join-Path $stage 'kvmit')
-foreach ($f in 'kvmit.exe', 'kvmit-gui.exe') { Copy-Item (Join-Path $ExeDir $f) $app }
-foreach ($f in 'README.md', 'LICENSE', 'CHANGELOG.md') { Copy-Item $f $app }
-
-# 1. sign the executables first, so the MSI and the zip both carry signed binaries
-& "$PSScriptRoot/sign.ps1" -Path (Join-Path $app 'kvmit.exe'), (Join-Path $app 'kvmit-gui.exe')
+$stageDir = Join-Path $out 'stage'
+$app = Join-Path $stageDir 'kvmit'
+if ($Stage -in 'all', 'stage') {
+    foreach ($f in 'kvmit.exe', 'kvmit-gui.exe') {
+        if (-not (Test-Path (Join-Path $ExeDir $f))) { throw "$f not found in $ExeDir" }
+    }
+    if (Test-Path $stageDir) { Remove-Item $stageDir -Recurse -Force }
+    $app = (New-Item -ItemType Directory -Force $app).FullName
+    foreach ($f in 'kvmit.exe', 'kvmit-gui.exe') { Copy-Item (Join-Path $ExeDir $f) $app }
+    foreach ($f in 'README.md', 'LICENSE', 'CHANGELOG.md') { Copy-Item $f $app }
+    # 1. sign the executables first, so the MSI and the zip both carry signed binaries
+    if ($Stage -eq 'all') { & "$PSScriptRoot/sign.ps1" -Path (Join-Path $app 'kvmit.exe'), (Join-Path $app 'kvmit-gui.exe') }
+}
+if (($Stage -in 'msi', 'package') -and -not (Test-Path (Join-Path $app 'kvmit.exe'))) { throw "run -Stage stage first: $app is empty" }
+if ($Stage -eq 'stage') { return }
 
 $assets = @()
 $base = "kvmit-$Tag-windows-x64"
 
 # 2. MSI (WiX v5: dotnet tool install --global wix)
-if (-not $SkipMsi) {
-    $msi = Join-Path $out "$base.msi"
+$msi = Join-Path $out "$base.msi"
+if (($Stage -in 'all', 'msi') -and -not $SkipMsi) {
     if (Test-Path $msi) { Remove-Item $msi }
     wix build installer/kvmit.wxs -arch x64 -d "Version=$ver" -d "SourceDir=$((Resolve-Path $app).Path)" -pdbtype none -o $msi
     if ($LASTEXITCODE -ne 0) { throw 'wix build failed' }
-    & "$PSScriptRoot/sign.ps1" -Path $msi
+    if ($Stage -eq 'all') { & "$PSScriptRoot/sign.ps1" -Path $msi }
+}
+if ($Stage -eq 'msi') { return }
+if (-not $SkipMsi) {
+    if (-not (Test-Path $msi)) { throw "$msi not found: run -Stage msi first" }
     $assets += $msi
 }
 

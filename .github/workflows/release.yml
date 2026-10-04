@@ -1,0 +1,206 @@
+name: Release Builds
+
+# Builds the Windows executables the tested way (scripts/rs.sh windows, the same container CI uses), signs them and
+# the MSI with Azure Artifact Signing, verifies every signature, and only then attaches the assets to the release.
+# No key, PFX or password exists anywhere: the signing job authenticates with a GitHub OIDC federated credential
+# (STD-006). Setup is in docs/RELEASING.md ("CI signing").
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and upload assets to
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  exes:
+    name: Build Windows executables (container cross-build)
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
+      - name: Check the tag against VERSION
+        id: meta
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release tag"; exit 1; }
+          [ "v$(tr -d '[:space:]' < VERSION)" = "$RELEASE_TAG" ] || { echo "VERSION does not match the tag"; exit 1; }
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - run: scripts/rs.sh windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-exes
+          path: |
+            desktop/target/x86_64-pc-windows-gnu/release/kvmit.exe
+            desktop/target/x86_64-pc-windows-gnu/release/kvmit-gui.exe
+          if-no-files-found: error
+
+  sign:
+    name: Sign, package and verify
+    needs: exes
+    runs-on: windows-latest
+    # The OIDC subject for a job in an environment is repo:spilloid/kvm-it:environment:release whether it runs for
+    # a published release (the tag) or a manual dispatch (main), so one federated credential covers both.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TAG: ${{ needs.exes.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.exes.outputs.tag }}
+
+      # Fail before building anything, and never fall back to an unsigned release.
+      - name: Check signing configuration
+        shell: pwsh
+        env:
+          SIGNING_ENDPOINT: ${{ vars.SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.SIGNING_ACCOUNT }}
+          SIGNING_PROFILE: ${{ vars.SIGNING_PROFILE }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          $missing = @('SIGNING_ENDPOINT', 'SIGNING_ACCOUNT', 'SIGNING_PROFILE',
+                       'AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID') |
+            Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
+          if ($missing) {
+            throw "Code signing is not configured; missing: $($missing -join ', '). Set them under Settings > Environments > release (docs/RELEASING.md, CI signing). Releases are never published unsigned."
+          }
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-exes
+          path: build/exes
+
+      - name: Stage the files
+        shell: pwsh
+        run: ./scripts/build-release.ps1 -Tag $env:TAG -ExeDir build/exes -Stage stage
+
+      - name: Azure login
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign the executables
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist\stage\kvmit
+          files-folder-filter: exe
+          file-digest: SHA256
+          # Signing certificates last three days; without the countersignature the release stops verifying.
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Verify the executables are signed and timestamped
+        shell: pwsh
+        run: ./scripts/verify-signature.ps1 -Files dist/stage/kvmit/kvmit.exe, dist/stage/kvmit/kvmit-gui.exe -ExpectedSubject '${{ vars.SIGNING_EXPECTED_SUBJECT }}'
+
+      - name: Build the MSI from the signed executables
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          ./scripts/build-release.ps1 -Tag $env:TAG -Stage msi
+
+      - name: Sign the MSI
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}\dist
+          files-folder-filter: msi
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Verify the MSI
+        shell: pwsh
+        run: ./scripts/verify-signature.ps1 -Files "dist/kvmit-$env:TAG-windows-x64.msi" -ExpectedSubject '${{ vars.SIGNING_EXPECTED_SUBJECT }}'
+
+      - name: Zip, checksum and record signatures
+        shell: pwsh
+        run: ./scripts/build-release.ps1 -Tag $env:TAG -Stage package
+
+      - name: Verify the assets (hashes, zip contents, PE headers, versions, signature blobs)
+        shell: pwsh
+        run: python scripts/verify-release.py dist $env:TAG --require-signed
+
+      - name: Check Windows' own verdict on what will ship
+        shell: pwsh
+        run: |
+          Get-Content dist/SIGNATURES.txt
+          # Line 1 is a header; every other line is "<file>  <status>  <signer>".
+          $bad = Get-Content dist/SIGNATURES.txt | Select-Object -Skip 1 | Where-Object { ($_ -split '\s+')[1] -ne 'Valid' }
+          if ($bad) { throw "SIGNATURES.txt reports a binary that is not Valid:`n$($bad -join "`n")" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            dist/*.zip
+            dist/*.msi
+            dist/*.sha256
+            dist/SHA256SUMS
+            dist/SIGNATURES.txt
+          if-no-files-found: error
+
+  # Attaches everything together, only after every file is signed and verified. A failure above attaches nothing.
+  publish:
+    name: Attach assets to the release
+    needs: [exes, sign]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.exes.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: assets
+      - name: Re-check the checksums
+        working-directory: assets
+        run: |
+          sha256sum --check --strict SHA256SUMS
+          for f in *.sha256; do sha256sum --check --strict "$f"; done
+      - name: Upload
+        working-directory: assets
+        run: gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber *.zip *.msi *.sha256 SHA256SUMS SIGNATURES.txt
