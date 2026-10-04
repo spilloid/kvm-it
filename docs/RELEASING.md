@@ -83,7 +83,7 @@ python scripts/verify-release.py dist vX.Y.Z --require-signed   # drop --require
 ```
 
 `build-release.ps1` refuses to run unless `VERSION` and `desktop/Cargo.toml` match the tag. It signs the two
-executables, builds the MSI from them (and signs it), zips the signed executables with `README.md`, `LICENSE` and
+executables, builds the MSI from them (and signs it), zips the signed executables with `README.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md` (the MPL-2.0 notice for `serialport`) and
 `CHANGELOG.md`, and writes a `.sha256` for each asset plus `SHA256SUMS` and `SIGNATURES.txt`. `verify-release.py`
 checks the hashes, the exact zip contents and CRCs, that both executables are 64-bit PE files with the right
 subsystem (`kvmit.exe` console, `kvmit-gui.exe` GUI), that the version is stamped into the binaries, that the README

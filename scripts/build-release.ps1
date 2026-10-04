@@ -30,7 +30,7 @@ if ($Stage -in 'all', 'stage') {
     if (Test-Path $stageDir) { Remove-Item $stageDir -Recurse -Force }
     $app = (New-Item -ItemType Directory -Force $app).FullName
     foreach ($f in 'kvmit.exe', 'kvmit-gui.exe') { Copy-Item (Join-Path $ExeDir $f) $app }
-    foreach ($f in 'README.md', 'LICENSE', 'CHANGELOG.md') { Copy-Item $f $app }
+    foreach ($f in 'README.md', 'LICENSE', 'CHANGELOG.md', 'THIRD_PARTY_NOTICES.md') { Copy-Item $f $app }
     # 1. sign the executables first, so the MSI and the zip both carry signed binaries
     if ($Stage -eq 'all') { & "$PSScriptRoot/sign.ps1" -Path (Join-Path $app 'kvmit.exe'), (Join-Path $app 'kvmit-gui.exe') }
 }

@@ -1,6 +1,6 @@
 //! `kvmit flash`: write the adapter's firmware through its UART (COM) port. The decisions live in `kvmit-flash`; this is
 //! the talking-to-a-person part.
-use kvmit_flash::{check_port, flash, list_ports, Image, Options, PortKind, ProgressCallbacks};
+use kvmit_flash::{check_no_native_adapter, check_port, flash, list_ports, usb_devices, Image, Options, PortKind, ProgressCallbacks};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
@@ -60,6 +60,8 @@ pub fn run(a: Args) -> R<()> {
         }
         return Ok(());
     }
+    // fail early and loudly; flash() checks again at the moment of writing
+    check_no_native_adapter(&usb_devices()?)?;
     let image = Image::from_build_dir(&a.firmware)?;
     let port = match &a.port {
         Some(name) => ports.iter().find(|p| &p.name == name).cloned().ok_or_else(|| format!("{name} is not a USB serial port here (see `kvmit flash --list`)"))?,
@@ -96,7 +98,7 @@ pub fn run(a: Args) -> R<()> {
         }
     }
     let mut bar = Bar { total: 0, done: 0, name: "" };
-    flash(&port.name, &image, Options { erase_all: a.erase_all, baud: None }, &mut bar)?;
-    println!("flashed. The adapter restarts by itself; check it with `kvmit status`.");
+    let report = flash(&port, &image, Options { erase_all: a.erase_all, allow_other_port: a.any_port, baud: None }, &mut bar)?;
+    println!("flashed and verified (ESP32-S3{}). The adapter restarts by itself; check it with `kvmit status`.", report.mac.map(|m| format!(", {m}")).unwrap_or_default());
     Ok(())
 }

@@ -29,6 +29,9 @@
       <Component Id="LicenseFile" Guid="*">
         <File Id="LicenseTxt" Source="$(SourceDir)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
       </Component>
+      <Component Id="NoticesFile" Guid="*">
+        <File Id="ThirdPartyNotices" Source="$(SourceDir)\THIRD_PARTY_NOTICES.md" Name="THIRD_PARTY_NOTICES.md" KeyPath="yes" />
+      </Component>
     </ComponentGroup>
 
     <StandardDirectory Id="ProgramMenuFolder">

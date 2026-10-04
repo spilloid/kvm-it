@@ -6,13 +6,17 @@
 - `kvmit flash` (in progress for 0.3.0): writes the adapter's firmware through its UART (COM) port with the `espflash` library.
   It validates the image first, refuses the board's native USB port (which would type into the flashing computer), keeps the
   pairing and settings unless `--erase-all` is given, and asks for confirmation. Host-tested (image and port rules);
-  **hardware-verified once** on one board over its CH343 UART (all three parts written and verified in one session; the board
-  booted the result and advertised). Bond preservation and `--erase-all` were not exercised on a bonded board. The GUI flasher is
-  not written yet.
+  **hardware-verified once** on one board over its CH343 UART. Before writing it re-checks that the chosen port is still the same
+  device, that no adapter's own USB port (a keyboard and mouse, which is HID-only and not a serial port) is plugged into the
+  computer, that the chip is an ESP32-S3 with the image's flash size, and that the installed partition table keeps the settings
+  where they are; it validates the image (headers, partition table, file paths inside the firmware folder). Not exercised on
+  hardware: the native-USB refusal, `--erase-all`, bond preservation on a bonded board, an interrupted flash, Windows.
 - **Flash adapter…** in the GUI's Adapter popup (`flashwiz.rs`): a window that finds the board's COM port, checks the firmware
   folder, blocks while any Espressif native USB port is plugged into the computer, requires a second tick before erasing the
-  pairing, flashes on a worker thread with a progress bar, and says how to recover if it fails. Its rules are unit-tested; the
-  window itself has not yet been looked at or driven in a running GUI.
+  pairing, refuses while a script runs or the adapter is connected, flashes on a worker thread with a progress bar (no close button
+  and no app exit while writing), and says how to recover if it fails. Its rules are unit-tested; the window was seen in the
+  Windows 11 VM without a board (flash disabled, blockers listed); a flash through the window has not been run.
+- `THIRD_PARTY_NOTICES.md` (MPL-2.0 notice for `serialport`) ships in the zip, the MSI and the AppImage; the AppImage builder moved to Rust 1.99.
 
 ### Changed
 - Build toolchain is Rust 1.99 (was 1.90), needed for the in-app flasher planned for 0.3.0; clippy lints fixed (`as_chunks`, an

@@ -696,7 +696,15 @@ impl eframe::App for App {
 
         // the flasher window (opened from the Adapter popup); it owns its own progress, so it can stay up while idle
         if self.flash.is_some() && !self.capturing {
-            let keep = self.flash.as_mut().is_some_and(|w| w.show(ctx));
+            // flashing resets the board, so nothing may be using the adapter: no script, no connection to it
+            let mut external = Vec::new();
+            if running {
+                external.push("A script is running: wait for it to finish or abort it.".to_string());
+            }
+            if !matches!(link, Link::Disconnected | Link::Failed(_)) {
+                external.push("The controller is connected (or connecting) to an adapter: use Disconnect in the Adapter popup first.".to_string());
+            }
+            let keep = self.flash.as_mut().is_some_and(|w| w.show(ctx, &external));
             if !keep {
                 self.flash = None;
             }
@@ -779,7 +787,11 @@ impl eframe::App for App {
             }
         });
 
-        if ctx.input(|i| i.viewport().close_requested()) {
+        if ctx.input(|i| i.viewport().close_requested()) && self.flash.as_ref().is_some_and(|w| w.busy()) {
+            // quitting mid-write could leave the board unbootable
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.set_notice("Flashing is in progress: wait for it to finish before closing the app.");
+        } else if ctx.input(|i| i.viewport().close_requested()) {
             self.end_capture(ctx);
             if let Some(d) = self.device() {
                 let _ = self.rt.block_on(async { tokio::time::timeout(Duration::from_millis(800), d.shutdown()).await });
@@ -849,7 +861,7 @@ impl App {
             }
         }
         ui.separator();
-        if ui.button("Flash adapter…").on_hover_text("Write the adapter's firmware through its COM USB port").clicked() {
+        if ui.add_enabled(self.flash.is_none(), egui::Button::new("Flash adapter…")).on_hover_text("Write the adapter's firmware through its COM USB port").clicked() {
             self.flash = Some(crate::flashwiz::Wizard::new());
         }
     }

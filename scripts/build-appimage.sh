@@ -8,7 +8,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="${1:-$ROOT/dist-linux}"
 RUNTIME="${CONTAINER_RUNTIME:-podman}"
-IMAGE=localhost/kvmit-appimage-build:1.90-ubuntu2204-pinned
+IMAGE=localhost/kvmit-appimage-build:1.99-ubuntu2204-pinned
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
 # appimagetool is pinned by version and checksum (the "continuous" build moves).
 TOOL_URL=https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
@@ -56,6 +56,7 @@ ICON="$ROOT/desktop/crates/kvmit/assets/icon-256.png"   # the project logo, same
 install -m 644 "$ICON" "$APPDIR/kvm-it.png"
 install -m 644 "$ICON" "$APPDIR/usr/share/icons/hicolor/256x256/apps/kvm-it.png"
 install -m 644 "$ROOT/LICENSE" "$APPDIR/usr/share/LICENSE"
+install -m 644 "$ROOT/THIRD_PARTY_NOTICES.md" "$APPDIR/usr/share/THIRD_PARTY_NOTICES.md"
 
 # 4. appimagetool (pinned)
 TOOL="$OUT/appimagetool-x86_64.AppImage"

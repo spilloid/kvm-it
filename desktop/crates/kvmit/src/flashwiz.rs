@@ -1,7 +1,7 @@
 //! The "Flash adapter" wizard (0.3.0): a window that walks through the safety checks and writes the adapter's firmware
 //! through its UART (COM) port. All the rules are in [`blockers`] (tested) and in `kvmit-flash`; the flashing runs on its
 //! own thread and the window only reads its progress.
-use kvmit_flash::{check_port, flash, list_ports, Image, Options, PortInfo, PortKind, ProgressCallbacks};
+use kvmit_flash::{check_no_native_adapter, check_port, flash, list_ports, usb_devices, Image, Options, PortInfo, PortKind, ProgressCallbacks, Report};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -17,12 +17,14 @@ struct Progress {
     verifying: bool,
 }
 
-type Outcome = Option<Result<(), String>>;
+type Outcome = Option<Result<Report, String>>;
 
 pub struct Wizard {
     firmware: String,
     image: Result<Image, String>,
     ports: Vec<PortInfo>,
+    /// Set when an adapter's own USB port (a keyboard and mouse) is plugged into this computer.
+    native: Option<String>,
     port: Option<String>,
     erase_all: bool,
     erase_ack: bool,
@@ -45,7 +47,7 @@ fn default_firmware_dir() -> String {
 }
 
 /// Why flashing is not allowed right now; empty means it is. `selected` is the chosen port.
-pub fn blockers(image_ok: bool, ports: &[PortInfo], selected: Option<&PortInfo>, erase_all: bool, erase_ack: bool, busy: bool) -> Vec<String> {
+pub fn blockers(image_ok: bool, native: Option<&str>, external: &[String], selected: Option<&PortInfo>, erase_all: bool, erase_ack: bool, busy: bool) -> Vec<String> {
     let mut v = Vec::new();
     if busy {
         v.push("Flashing is in progress.".to_string());
@@ -54,11 +56,9 @@ pub fn blockers(image_ok: bool, ports: &[PortInfo], selected: Option<&PortInfo>,
     if !image_ok {
         v.push("No valid firmware image: choose the firmware folder.".into());
     }
-    if let Some(n) = ports.iter().find(|p| p.kind == PortKind::NativeUsb) {
-        v.push(format!(
-            "An Espressif native USB port ({}) is plugged into this computer. If that is the adapter's USB port it will type into this machine: unplug that cable (keep only the COM port).",
-            n.name
-        ));
+    v.extend(external.iter().cloned());
+    if let Some(n) = native {
+        v.push(n.to_string());
     }
     match selected {
         None => v.push("Plug the board's COM USB port into this computer and choose it.".into()),
@@ -113,6 +113,7 @@ impl Wizard {
             image: Err(String::new()),
             firmware,
             ports: Vec::new(),
+            native: None,
             port: None,
             erase_all: false,
             erase_ack: false,
@@ -127,6 +128,7 @@ impl Wizard {
     fn refresh(&mut self) {
         self.image = Image::from_build_dir(std::path::Path::new(&self.firmware)).map_err(|e| e.0);
         self.ports = list_ports();
+        self.native = usb_devices().and_then(|d| check_no_native_adapter(&d)).err().map(|e| e.0);
         let still = self.port.as_ref().is_some_and(|n| self.ports.iter().any(|p| &p.name == n));
         if !still {
             // preselect the one adapter UART if there is exactly one; never preselect anything else
@@ -142,29 +144,37 @@ impl Wizard {
         self.port.as_ref().and_then(|n| self.ports.iter().find(|p| &p.name == n))
     }
 
+    /// A flash is being written: the window cannot be closed and the app must not exit.
+    pub fn busy(&self) -> bool {
+        self.running
+    }
+
     fn start(&mut self, ctx: &egui::Context) {
         let (Ok(image), Some(port)) = (self.image.clone(), self.selected().cloned()) else { return };
         *self.progress.lock().unwrap() = Progress { parts: image.parts.len(), ..Progress::default() };
         *self.outcome.lock().unwrap() = None;
         self.running = true;
-        let (opts, p, o, ctx2) = (Options { erase_all: self.erase_all, baud: None }, self.progress.clone(), self.outcome.clone(), ctx.clone());
+        let (opts, p, o, ctx2) = (Options { erase_all: self.erase_all, allow_other_port: false, baud: None }, self.progress.clone(), self.outcome.clone(), ctx.clone());
         std::thread::spawn(move || {
             let mut bar = Bar { p, ctx: ctx2.clone() };
-            let r = flash(&port.name, &image, opts, &mut bar).map_err(|e| e.0);
+            let r = flash(&port, &image, opts, &mut bar).map_err(|e| e.0);
             *o.lock().unwrap() = Some(r);
             ctx2.request_repaint();
         });
     }
 
     /// Draw the window; returns false when it should be closed.
-    pub fn show(&mut self, ctx: &egui::Context) -> bool {
+    pub fn show(&mut self, ctx: &egui::Context, external: &[String]) -> bool {
         let mut open = true;
         let mut close = false;
         let finished = self.outcome.lock().unwrap().clone();
         if finished.is_some() {
             self.running = false;
         }
-        egui::Window::new("Flash adapter").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).open(&mut open).show(ctx, |ui| {
+        let window = egui::Window::new("Flash adapter").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]);
+        // no close button while a flash is being written: an interrupted write can leave the board unbootable
+        let window = if self.running { window } else { window.open(&mut open) };
+        window.show(ctx, |ui| {
             ui.set_max_width(520.0);
             if self.running {
                 let p = self.progress.lock().unwrap().clone();
@@ -179,8 +189,8 @@ impl Wizard {
                 return;
             }
             match finished {
-                Some(Ok(())) => {
-                    ui.colored_label(GREEN, "Flashed and verified.");
+                Some(Ok(report)) => {
+                    ui.colored_label(GREEN, format!("Flashed and verified{}.", report.mac.map(|m| format!(" ({m})")).unwrap_or_default()));
                     ui.label("The adapter restarts by itself. Unplug the COM cable and plug the board into the target when you are ready, then connect from the Adapter chip. If it was paired before, it keeps its pairing; if you erased everything, pair it again.");
                     if ui.button("Close").clicked() {
                         close = true;
@@ -194,13 +204,13 @@ impl Wizard {
                         *self.outcome.lock().unwrap() = None;
                     }
                 }
-                None => self.form(ui, ctx),
+                None => self.form(ui, ctx, external),
             }
         });
         open && !close
     }
 
-    fn form(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn form(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, external: &[String]) {
         ui.label("Writes the firmware onto an adapter through the board's COM USB port.");
         ui.horizontal(|ui| {
             ui.label("Firmware folder");
@@ -250,7 +260,7 @@ impl Wizard {
             ui.weak("By default the pairing and settings are kept.");
         }
         ui.add_space(4.0);
-        let reasons = blockers(self.image.is_ok(), &self.ports, self.selected(), self.erase_all, self.erase_ack, false);
+        let reasons = blockers(self.image.is_ok(), self.native.as_deref(), external, self.selected(), self.erase_all, self.erase_ack, false);
         for r in &reasons {
             ui.colored_label(RED, r);
         }
@@ -265,51 +275,48 @@ impl Wizard {
 mod tests {
     use super::*;
 
-    fn port(name: &str, kind: PortKind) -> PortInfo {
-        PortInfo { name: name.into(), kind, description: "d".into() }
+    fn uart() -> PortInfo {
+        PortInfo { name: "/dev/ttyACM0".into(), kind: PortKind::Uart, description: "d".into(), vid: 0x1a86, pid: 0x55d3, serial: None }
     }
 
     #[test]
     fn a_good_setup_has_no_blockers() {
-        let uart = port("/dev/ttyACM0", PortKind::Uart);
-        assert!(blockers(true, std::slice::from_ref(&uart), Some(&uart), false, false, false).is_empty());
+        assert!(blockers(true, None, &[], Some(&uart()), false, false, false).is_empty());
     }
 
     #[test]
     fn each_missing_piece_blocks() {
-        let uart = port("/dev/ttyACM0", PortKind::Uart);
-        let ports = [uart.clone()];
-        assert_eq!(blockers(false, &ports, Some(&uart), false, false, false).len(), 1);
-        assert_eq!(blockers(true, &ports, None, false, false, false).len(), 1);
-        assert_eq!(blockers(true, &[], None, false, false, false).len(), 1);
+        assert_eq!(blockers(false, None, &[], Some(&uart()), false, false, false).len(), 1);
+        assert_eq!(blockers(true, None, &[], None, false, false, false).len(), 1);
     }
 
     #[test]
-    fn a_native_usb_port_anywhere_blocks_even_with_a_good_uart_selected() {
-        let uart = port("/dev/ttyACM0", PortKind::Uart);
-        let native = port("/dev/ttyACM1", PortKind::NativeUsb);
-        let ports = [uart.clone(), native];
-        let b = blockers(true, &ports, Some(&uart), false, false, false);
+    fn an_adapter_native_port_blocks_even_with_a_good_uart_selected() {
+        let b = blockers(true, Some("would type into this machine"), &[], Some(&uart()), false, false, false);
         assert!(b.iter().any(|m| m.contains("type into this machine")), "{b:?}");
     }
 
     #[test]
     fn an_unknown_port_cannot_be_chosen() {
-        let other = port("/dev/ttyUSB0", PortKind::Other);
-        assert!(!blockers(true, std::slice::from_ref(&other), Some(&other), false, false, false).is_empty());
+        let mut other = uart();
+        other.kind = PortKind::Other;
+        assert!(!blockers(true, None, &[], Some(&other), false, false, false).is_empty());
     }
 
     #[test]
     fn erasing_everything_needs_the_second_confirmation() {
-        let uart = port("/dev/ttyACM0", PortKind::Uart);
-        let ports = [uart.clone()];
-        assert!(!blockers(true, &ports, Some(&uart), true, false, false).is_empty());
-        assert!(blockers(true, &ports, Some(&uart), true, true, false).is_empty());
+        assert!(!blockers(true, None, &[], Some(&uart()), true, false, false).is_empty());
+        assert!(blockers(true, None, &[], Some(&uart()), true, true, false).is_empty());
+    }
+
+    #[test]
+    fn other_work_in_the_app_blocks_flashing() {
+        let ext = vec!["A script is running.".to_string()];
+        assert_eq!(blockers(true, None, &ext, Some(&uart()), false, false, false), ext);
     }
 
     #[test]
     fn nothing_else_is_allowed_while_flashing() {
-        let uart = port("/dev/ttyACM0", PortKind::Uart);
-        assert_eq!(blockers(true, std::slice::from_ref(&uart), Some(&uart), false, false, true).len(), 1);
+        assert_eq!(blockers(true, None, &[], Some(&uart()), false, false, true).len(), 1);
     }
 }

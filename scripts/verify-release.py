@@ -60,7 +60,7 @@ def main():
             die(f"SHA256SUMS disagrees with {a.name}")
         print(f"ok  sha256 {actual[:16]}...  {a.name}")
 
-    expected = {f"kvmit/{n}" for n in ("kvmit.exe", "kvmit-gui.exe", "README.md", "LICENSE", "CHANGELOG.md")}
+    expected = {f"kvmit/{n}" for n in ("kvmit.exe", "kvmit-gui.exe", "README.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md")}
     zpath = dist / f"{base}.zip"
     signed = {}
     with zipfile.ZipFile(zpath) as z:

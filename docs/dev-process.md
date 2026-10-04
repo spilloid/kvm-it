@@ -330,3 +330,33 @@ belongs to.
 
 - Tests after the fixes: `scripts/rs.sh test` green (new: oversized and non-file demo pictures); the AppImage rebuilt with
   the changed script, `cli --version` run from it. The GUI popup interaction (reopen click) is not covered by a test.
+
+## 2026-10-04 — 0.3.0 flasher (`feat/flash`): review round 7
+
+Read-only review by a different model (codex `gpt-6-astra`) of `main...feat/flash` at `8bc17e9`: verdict "do not ship until device
+identity, native-USB detection, NVS preservation and flash-operation lifecycle are enforced". 13 findings, all confirmed by reading;
+fixed in the commit after this log.
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | High | A reused port name (`/dev/ttyACM0`) bypasses the checks: nothing re-identifies the device at flash time | **Confirmed.** `flash()` now takes the chosen `PortInfo` (name, vid:pid, USB serial), re-enumerates, and refuses if the same name is another device or gone. A small window between the check and the open remains (stated, unavoidable) |
+| 2 | High | The native-USB rule is blind: the adapter's native port is HID-only and is not a serial port at all | **Confirmed, and the worst one.** Seen on the real board (`303a:4008`, no CDC). Now found by enumerating USB devices (`nusb`): the adapter's pid, a "kvm-it" name, or an unreadable Espressif device blocks; a differently named Espressif board does not. Checked in the CLI before the prompt, in the wizard on open/rescan, and again inside `flash()`. A cable plugged in *after* the check is not detectable |
+| 3 | High | CH343 does not prove it is a kvm-it board; the chip is never checked | **Confirmed.** After connecting: must be an ESP32-S3 with the image's flash size and not in secure download mode, else nothing is written. Another ESP32-S3 with 16 MB behind a CH343 is still accepted; the person's choice and confirmation remain the last line |
+| 4 | High | Validation ignores padding and erase sectors | **Confirmed.** Sector footprints (4 KiB) are used for overlap and for the settings check |
+| 5 | High | A replaced partition table can move or shrink the settings | **Confirmed.** The installed table is read from the chip and its nvs region must equal the new image's, else a full erase is required |
+| 6 | High | "Firmware OK" accepts one-byte images | **Confirmed.** Header checks (magic, segment count, ESP32-S3 chip id), a partition table with an app partition at the app's offset that fits it, nvs required. No checksum/hash walk of the images; they come from our own build |
+| 7 | High | Manifest paths can read files outside the folder | **Confirmed.** Relative-only, no `..`, symlinks resolved and contained, regular files only |
+| 8 | Med | Reads are unbounded; FIFOs hang; the wizard loads on the UI thread | **Confirmed, mostly.** Manifest 64 KiB, 8 entries, files regular and at most the flash size, duplicate keys rejected. Loading is still on the UI thread, now bounded and cannot block on a FIFO |
+| 9 | High | Closing the wizard or the app mid-flash abandons a running write | **Confirmed.** No close button while writing, no second wizard, and an app close request is cancelled with a notice while flashing |
+| 10 | Med | Flashing ignores scripts and the adapter connection | **Confirmed.** Blocked while a script runs or the controller is connected/connecting; the wizard is hidden while capturing |
+| 11 | Med | "Verified" claimed even in secure download mode | **Confirmed.** Secure download mode is refused |
+| 12 | Med | espflash needs Rust 1.95, the AppImage builder has 1.90 | **Confirmed.** AppImage builder moved to 1.99; rebuilt, glibc floor still 2.35, `cli flash --list` runs from it |
+| 13 | Med | `serialport` is MPL-2.0 and nothing in the packages says so | **Confirmed.** `THIRD_PARTY_NOTICES.md` (shipped in the zip, the MSI and the AppImage; `verify-release.py` expects it). A generated all-dependencies licence listing is still to do |
+
+- Tests after the fixes: 21 flash-crate tests (traversal incl. symlink, duplicate keys, sector sharing, headers, partition rules,
+  same-name-other-device, the real board's HID-only descriptor, installed-vs-new tables) and the wizard's blocker rules;
+  clippy clean; real firmware build validated by the tests.
+- Hardware: the hardened `kvmit flash` ran on the second board (UART only): chip and flash-size identity, installed-table read-back,
+  verified write of all three parts. **Not exercised on hardware:** the native-USB refusal (needs the board's USB port plugged in),
+  `--erase-all`, a bonded board (bond preserved), a failed or interrupted flash, Windows.
+- The new MSI component (`THIRD_PARTY_NOTICES.md`) is built only by CI/the release machine, not tried here.
