@@ -106,7 +106,10 @@ On a clean Windows 11 machine or VM, from the assets (not from the build tree):
    line stating whether the Windows binaries are code-signed** (copy it from `SIGNATURES.txt`) and what was verified
    where. If unsigned, say Windows SmartScreen will warn.
 2. Attach: `kvmit-vX.Y.Z-windows-x64.zip`, `.msi`, both `.sha256` files, `SHA256SUMS` and `SIGNATURES.txt`. Attach the
-   Linux (and later macOS) assets built on their machines, each with its checksum.
+   Linux (and later macOS) assets built on their machines, each with its checksum. The Linux AppImage:
+   `scripts/build-appimage.sh` from a checkout of the tag (podman; an Ubuntu 22.04 container; the script fails if the
+   binaries need a glibc newer than 2.35) writes `dist-linux/kvm-it-X.Y.Z-x86_64.AppImage` and its `.sha256`; smoke-test it
+   (`... cli --version`, the GUI starts) and `gh release upload vX.Y.Z <both files>`.
 3. Optional: a GitHub build attestation for the assets (`gh attestation` / `actions/attest-build-provenance`).
 
 ## 7. After

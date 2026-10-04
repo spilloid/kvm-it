@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Linux AppImage packaging (`scripts/build-appimage.sh`, `installer/linux/`): built in an Ubuntu 22.04 container so it runs on
+  glibc 2.35 and newer, with the AppImage tool pinned by checksum. Published with 0.2.0 after the tag (asset `kvm-it-0.2.0-x86_64.AppImage`).
+
 ## [0.2.0] - 2026-10-04 (Windows controller)
 
 The controller app now runs on Windows. Firmware and wire protocol are unchanged (firmware 0.1.0, protocol v1).

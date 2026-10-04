@@ -7,3 +7,5 @@ firmware/managed_components/
 target/
 *.swp
 .venv-esptool/
+dist-linux/
+target-appimage/
