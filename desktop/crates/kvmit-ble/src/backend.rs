@@ -362,14 +362,18 @@ pub async fn pair(id: &str) -> Result<()> {
     let custom = pairing.Custom()?;
     let token = custom.PairingRequested(&TypedEventHandler::<DeviceInformationCustomPairing, DevicePairingRequestedEventArgs>::new(
         |_, args| {
+            // Just Works only: a peer asking for numeric comparison would need a real comparison, which this
+            // headless adapter cannot show, so it is not accepted (the pairing then fails safely).
             if let Some(a) = args.as_ref() {
-                a.Accept()?;
+                if a.PairingKind()? == DevicePairingKinds::ConfirmOnly {
+                    a.Accept()?;
+                }
             }
             Ok(())
         },
     ))?;
     let res = custom
-        .PairWithProtectionLevelAsync(DevicePairingKinds::ConfirmOnly | DevicePairingKinds::ConfirmPinMatch, DevicePairingProtectionLevel::Encryption)?
+        .PairWithProtectionLevelAsync(DevicePairingKinds::ConfirmOnly, DevicePairingProtectionLevel::Encryption)?
         .await;
     let _ = custom.RemovePairingRequested(token);
     match res?.Status()? {

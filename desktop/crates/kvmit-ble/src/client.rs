@@ -79,24 +79,27 @@ impl Drop for Inner {
 }
 
 impl Inner {
-    /// The next motion frame: at most `MOTION_MAX_PER_FRAME` per axis; the rest stays for the next flush.
-    fn take_motion(&self) -> (i16, i16) {
+    /// Take the next motion frame (at most `MOTION_MAX_PER_FRAME` per axis; the rest stays for the next flush) and
+    /// put it on the wire while still holding the accumulator lock. A click that arrives next therefore either finds
+    /// the motion already queued or waits for it: taking and sending in two steps let a click slip in between and
+    /// overtake the movement that preceded it. Motion needs no reply, so nothing here waits.
+    fn send_motion_frame(&self) -> bool {
         let mut m = self.motion.lock().unwrap();
         let dx = m.0.clamp(-MOTION_MAX_PER_FRAME, MOTION_MAX_PER_FRAME);
         let dy = m.1.clamp(-MOTION_MAX_PER_FRAME, MOTION_MAX_PER_FRAME);
+        if (dx == 0 && dy == 0) || self.closed.load(Ordering::SeqCst) {
+            return false;
+        }
         *m = (m.0 - dx, m.1 - dy);
-        (dx as i16, dy as i16)
+        let seq = self.seq.fetch_add(1, Ordering::SeqCst);
+        let _ = self.tx.send(Request::MouseMove { dx: dx as i16, dy: dy as i16 }.encode(seq));
+        true
     }
 
-    /// Send all accumulated motion now, in order, before anything that must not overtake it (clicks).
+    /// Send all accumulated motion now, in order, before anything that must not overtake it (clicks). At most
+    /// `MOTION_MAX_BACKLOG / MOTION_MAX_PER_FRAME` frames, since the accumulator is capped.
     async fn flush_motion(&self) {
-        loop {
-            let (dx, dy) = self.take_motion();
-            if dx == 0 && dy == 0 {
-                return;
-            }
-            let _ = self.request(&Request::MouseMove { dx, dy }).await;
-        }
+        while self.send_motion_frame() {}
     }
 
     fn close(&self) {
@@ -239,10 +242,7 @@ impl Device {
                 if mo.closed.load(Ordering::SeqCst) {
                     return;
                 }
-                let (dx, dy) = mo.take_motion();
-                if dx != 0 || dy != 0 {
-                    let _ = mo.request(&Request::MouseMove { dx, dy }).await;
-                }
+                mo.send_motion_frame();
             }
         });
 
@@ -339,6 +339,8 @@ mod tests {
         max_frame: i32,
         replies_to_drop: usize,
         seen_frames: usize,
+        /// Message types in the order the device saw them.
+        order: Vec<u8>,
         silent: bool,
         released: usize,
     }
@@ -355,6 +357,7 @@ mod tests {
                 };
                 let mut st = state.lock().unwrap();
                 st.seen_frames += 1;
+                st.order.push(f.msg_type);
                 if st.silent {
                     continue;
                 }
@@ -510,6 +513,35 @@ mod tests {
         // button(): the mock does not implement buttons (answers UNSUPPORTED) but must have seen the motion first
         let _ = dev.button(1, true).await;
         assert_eq!(st.lock().unwrap().motion, (100, 0));
+        // and in that order on the wire: the move frame arrives before the button frame, never after it
+        let order = st.lock().unwrap().order.clone();
+        let mv = order.iter().position(|t| *t == msg::MOUSE_MOVE).expect("a move frame");
+        let btn = order.iter().position(|t| *t == msg::MOUSE_BUTTON_DOWN).expect("a button frame");
+        assert!(mv < btn, "the click overtook the movement: {order:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn many_clicks_interleaved_with_motion_keep_their_order() {
+        let st = Arc::new(Mutex::new(MockState::default()));
+        let dev = Device::connect(spawn_mock(st.clone())).await.unwrap();
+        for _ in 0..50 {
+            dev.mouse_move(7, 0);
+            let _ = dev.button(1, true).await;
+            let _ = dev.button(1, false).await;
+        }
+        let order = st.lock().unwrap().order.clone();
+        // the i-th click must arrive after the move that was queued just before it
+        let (mut moves, mut downs) = (0usize, 0usize);
+        for t in &order {
+            if *t == msg::MOUSE_MOVE {
+                moves += 1;
+            } else if *t == msg::MOUSE_BUTTON_DOWN {
+                downs += 1;
+                assert!(moves >= downs, "click {downs} overtook its movement (only {moves} move frames had arrived)");
+            }
+        }
+        assert_eq!(downs, 50);
+        assert_eq!(st.lock().unwrap().motion, (350, 0), "all motion arrives, none lost or doubled");
     }
 
     #[tokio::test(start_paused = true)]

@@ -136,6 +136,11 @@ mod imp {
         pub fn latest(&self) -> Option<SharedFrame> {
             self.latest.lock().unwrap().clone()
         }
+
+        /// The V4L2 backend does not detect a vanished card yet (the last frame stays), so this is always false.
+        pub fn failed(&self) -> bool {
+            false
+        }
     }
 
     impl Drop for Capture {
@@ -169,6 +174,9 @@ mod imp {
         }
         pub fn latest(&self) -> Option<SharedFrame> {
             None
+        }
+        pub fn failed(&self) -> bool {
+            false
         }
     }
 }

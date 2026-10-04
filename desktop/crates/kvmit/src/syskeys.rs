@@ -73,6 +73,7 @@ pub fn usage(k: RawKey) -> Option<Key> {
             0x51 => 0x5B,
             0x52 => 0x62,
             0x53 => 0x63,
+            0x54 => 0x46, // Alt+PrintScreen (SysRq): PrintScreen with Alt held
             0x56 => 0x64, // ISO key beside left shift
             0x57 => 0x44, // F11
             0x58 => 0x45, // F12
@@ -88,6 +89,7 @@ pub fn usage(k: RawKey) -> Option<Key> {
             0x37 => 0x46, // PrintScreen
             0x38 => 0xE6,
             0x45 => 0x53, // NumLock, which Windows reports as extended
+            0x46 => 0x48, // Ctrl+Pause (Break)
             0x47 => 0x4A,
             0x48 => 0x52,
             0x49 => 0x4B,
@@ -116,6 +118,15 @@ pub enum Event {
     Release,
 }
 
+/// The events up to (not including) the first release chord, and whether there was one. Anything after the chord
+/// belongs to the controller again and must never be forwarded to the target.
+pub fn until_release(events: Vec<Event>) -> (Vec<Event>, bool) {
+    match events.iter().position(|e| *e == Event::Release) {
+        Some(i) => (events[..i].to_vec(), true),
+        None => (events, false),
+    }
+}
+
 /// What the hook should do with the OS event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -130,12 +141,20 @@ pub enum Action {
 #[derive(Default)]
 pub struct Tracker {
     down: Vec<Key>,
+    /// Keys that were already physically down when capture began. The OS saw their press, so their repeats and
+    /// their release must reach the OS (swallowing the release would leave the key stuck down locally); they count
+    /// as held for the release chord (Ctrl held before Alt+Esc must still release).
+    pre_held: Vec<Key>,
     chord_esc: bool,
 }
 
 impl Tracker {
+    pub fn with_pre_held(keys: Vec<Key>) -> Tracker {
+        Tracker { pre_held: keys, ..Tracker::default() }
+    }
+
     fn is_down(&self, k: Key) -> bool {
-        self.down.contains(&k)
+        self.down.contains(&k) || self.pre_held.contains(&k)
     }
 
     pub fn on_key(&mut self, raw: RawKey, down: bool) -> Action {
@@ -157,8 +176,14 @@ impl Tracker {
                 return Action::Swallow(None);
             }
         }
+        if let Some(i) = self.pre_held.iter().position(|d| *d == key) {
+            if !down {
+                self.pre_held.swap_remove(i); // its release goes to the OS, which saw the press
+            }
+            return Action::Pass;
+        }
         if down {
-            if self.is_down(key) {
+            if self.down.contains(&key) {
                 return Action::Swallow(None); // auto-repeat: the target repeats a held key by itself
             }
             self.down.push(key);
@@ -178,13 +203,14 @@ mod imp {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::os::windows::process::CommandExt;
     use std::process::{Child, Command, Stdio};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
     use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, MapVirtualKeyW, MAPVK_VK_TO_VSC_EX};
     use windows::Win32::UI::WindowsAndMessaging::*;
 
     /// The hook runs in a helper process, never inside the GUI. Inside the GUI process (eframe/winit, software GL)
@@ -194,6 +220,10 @@ mod imp {
     /// never trap or slow the keyboard.
     pub const HELPER_ARG: &str = "--keyboard-grab-helper";
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    /// The GUI sends a heartbeat byte this often (from the thread that handles input, so a hung GUI stops it);
+    /// with none for `HEARTBEAT_TIMEOUT` the helper stops swallowing and tells the parent to release.
+    const HEARTBEAT_EVERY: Duration = Duration::from_millis(250);
+    const HEARTBEAT_TIMEOUT: Duration = Duration::from_millis(3000);
 
     // ---- inside the helper process: the hook itself ----
 
@@ -203,9 +233,41 @@ mod imp {
     }
     /// The hook procedure is a bare function, so its state lives here; only the hook thread touches it.
     static STATE: Mutex<Option<State>> = Mutex::new(None);
+    /// Whether the hook swallows keys at all. Turned off by the release chord (in the hook itself, so it does not
+    /// depend on the GUI acting on it) and by a missing heartbeat; from then on every key goes to the controller.
+    static SWALLOW: AtomicBool = AtomicBool::new(true);
+    /// Milliseconds (since `epoch()`) of the last heartbeat from the parent.
+    static LAST_BEAT: AtomicU64 = AtomicU64::new(0);
+
+    fn epoch() -> Instant {
+        static T: OnceLock<Instant> = OnceLock::new();
+        *T.get_or_init(Instant::now)
+    }
+    fn now_ms() -> u64 {
+        epoch().elapsed().as_millis() as u64
+    }
+
+    /// Keys physically down right now (the controller's OS already saw their press).
+    fn keys_down_now() -> Vec<Key> {
+        let mut out = Vec::new();
+        // specific left/right modifiers (0xA0..=0xA5) instead of the generic Shift/Ctrl/Alt (0x10..=0x12)
+        for vk in (0x08u32..=0xFE).filter(|v| !(0x10..=0x12).contains(v)) {
+            if unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000 == 0 {
+                continue;
+            }
+            let sc = unsafe { MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX) };
+            let raw = RawKey { scan: (sc & 0xFF) as u8, extended: (sc >> 8) & 0xFF == 0xE0, vk };
+            if let Some(k) = usage(raw) {
+                if !out.contains(&k) {
+                    out.push(k);
+                }
+            }
+        }
+        out
+    }
 
     unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-        if code == HC_ACTION as i32 {
+        if code == HC_ACTION as i32 && SWALLOW.load(Ordering::Relaxed) {
             let k = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
             let m = wparam.0 as u32;
             let down = m == WM_KEYDOWN || m == WM_SYSKEYDOWN;
@@ -219,6 +281,9 @@ mod imp {
                         match s.tracker.on_key(raw, down) {
                             Action::Pass => {}
                             Action::Swallow(ev) => {
+                                if ev == Some(Event::Release) {
+                                    SWALLOW.store(false, Ordering::Relaxed); // the chord stands on its own, GUI or not
+                                }
                                 if ev.is_none_or(|e| s.tx.send(e).is_ok()) {
                                     return LRESULT(1);
                                 }
@@ -242,7 +307,8 @@ mod imp {
         fn install() -> Option<Hook> {
             let (tx, rx) = channel();
             let (ready_tx, ready_rx) = channel::<Option<u32>>();
-            *STATE.lock().unwrap() = Some(State { tx, tracker: Tracker::default() });
+            SWALLOW.store(true, Ordering::Relaxed);
+            *STATE.lock().unwrap() = Some(State { tx, tracker: Tracker::with_pre_held(keys_down_now()) });
             let join = std::thread::Builder::new()
                 .name("kvmit-keyboard-hook".into())
                 .spawn(move || unsafe {
@@ -297,16 +363,29 @@ mod imp {
         };
         let _ = writeln!(out, "ready");
         let _ = out.flush();
-        // The parent holds our stdin open for as long as it wants the grab; EOF means it is gone (or let go).
+        // The parent holds our stdin open for as long as it wants the grab (EOF = gone or let go) and writes a
+        // heartbeat byte while it is responsive.
         let alive = Arc::new(AtomicBool::new(true));
         let a2 = alive.clone();
+        LAST_BEAT.store(now_ms(), Ordering::Relaxed);
         std::thread::spawn(move || {
             let mut sink = [0u8; 64];
             let mut stdin = std::io::stdin();
-            while matches!(stdin.read(&mut sink), Ok(n) if n > 0) {}
+            while matches!(stdin.read(&mut sink), Ok(n) if n > 0) {
+                LAST_BEAT.store(now_ms(), Ordering::Relaxed);
+            }
             a2.store(false, Ordering::SeqCst);
         });
+        let mut timed_out_reported = false;
         while alive.load(Ordering::SeqCst) {
+            if !timed_out_reported && now_ms().saturating_sub(LAST_BEAT.load(Ordering::Relaxed)) > HEARTBEAT_TIMEOUT.as_millis() as u64 {
+                // The GUI has stopped answering (hung?): give the keyboard back and say so, so a recovering GUI
+                // ends capture instead of believing it still has the keyboard.
+                SWALLOW.store(false, Ordering::Relaxed);
+                let _ = writeln!(out, "R");
+                let _ = out.flush();
+                timed_out_reported = true;
+            }
             for e in hook.rx.try_iter() {
                 let _ = match e {
                     Event::Down(k) => writeln!(out, "D {:x}", k.0),
@@ -326,12 +405,14 @@ mod imp {
     pub struct Grab {
         rx: Receiver<Event>,
         child: Child,
+        last_beat: Instant,
     }
 
     impl Grab {
         /// Start the helper. `None` if it cannot be started or Windows refuses the hook; the GUI then falls back to
         /// egui's key events.
-        pub fn start() -> Option<Grab> {
+        /// `wake` is called (from another thread) whenever events arrive, so the GUI can repaint and drain promptly.
+        pub fn start(wake: impl Fn() + Send + 'static) -> Option<Grab> {
             let mut child = Command::new(std::env::current_exe().ok()?)
                 .arg(HELPER_ARG)
                 .stdin(Stdio::piped())
@@ -358,12 +439,15 @@ mod imp {
                             }
                             (Some("D"), Some(k)) => {
                                 let _ = tx.send(Event::Down(Key(k)));
+                                wake();
                             }
                             (Some("U"), Some(k)) => {
                                 let _ = tx.send(Event::Up(Key(k)));
+                                wake();
                             }
                             (Some("R"), _) => {
                                 let _ = tx.send(Event::Release);
+                                wake();
                             }
                             _ => {}
                         }
@@ -371,10 +455,11 @@ mod imp {
                     // The helper ended (it crashed, or was killed): give the keyboard back.
                     let _ = ready.take().map(|r| r.send(false));
                     let _ = tx.send(Event::Release);
+                    wake();
                 })
                 .ok()?;
             match ready_rx.recv_timeout(Duration::from_secs(3)) {
-                Ok(true) => Some(Grab { rx, child }),
+                Ok(true) => Some(Grab { rx, child, last_beat: Instant::now() }),
                 Ok(false) | Err(RecvTimeoutError::Disconnected) | Err(RecvTimeoutError::Timeout) => {
                     let _ = child.kill();
                     let _ = child.wait();
@@ -383,8 +468,15 @@ mod imp {
             }
         }
 
-        /// Events since the last call, in order.
+        /// Events since the last call, in order. Call it from the thread that handles input: it doubles as the
+        /// heartbeat that tells the helper this side is still responsive.
         pub fn drain(&mut self) -> Vec<Event> {
+            if self.last_beat.elapsed() >= HEARTBEAT_EVERY {
+                if let Some(stdin) = self.child.stdin.as_mut() {
+                    let _ = stdin.write_all(b".").and_then(|_| stdin.flush());
+                }
+                self.last_beat = Instant::now();
+            }
             self.rx.try_iter().collect()
         }
     }
@@ -405,7 +497,7 @@ mod imp {
     /// No OS-level grab on this platform: the GUI uses egui's key events.
     pub struct Grab;
     impl Grab {
-        pub fn start() -> Option<Grab> {
+        pub fn start(_wake: impl Fn() + Send + 'static) -> Option<Grab> {
             None
         }
         pub fn drain(&mut self) -> Vec<Event> {
@@ -459,9 +551,10 @@ mod tests {
                 let raw = RawKey { scan, extended, vk: 0 };
                 if let Some(k) = usage(raw) {
                     assert!(k.is_valid(), "scan {scan:#x} ext {extended}");
-                    // NumLock is reported both ways by Windows; every other usage has exactly one physical key
+                    // The only documented aliases: NumLock (Windows reports it plain and extended) and PrintScreen
+                    // (plain, and the Alt+PrintScreen form 0x54). Any other duplicate is a table mistake.
                     if let Some(prev) = seen.insert(k.0, (scan, extended)) {
-                        assert_eq!(k.0, 0x53, "usage {:#x} is produced by {prev:?} and {:?}", k.0, (scan, extended));
+                        assert!(matches!(k.0, 0x53 | 0x46), "usage {:#x} is produced by {prev:?} and {:?}", k.0, (scan, extended));
                     }
                 }
             }
@@ -530,6 +623,50 @@ mod tests {
     fn keys_the_adapter_cannot_send_pass_through() {
         let mut t = Tracker::default();
         assert_eq!(t.on_key(ext(0x20), true), Action::Pass); // volume mute
+    }
+
+    #[test]
+    fn alt_printscreen_and_ctrl_pause_are_forwardable_not_leaked_to_the_controller() {
+        assert_eq!(usage(plain(0x54)), Some(Key(0x46))); // Alt+PrintScreen
+        assert_eq!(usage(ext(0x46)), Some(Key(0x48))); // Ctrl+Pause (Break)
+    }
+
+    #[test]
+    fn a_key_held_before_capture_keeps_going_to_the_controller_until_released() {
+        // The OS saw the press: a repeat must not become a captured press, and its release must not be swallowed
+        // (that would leave the key stuck down on the controller).
+        let mut t = Tracker::with_pre_held(vec![Key::A]);
+        assert_eq!(t.on_key(plain(0x1E), true), Action::Pass); // auto-repeat
+        assert_eq!(t.on_key(plain(0x1E), false), Action::Pass); // release
+        // after that it is an ordinary captured key again
+        assert_eq!(t.on_key(plain(0x1E), true), Action::Swallow(Some(Event::Down(Key::A))));
+    }
+
+    #[test]
+    fn modifiers_held_before_capture_still_make_the_release_chord() {
+        let mut t = Tracker::with_pre_held(vec![Key::LEFT_CTRL, Key::LEFT_ALT]);
+        assert_eq!(t.on_key(plain(0x01), true), Action::Swallow(Some(Event::Release)));
+    }
+
+    #[test]
+    fn ctrl_alt_esc_checks_every_step_of_the_chord() {
+        let mut t = Tracker::default();
+        assert_eq!(t.on_key(plain(0x1D), true), Action::Swallow(Some(Event::Down(Key::LEFT_CTRL))));
+        assert_eq!(t.on_key(plain(0x38), true), Action::Swallow(Some(Event::Down(Key::LEFT_ALT))));
+        assert_eq!(t.on_key(plain(0x01), true), Action::Swallow(Some(Event::Release)));
+        assert_eq!(t.on_key(plain(0x01), false), Action::Swallow(None));
+    }
+
+    #[test]
+    fn nothing_after_the_release_chord_is_forwarded() {
+        let a = Key::A;
+        let (fwd, released) = until_release(vec![Event::Down(a), Event::Release, Event::Down(a), Event::Up(a)]);
+        assert!(released);
+        assert_eq!(fwd, vec![Event::Down(a)]);
+        let (fwd, released) = until_release(vec![Event::Down(a), Event::Up(a)]);
+        assert!(!released);
+        assert_eq!(fwd.len(), 2);
+        assert_eq!(until_release(vec![]), (vec![], false));
     }
 
     #[test]

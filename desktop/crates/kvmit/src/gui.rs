@@ -263,7 +263,16 @@ impl App {
                         Input::Up(k) => dev.key_up(k).await,
                         Input::Button(m, d) => dev.button(m, d).await,
                         Input::Scroll(v) => dev.scroll(v, 0).await,
-                        Input::ReleaseAll => dev.release_all().await,
+                        Input::ReleaseAll => {
+                            let r = dev.release_all().await;
+                            if r.is_err() {
+                                // Keys may still be held on the target, and our keepalives would keep them held:
+                                // close the session so the adapter's link-drop release takes over.
+                                dev.shutdown().await;
+                                *notice.lock().unwrap() = "Releasing the keys failed: disconnected so the adapter releases them.".into();
+                            }
+                            r
+                        }
                         Input::Chord(label, ks) => {
                             let mut ok = true;
                             for k in &ks {
@@ -331,7 +340,10 @@ impl App {
             return;
         }
         self.capturing = true;
-        self.grab = crate::syskeys::Grab::start();
+        self.grab = crate::syskeys::Grab::start({
+            let ctx = ctx.clone();
+            move || ctx.request_repaint() // keyboard events arrive off-thread: wake the GUI to forward (and release) promptly
+        });
         debug_log(&format!("capture begins (OS keyboard grab: {})", if self.grab.is_some() { "on" } else { "off" }));
         // Captured keys must reach the target only: a focused local widget would otherwise take Enter/Space.
         ctx.memory_mut(|m| {
@@ -361,9 +373,11 @@ impl App {
         let mut release = false;
         // With an OS-level grab the keyboard comes from it alone (it also sees the keys the OS would otherwise
         // keep for itself: Win, Alt+Tab, ...); egui's key events are then ignored so nothing is sent twice.
-        let hooked = self.grab.is_some();
+        let mut hooked = self.grab.is_some();
         if let Some(g) = &mut self.grab {
-            for ev in g.drain() {
+            // The release chord is a terminal boundary: nothing queued after it is forwarded, keys or clicks.
+            let (forward, released) = crate::syskeys::until_release(g.drain());
+            for ev in forward {
                 match ev {
                     crate::syskeys::Event::Down(k) => {
                         let _ = tx.send(Input::Down(k));
@@ -371,11 +385,24 @@ impl App {
                     crate::syskeys::Event::Up(k) => {
                         let _ = tx.send(Input::Up(k));
                     }
-                    crate::syskeys::Event::Release => release = true,
+                    crate::syskeys::Event::Release => {}
                 }
+            }
+            if released {
+                debug_log("capture ends: release chord");
+                self.end_capture(ctx);
+                return;
             }
         }
         for ev in &events {
+            // A key press that reaches egui while the grab is on was not swallowed: Windows removed the hook (it
+            // does that silently if a callback is ever too slow). Fall back to egui's keys rather than leave the
+            // user capturing without a keyboard.
+            if hooked && matches!(ev, egui::Event::Key { pressed: true, .. }) {
+                debug_log("keyboard grab is not swallowing keys; falling back to egui key events");
+                self.grab = None;
+                hooked = false;
+            }
             match ev {
                 egui::Event::Key { .. } if hooked => {}
                 egui::Event::Key { key, physical_key, pressed, repeat, modifiers, .. } => {
@@ -420,6 +447,9 @@ impl App {
             self.end_capture(ctx);
         } else if !hooked {
             self.sync_mods(&tx, &mods);
+        } else {
+            // The grab's heartbeat is sent from here; keep this running even when nothing else repaints.
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
 
@@ -531,6 +561,13 @@ impl eframe::App for App {
         }
         if self.capturing {
             self.forward_input(ctx);
+        }
+
+        // a capture whose card vanished must not keep showing its last frame as if it were live
+        if self.capture.lock().unwrap().as_ref().is_some_and(|c| c.failed()) {
+            *self.capture.lock().unwrap() = None;
+            self.texture = None;
+            self.set_notice("Video stopped: the capture card was unplugged, reset or is in use by another app. Open it again from the Video button.");
         }
 
         // new video frame → texture

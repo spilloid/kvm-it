@@ -4,30 +4,43 @@
 use super::*;
 use crate::{convert, SharedFrame, VideoFrame};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 use windows::core::{Error as WinError, GUID, PCWSTR, PWSTR};
 use windows::Win32::Media::MediaFoundation::*;
-use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_MULTITHREADED};
 
 const E_ACCESSDENIED: i32 = 0x8007_0005_u32 as i32;
 const VIDEO_STREAM: u32 = MF_SOURCE_READER_FIRST_VIDEO_STREAM.0 as u32;
 
-/// Media Foundation is reference-counted: every user of it holds one of these.
-struct Mf;
+/// Media Foundation and COM are reference-counted: every user holds one of these, which balances both.
+struct Mf {
+    /// Whether this guard's `CoInitializeEx` succeeded (S_OK or S_FALSE both need a matching `CoUninitialize`);
+    /// it fails with RPC_E_CHANGED_MODE if the thread is already in another apartment mode, which needs none.
+    com: bool,
+}
 impl Mf {
     fn start() -> windows::core::Result<Mf> {
-        // COM may already be initialised on this thread (possibly in another apartment mode); that is fine.
         unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            MFStartup(MF_VERSION, MFSTARTUP_FULL)?;
+            let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+            if let Err(e) = MFStartup(MF_VERSION, MFSTARTUP_FULL) {
+                if com {
+                    CoUninitialize();
+                }
+                return Err(e);
+            }
+            Ok(Mf { com })
         }
-        Ok(Mf)
     }
 }
 impl Drop for Mf {
     fn drop(&mut self) {
         unsafe {
             let _ = MFShutdown();
+            if self.com {
+                CoUninitialize();
+            }
         }
     }
 }
@@ -145,20 +158,33 @@ fn sample_bytes(sample: &IMFSample) -> Option<Vec<u8>> {
 pub struct Capture {
     latest: Arc<Mutex<Option<SharedFrame>>>,
     stop: Arc<AtomicBool>,
+    /// Set when the capture thread gave up: the card was unplugged or reset, or the stream ended.
+    failed: Arc<AtomicBool>,
+    done: Receiver<()>,
     pub mode: Mode,
     pub info: DeviceInfo,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
+/// After this many failed reads in a row the card is treated as gone (about a second).
+const MAX_CONSECUTIVE_READ_ERRORS: u32 = 20;
+/// How long dropping a capture waits for its thread. A synchronous `ReadSample` waits for the next sample, so a
+/// card that stops delivering would otherwise hang whoever dropped the capture (the GUI thread); past this the
+/// thread is detached instead and ends whenever that read returns.
+const SHUTDOWN_WAIT: Duration = Duration::from_millis(1500);
+
 impl Capture {
     pub fn open(path: &str) -> Result<Capture, CaptureError> {
         let latest: Arc<Mutex<Option<SharedFrame>>> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
-        let (l2, s2, p2) = (latest.clone(), stop.clone(), path.to_string());
+        let failed = Arc::new(AtomicBool::new(false));
+        let (l2, s2, f2, p2) = (latest.clone(), stop.clone(), failed.clone(), path.to_string());
         let (tx, rx) = mpsc::channel::<Result<Mode, CaptureError>>();
+        let (done_tx, done) = mpsc::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("kvmit-capture".into())
             .spawn(move || {
+                let _signal_done = DoneOnDrop(done_tx);
                 let _mf = match Mf::start() {
                     Ok(m) => m,
                     Err(e) => return drop(tx.send(Err(explain("start Media Foundation", e)))),
@@ -169,14 +195,25 @@ impl Capture {
                 };
                 let _ = tx.send(Ok(mode));
                 let mut seq = 0u64;
+                let mut errors = 0u32;
                 while !s2.load(Ordering::Relaxed) {
                     let (mut flags, mut sample) = (0u32, None);
                     let read = unsafe { reader.ReadSample(VIDEO_STREAM, 0, None, Some(&mut flags), None, Some(&mut sample)) };
-                    let ended = flags & (MF_SOURCE_READERF_ERROR.0 | MF_SOURCE_READERF_ENDOFSTREAM.0) as u32 != 0;
-                    if read.is_err() || ended {
-                        std::thread::sleep(std::time::Duration::from_millis(50)); // unplugged / reset: keep the last frame
+                    // Media Foundation forbids further reads after the reader reports ERROR or the end of the stream.
+                    if flags & (MF_SOURCE_READERF_ERROR.0 | MF_SOURCE_READERF_ENDOFSTREAM.0) as u32 != 0 {
+                        f2.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    if read.is_err() {
+                        errors += 1;
+                        if errors >= MAX_CONSECUTIVE_READ_ERRORS {
+                            f2.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
                         continue;
                     }
+                    errors = 0;
                     let Some(bytes) = sample.as_ref().and_then(sample_bytes) else { continue };
                     let decoded = if mode.mjpeg {
                         convert::decode_mjpeg(&bytes)
@@ -192,7 +229,13 @@ impl Capture {
             .map_err(|e| CaptureError(e.to_string()))?;
         let mode = rx.recv().map_err(|_| CaptureError("capture thread exited".into()))??;
         let name = list_devices().into_iter().find(|d| d.path.eq_ignore_ascii_case(path)).map(|d| d.name).unwrap_or_default();
-        Ok(Capture { latest, stop, mode, info: DeviceInfo { path: path.into(), name }, thread: Some(thread) })
+        Ok(Capture { latest, stop, failed, done, mode, info: DeviceInfo { path: path.into(), name }, thread: Some(thread) })
+    }
+
+    /// True once the capture thread has given up (card unplugged, reset, or the stream ended): the last frame is
+    /// stale and the capture should be dropped and reopened.
+    pub fn failed(&self) -> bool {
+        self.failed.load(Ordering::SeqCst)
     }
 
     pub fn latest(&self) -> Option<SharedFrame> {
@@ -200,11 +243,24 @@ impl Capture {
     }
 }
 
+/// Tells `Capture::drop` the thread has finished (also on panic or early return).
+struct DoneOnDrop(mpsc::Sender<()>);
+impl Drop for DoneOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
 impl Drop for Capture {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            match self.done.recv_timeout(SHUTDOWN_WAIT) {
+                Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                    let _ = t.join();
+                }
+                Err(RecvTimeoutError::Timeout) => {} // detach: never hang the caller on a stalled card
+            }
         }
     }
 }

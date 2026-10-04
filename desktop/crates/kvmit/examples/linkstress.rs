@@ -1,5 +1,7 @@
 //! Link stress test (hardware): how do acked requests behave while mouse motion is streaming?
 //! Usage: linkstress <adapter-address> [motion_hz=125] [seconds=15] [video]
+//! `motion_hz` is how often the test calls `mouse_move` (the producer rate), not the rate of frames on the air:
+//! the client coalesces calls and flushes every 8 ms, at most 127 units per axis per frame.
 //! With `video`, the capture card is opened and decoded for the whole run, like the GUI does (isolates link behaviour
 //! under video load from the GUI's own rendering).
 //! The GUI streams motion at up to 125 frames/s while you move the mouse; key and button events are acked
@@ -67,8 +69,12 @@ async fn main() {
                 errs.push(e.to_string());
             }
         }
-        if let Ok(p) = dev.ping().await {
-            ping_lat.push(p.as_secs_f64() * 1000.0);
+        match dev.ping().await {
+            Ok(p) => ping_lat.push(p.as_secs_f64() * 1000.0),
+            Err(e) => {
+                fails += 1;
+                errs.push(format!("ping: {e}"));
+            }
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
@@ -76,14 +82,19 @@ async fn main() {
         m.abort();
     }
     let n = lat.len();
-    println!("key taps: {n} ok, {fails} failed");
+    println!("key taps: {n} ok; failures (taps, pings, video): {fails}");
     println!("  key tap latency ms  p50 {:.0}  p95 {:.0}  max {:.0}", pct(&mut lat, 0.5), pct(&mut lat, 0.95), pct(&mut lat, 1.0));
     println!("  ping latency ms     p50 {:.0}  p95 {:.0}  max {:.0}", pct(&mut ping_lat, 0.5), pct(&mut ping_lat, 0.95), pct(&mut ping_lat, 1.0));
     for e in errs.iter().take(3) {
         println!("  error: {e}");
     }
     if let Some(c) = &cap {
-        println!("video frames decoded: {}", c.latest().map(|f| f.seq).unwrap_or(0));
+        let frames = c.latest().map(|f| f.seq).unwrap_or(0);
+        println!("video frames decoded: {frames}");
+        if frames == 0 {
+            fails += 1;
+            errs.push("video was requested but no frame was decoded".into());
+        }
     }
     dev.release_all().await.ok();
     dev.shutdown().await;
