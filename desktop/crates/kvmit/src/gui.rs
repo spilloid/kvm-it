@@ -646,7 +646,7 @@ impl App {
                         *self.scan.lock().unwrap() = Scan::Scanning;
                         let (scan, ctx2) = (self.scan.clone(), ctx.clone());
                         self.rt.spawn(async move {
-                            *scan.lock().unwrap() = match backend::scan(Duration::from_secs(5)).await {
+                            *scan.lock().unwrap() = match backend::scan(Duration::from_secs(backend::DEFAULT_SCAN_SECS)).await {
                                 Ok(f) => Scan::Done(f),
                                 Err(e) => Scan::Error(e.to_string()),
                             };

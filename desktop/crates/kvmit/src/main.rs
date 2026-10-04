@@ -28,7 +28,7 @@ enum Cmd {
     Gui,
     /// List adapters in range
     Scan {
-        #[arg(long, default_value_t = 5)]
+        #[arg(long, default_value_t = backend::DEFAULT_SCAN_SECS)]
         seconds: u64,
     },
     /// Pair with an adapter (within 15 s of plugging it in, or after a brief BOOT press)

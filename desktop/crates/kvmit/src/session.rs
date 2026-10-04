@@ -17,7 +17,7 @@ pub async fn resolve(id: Option<String>, last: Option<String>) -> Result<String,
     if let Some(i) = id.or(last) {
         return Ok(i);
     }
-    let found = backend::scan(Duration::from_secs(5)).await?;
+    let found = backend::scan(Duration::from_secs(backend::DEFAULT_SCAN_SECS)).await?;
     match found.len() {
         0 => Err("no kvm-it adapter found. Plug it in (USB port to the target) and, to pair a new one run `kvmit pair` within 15 s of plugging it in (or after pressing BOOT briefly).".into()),
         _ => Ok(found[0].id.clone()),

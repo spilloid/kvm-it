@@ -104,20 +104,40 @@ pub async fn scan(timeout: Duration) -> Result<Vec<Found>> {
     Ok(found)
 }
 
-/// Scan for adapters advertising the kvm-it service. Returns when `timeout` elapses.
+/// How long a discovery scan runs by default. WinRT surfaces advertisements slowly (a 5 s scan found the adapter
+/// in about 2 of 5 runs on Windows 11, 15 s in 4 of 4), so non-Linux platforms get a longer limit.
+#[cfg(target_os = "linux")]
+pub const DEFAULT_SCAN_SECS: u64 = 5;
+#[cfg(not(target_os = "linux"))]
+pub const DEFAULT_SCAN_SECS: u64 = 15;
+
+/// Scan for adapters advertising the kvm-it service. Returns up to `timeout` after starting, or about a second
+/// after the first adapter is heard (so a longer limit costs nothing when the adapter is in range).
 #[cfg(not(target_os = "linux"))]
 pub async fn scan(timeout: Duration) -> Result<Vec<Found>> {
     let ad = adapter().await?;
     ad.start_scan(ScanFilter::default()).await?;
-    tokio::time::sleep(timeout).await;
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut settle_until = None;
     let mut found = Vec::new();
-    for p in ad.peripherals().await? {
-        if std::env::var_os("KVMIT_DEBUG").is_some() {
-            eprintln!("seen: {:?}", p.properties().await.ok().flatten().map(|x| (x.address.to_string(), x.local_name, x.services, x.rssi)));
+    loop {
+        found.clear();
+        for p in ad.peripherals().await? {
+            if std::env::var_os("KVMIT_DEBUG").is_some() {
+                eprintln!("seen: {:?}", p.properties().await.ok().flatten().map(|x| (x.address.to_string(), x.local_name, x.services, x.rssi)));
+            }
+            if let Some(f) = describe(&p).await {
+                found.push(f);
+            }
         }
-        if let Some(f) = describe(&p).await {
-            found.push(f);
+        let now = tokio::time::Instant::now();
+        if !found.is_empty() {
+            settle_until.get_or_insert(now + Duration::from_secs(1));
         }
+        if now >= deadline || settle_until.is_some_and(|t| now >= t) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
     let _ = ad.stop_scan().await;
     found.sort_by_key(|f| std::cmp::Reverse(f.rssi.unwrap_or(i16::MIN)));
@@ -260,10 +280,55 @@ async fn wait_for_device(adapter: &bluer::Adapter, addr: bluer::Address, wait: D
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+impl From<windows::core::Error> for BackendError {
+    fn from(e: windows::core::Error) -> Self {
+        BackendError(e.to_string())
+    }
+}
+
+#[cfg(windows)]
+async fn le_device(id: &str) -> Result<windows::Devices::Bluetooth::BluetoothLEDevice> {
+    let addr = u64::from_str_radix(&id.replace(':', ""), 16).map_err(|_| BackendError(format!("bad address {id}")))?;
+    Ok(windows::Devices::Bluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(addr)?.await?)
+}
+
+/// Windows: pair through the WinRT custom-pairing API, accepting the Just Works confirmation in code, so no
+/// toast or Settings dialog is needed. The adapter must be in its pairing window (physical presence).
+#[cfg(windows)]
+pub async fn pair(id: &str) -> Result<()> {
+    use windows::Devices::Enumeration::{
+        DeviceInformationCustomPairing, DevicePairingKinds, DevicePairingProtectionLevel, DevicePairingRequestedEventArgs,
+        DevicePairingResultStatus,
+    };
+    use windows::Foundation::TypedEventHandler;
+    let dev = le_device(id).await?;
+    let pairing = dev.DeviceInformation()?.Pairing()?;
+    if pairing.IsPaired()? {
+        return Ok(());
+    }
+    let custom = pairing.Custom()?;
+    let token = custom.PairingRequested(&TypedEventHandler::<DeviceInformationCustomPairing, DevicePairingRequestedEventArgs>::new(
+        |_, args| {
+            if let Some(a) = args.as_ref() {
+                a.Accept()?;
+            }
+            Ok(())
+        },
+    ))?;
+    let res = custom
+        .PairWithProtectionLevelAsync(DevicePairingKinds::ConfirmOnly | DevicePairingKinds::ConfirmPinMatch, DevicePairingProtectionLevel::Encryption)?
+        .await;
+    let _ = custom.RemovePairingRequested(token);
+    match res?.Status()? {
+        DevicePairingResultStatus::Paired | DevicePairingResultStatus::AlreadyPaired => Ok(()),
+        s => err(format!("Windows could not pair with {id}: {s:?}. Is the adapter's pairing window open (BOOT short press, or just re-plugged)?")),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub async fn pair(_id: &str) -> Result<()> {
-    // Windows pairs when the first encrypted characteristic is accessed (the OS shows its own prompt).
-    Ok(())
+    err("pairing is not implemented on this platform")
 }
 
 /// Remove the OS-level bond (Linux). The adapter-side bond is erased with a 10 s BOOT hold.
@@ -276,7 +341,17 @@ pub async fn unpair(id: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+pub async fn unpair(id: &str) -> Result<()> {
+    use windows::Devices::Enumeration::DeviceUnpairingResultStatus;
+    let dev = le_device(id).await?;
+    match dev.DeviceInformation()?.Pairing()?.UnpairAsync()?.await?.Status()? {
+        DeviceUnpairingResultStatus::Unpaired | DeviceUnpairingResultStatus::AlreadyUnpaired => Ok(()),
+        s => err(format!("Windows could not unpair {id}: {s:?}")),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub async fn unpair(_id: &str) -> Result<()> {
-    err("remove the device in Windows Bluetooth settings")
+    err("remove the device in the OS Bluetooth settings")
 }
