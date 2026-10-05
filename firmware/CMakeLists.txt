@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 # Firmware version reported over the serial console now and over BLE later.
 # Bump together with CHANGELOG.md and VERSION at the repo root.
-set(PROJECT_VER "0.1.0")
+set(PROJECT_VER "0.2.0")
 
 # The pinned ESP-IDF must carry patches/esp-idf-v5.5-nimble-conn-handle-index.patch (scripts/fw.sh applies it).
 # Without it NimBLE corrupts memory on connect on the ESP32-S3; refuse to build rather than ship that.
@@ -16,3 +16,6 @@ endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(kvm-it-firmware)
+
+# The read-only boot drive (iPXE) is written into the `ipxe` partition together with the app by `idf.py flash`.
+esptool_py_flash_to_partition(flash "ipxe" "${CMAKE_CURRENT_SOURCE_DIR}/ipxe/ipxe.img")

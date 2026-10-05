@@ -13,7 +13,7 @@ HDMI capture card, and one app.
 
 <img src="assets/screenshots/tour-overview.png" alt="The kvm-it window: Adapter, Target USB, Video and Capture chips and the Keys, Type and Scripts buttons over a live picture of the target (a synthetic demo)" style="max-width:100%">
 
-*The real app (0.3.0, Windows 11) with a synthetic demo target in place of a real machine's screen, so nothing private is ever on show.*
+*The real app (0.4.0, Windows 11) with a synthetic demo target in place of a real machine's screen, so nothing private is ever on show.*
 
 ## How easy is it?
 
@@ -31,6 +31,7 @@ HDMI capture card, and one app.
 - **Works where nothing else does:** BIOS/UEFI, OS installers, login screens, recovery shells. If it takes a USB keyboard, kvm-it can
   drive it from the first splash screen.
 - **Sends the keys your PC would swallow:** Ctrl+Alt+Del, Win, Alt+Tab, one click each. On Windows, the rest go to the target too.
+- **Boots a bare machine from the network:** turn on the adapter's read-only iPXE drive with one click (off by default; UEFI targets, Secure Boot off for now).
 - **Replays setup scripts:** TOML or DuckyScript; text, keys, chords, delays and *wait-for-the-screen* steps. Preview and dry-run first.
 - **Flashes its own adapter,** from the app, without touching a toolchain, and keeps the pairing.
 - **Keeps your secrets:** passwords are masked, never logged, never saved. Pairing needs your hands on the hardware.
@@ -52,4 +53,4 @@ HDMI capture card, and one app.
 ## What is verified
 
 Every claim here is labelled **built**, **host-tested**, **VM-verified** or **hardware-verified**. The authoritative table is in the
-[README](https://github.com/spilloid/kvm-it#status-v030).
+[README](https://github.com/spilloid/kvm-it#status-v040).

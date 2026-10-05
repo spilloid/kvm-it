@@ -1,0 +1,34 @@
+name: ipxe source archive
+# The adapter's boot drive carries iPXE (GPL). Every release that ships it gets the exact upstream source archive attached, so the corresponding source
+# travels with the binary. A separate workflow on purpose: it can never affect the signed Windows assets.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the archive to (for example v0.4.0)
+        required: true
+permissions:
+  contents: write
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Does this release ship the boot drive?
+        id: has
+        run: |
+          if [ -x scripts/ipxe-source-archive.sh ]; then echo "ship=yes" >> "$GITHUB_OUTPUT"; else echo "ship=no" >> "$GITHUB_OUTPUT"; echo "no iPXE in this release: nothing to attach"; fi
+      - name: Build the source archive
+        if: steps.has.outputs.ship == 'yes'
+        run: scripts/ipxe-source-archive.sh dist-ipxe-source
+      - name: Attach it to the release
+        if: steps.has.outputs.ship == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist-ipxe-source/ipxe-*-source.tar.gz dist-ipxe-source/ipxe-*-source.tar.gz.sha256 --clobber

@@ -15,6 +15,8 @@ pub enum Request {
     Ping(Vec<u8>),
     Status,
     SetName(String),
+    /// Show (or stop showing) the target the adapter's read-only boot drive. Off by default; the adapter restarts after acknowledging a change.
+    SetBootDrive(bool),
 }
 
 impl Request {
@@ -32,6 +34,7 @@ impl Request {
             Request::Ping(_) => msg::PING,
             Request::Status => msg::STATUS,
             Request::SetName(_) => msg::SET_NAME,
+            Request::SetBootDrive(_) => msg::SET_BOOT_DRIVE,
         }
     }
 
@@ -41,6 +44,7 @@ impl Request {
             Request::KeyDown(u) | Request::KeyUp(u) | Request::KeyTap(u) => vec![*u],
             Request::MouseMove { dx, dy } => [dx.to_le_bytes(), dy.to_le_bytes()].concat(),
             Request::ButtonDown(m) | Request::ButtonUp(m) => vec![*m],
+            Request::SetBootDrive(on) => vec![u8::from(*on)],
             Request::Scroll { v, h } => vec![*v as u8, *h as u8],
             Request::ReleaseAll | Request::Status => vec![],
             Request::Ping(p) => p.clone(),
@@ -88,6 +92,17 @@ pub struct StatusInfo {
     pub buttons: u8,
     pub dropped_motion: u32,
     pub bad_crc: u32,
+    /// Is the read-only boot drive presented to the target right now. `None` from firmware that predates it (protocol minor 0).
+    pub boot_drive: Option<bool>,
+}
+
+/// `HelloInfo::caps` bit: the adapter understands `SET_BOOT_DRIVE` and reports the drive in `STATUS`.
+pub const CAP_BOOT_DRIVE: u32 = 16;
+
+impl HelloInfo {
+    pub fn supports_boot_drive(&self) -> bool {
+        self.caps & CAP_BOOT_DRIVE != 0
+    }
 }
 
 pub mod error_code {
@@ -168,6 +183,7 @@ pub fn parse_reply(f: &Frame<'_>) -> Result<Reply, ParseError> {
                 buttons: p[2],
                 dropped_motion: u32::from_le_bytes([p[3], p[4], p[5], p[6]]),
                 bad_crc: u32::from_le_bytes([p[7], p[8], p[9], p[10]]),
+                boot_drive: p.get(11).map(|b| *b != 0),
             }))
         }
         _ if p.is_empty() => Ok(Reply::Ack),
@@ -205,6 +221,20 @@ mod tests {
         }
         let err = encode_vec(msg::ERROR, FLAG_RESPONSE, 3, &[6, 0x10]).unwrap();
         assert_eq!(parse_reply(&decode(&err).unwrap()), Ok(Reply::Error { code: 6, orig_type: 0x10 }));
+        // STATUS: the original 11 bytes (older firmware) and the 12-byte form with the boot drive
+        let mut st = vec![1, 2, 1, 7, 0, 0, 0, 3, 0, 0, 0];
+        let old = encode_vec(msg::STATUS, FLAG_RESPONSE, 4, &st).unwrap();
+        match parse_reply(&decode(&old).unwrap()).unwrap() {
+            Reply::Status(s) => assert_eq!((s.hid_mounted, s.dropped_motion, s.bad_crc, s.boot_drive), (true, 7, 3, None)),
+            r => panic!("{r:?}"),
+        }
+        st.push(1);
+        let new = encode_vec(msg::STATUS, FLAG_RESPONSE, 5, &st).unwrap();
+        assert!(matches!(parse_reply(&decode(&new).unwrap()), Ok(Reply::Status(s)) if s.boot_drive == Some(true)));
+        assert_eq!(Request::SetBootDrive(true).payload(), vec![1]);
+        assert_eq!(Request::SetBootDrive(false).payload(), vec![0]);
+        assert_eq!(Request::SetBootDrive(true).msg_type(), msg::SET_BOOT_DRIVE);
+        assert!(Request::SetBootDrive(true).wants_ack());
         let ack = encode_vec(msg::KEY_UP, FLAG_RESPONSE, 3, &[]).unwrap();
         assert_eq!(parse_reply(&decode(&ack).unwrap()), Ok(Reply::Ack));
         let req = encode_vec(msg::KEY_UP, 0, 3, &[4]).unwrap();

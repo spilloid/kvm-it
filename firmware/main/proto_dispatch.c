@@ -149,6 +149,10 @@ static uint8_t apply(proto_dev_t *d, const proto_frame_t *f)
         d->name[f->payload[0]] = 0;
         return 0;
     }
+    case 0x61:  // SET_BOOT_DRIVE: the adapter's read-only boot drive, off unless asked for
+        if (f->len != 1 || f->payload[0] > 1) return PROTO_ERRC_BAD_PAYLOAD;
+        if (!o->set_boot_drive(o->ctx, f->payload[0] == 1)) return PROTO_ERRC_BUSY;
+        return 0;
     default:
         return PROTO_ERRC_UNSUPPORTED;
     }
@@ -196,8 +200,8 @@ void proto_dev_handle(proto_dev_t *d, const uint8_t *buf, size_t len, uint32_t n
         size_t budget = resp_cap - PROTO_OVERHEAD - fixed;
         size_t nl = strlen(d->name);
         if (nl > budget) nl = budget;  // MTU-limited: truncate rather than fail the handshake
-        p[0] = PROTO_VERSION; p[1] = 0;
-        uint32_t caps = PROTO_CAP_KEYBOARD | PROTO_CAP_MOUSE | PROTO_CAP_SCROLL | PROTO_CAP_KEEPALIVE;
+        p[0] = PROTO_VERSION; p[1] = 1;  /* minor 1: SET_BOOT_DRIVE, STATUS.boot_drive */
+        uint32_t caps = PROTO_CAP_KEYBOARD | PROTO_CAP_MOUSE | PROTO_CAP_SCROLL | PROTO_CAP_KEEPALIVE | PROTO_CAP_BOOT_DRIVE;
         p[2] = (uint8_t)caps; p[3] = (uint8_t)(caps >> 8); p[4] = (uint8_t)(caps >> 16); p[5] = (uint8_t)(caps >> 24);
         memcpy(p + 6, d->fw, 3);
         memcpy(p + 9, d->uuid, 16);
@@ -212,10 +216,11 @@ void proto_dev_handle(proto_dev_t *d, const uint8_t *buf, size_t len, uint32_t n
         return;
     case 0x50: {  // STATUS
         if (f.len != 0) { *resp_len = emit_error(f.seq, PROTO_ERRC_BAD_PAYLOAD, f.type, resp, resp_cap); return; }
-        uint8_t keys = 0, buttons = 0, p[11];
+        uint8_t keys = 0, buttons = 0, p[12];
         d->ops.counts(d->ops.ctx, &keys, &buttons);
         p[0] = d->ops.mounted(d->ops.ctx); p[1] = keys; p[2] = buttons;
         for (int i = 0; i < 4; i++) { p[3 + i] = (uint8_t)(d->dropped_motion >> (8 * i)); p[7 + i] = (uint8_t)(d->bad_crc >> (8 * i)); }
+        p[11] = d->ops.boot_drive(d->ops.ctx) ? 1 : 0;  // appended in minor 1; older controllers ignore the extra byte
         *resp_len = emit(0x50, PROTO_FLAG_RESPONSE, f.seq, p, sizeof p, resp, resp_cap);
         return;
     }

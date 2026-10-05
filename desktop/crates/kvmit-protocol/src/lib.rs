@@ -23,13 +23,14 @@ pub mod msg {
     pub const PING: u8 = 0x40;
     pub const STATUS: u8 = 0x50;
     pub const SET_NAME: u8 = 0x60;
+    pub const SET_BOOT_DRIVE: u8 = 0x61;
     pub const ERROR: u8 = 0x7F;
 
     pub fn is_known(t: u8) -> bool {
         matches!(
             t,
             HELLO | KEY_DOWN | KEY_UP | KEY_TAP | MOUSE_MOVE | MOUSE_BUTTON_DOWN
-                | MOUSE_BUTTON_UP | SCROLL | RELEASE_ALL | PING | STATUS | SET_NAME | ERROR
+                | MOUSE_BUTTON_UP | SCROLL | RELEASE_ALL | PING | STATUS | SET_NAME | SET_BOOT_DRIVE | ERROR
         )
     }
 }

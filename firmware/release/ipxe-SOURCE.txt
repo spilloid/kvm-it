@@ -1,0 +1,7 @@
+ipxe.img carries the iPXE UEFI binary (EFI/BOOT/BOOTX64.EFI), built from UNMODIFIED upstream iPXE source by scripts/build-ipxe.sh
+in the kvm-it repository (default configuration, x86-64 UEFI target; the build is repeatable with the pinned container image).
+Upstream source: https://github.com/ipxe/ipxe at commit 6262f1081fe185564e8ec8365a1d23597ec6e6f5.
+An archive of exactly that source, ipxe-6262f1081fe1-source.tar.gz (with a .sha256), is attached to every kvm-it release that ships this file.
+iPXE is licensed under the GNU General Public License, version 2 (individual files carry their own declarations; see COPYING in the
+source and https://ipxe.org/licensing). The licence text is ipxe-COPYING.GPLv2 next to this file. It is shipped as a separate data image,
+not linked into kvm-it's MIT-licensed firmware or app. See THIRD_PARTY_NOTICES.md in the kvm-it release.

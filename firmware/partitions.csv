@@ -1,0 +1,9 @@
+# Name,   Type, SubType, Offset,   Size,    Flags
+# The first three rows are the layout every shipped adapter already has, unchanged on purpose: the app's flasher keeps an
+# adapter's pairing only while the settings partition (nvs) stays exactly where it is, same size and name.
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+factory,  app,  factory, 0x10000,  0x100000,
+# The read-only boot drive the adapter shows to the target: an MBR disk image with an EFI system partition holding iPXE
+# (built by scripts/build-ipxe-image.sh). Raw 512-byte sectors, served as is.
+ipxe,     data, fat,     0x110000, 0x400000,

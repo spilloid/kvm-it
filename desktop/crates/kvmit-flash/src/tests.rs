@@ -100,7 +100,8 @@ fn the_committed_release_images_pass_the_strict_checks() {
     // always runs: firmware/release is what every package ships
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../firmware/release");
     let im = Image::from_build_dir(&dir).expect("firmware/release must be a valid image set");
-    assert_eq!(im.parts.len(), 3);
+    assert_eq!(im.parts.len(), 4, "bootloader, partition table, app and the boot drive");
+    assert_eq!(im.parts[3].name, "ipxe");
     im.check_keeps_settings().unwrap();
     assert_eq!(im.nvs_regions(), vec![(0x9000, 0xf000)]);
     // and its own table is its own installed table
@@ -457,4 +458,73 @@ fn the_parser_enforces_the_bootloaders_0xc00_window() {
     t.extend([0xFF; 32]);
     assert!(parse(&t).unwrap_err().0.contains("0xC00"));
     assert!(parse(&project_table()).is_ok());
+}
+
+fn data_table() -> Vec<u8> {
+    table(&[(1, 2, 0x9000, 0x6000, "nvs"), (1, 1, 0xf000, 0x1000, "phy_init"), (0, 0, 0x10000, 0x100000, "factory"), (1, 0x81, 0x110000, 0x400000, "ipxe")])
+}
+
+fn boot_image(len: usize) -> Vec<u8> {
+    let mut v = vec![0u8; len];
+    v[510] = 0x55;
+    v[511] = 0xAA;
+    v
+}
+
+fn four_parts(data_off: u32, data: Vec<u8>) -> Image {
+    let mut im = image_with(data_table(), 21_088, 0x10000);
+    im.parts.push(Part { name: "ipxe".into(), offset: data_off, data });
+    im
+}
+
+#[test]
+fn a_fat_data_image_in_its_own_partition_is_accepted_and_keeps_the_settings() {
+    let im = four_parts(0x110000, boot_image(4 << 20));
+    im.validate().unwrap();
+    im.check_keeps_settings().unwrap();
+    // an installed table that already has the data partition matches, and so does the old three-partition one (the settings are the same)
+    im.check_matches_installed(&data_table()).unwrap();
+    im.check_matches_installed(&project_table()).unwrap();
+}
+
+#[test]
+fn a_data_image_is_refused_unless_it_lands_exactly_in_a_fat_data_partition_that_fits() {
+    // the rule itself, against a table with every kind of partition, so no other check can be what refuses it
+    let t = parse_partition_table(&table(&[
+        (1, 2, 0x9000, 0x6000, "nvs"), (1, 1, 0xf000, 0x1000, "phy_init"), (0, 0, 0x10000, 0x100000, "factory"),
+        (1, 0, 0x110000, 0x2000, "otadata"), (1, 0x81, 0x120000, 0x400000, "ipxe"), (1, 0x82, 0x520000, 0x10000, "spiffs"),
+    ]), 16 << 20, true).unwrap();
+    let image = |off: u32, data: Vec<u8>| Part { name: "ipxe".into(), offset: off, data };
+    check_data_image(&t, &image(0x120000, boot_image(4 << 20))).unwrap();
+    assert!(check_data_image(&t, &image(0x120000, boot_image((4 << 20) + 1))).unwrap_err().0.contains("does not fit"));
+    assert!(check_data_image(&t, &image(0x130000, boot_image(4096))).unwrap_err().0.contains("no partition at"), "inside a partition, not at its start");
+    assert!(check_data_image(&t, &image(0x120000, vec![0u8; 4096])).unwrap_err().0.contains("55 AA"));
+    assert!(check_data_image(&t, &image(0x120000, vec![0x55; 100])).is_err(), "too short to hold a boot sector");
+    for (off, why) in [(0x9000, "the settings (nvs: the pairing)"), (0xf000, "phy_init"), (0x10000, "the app partition"), (0x110000, "otadata"), (0x520000, "a non-FAT data partition")] {
+        let e = check_data_image(&t, &image(off, boot_image(4096))).unwrap_err().0;
+        assert!(e.contains("not a FAT data partition"), "{why}: {e}");
+    }
+}
+
+#[test]
+fn a_four_part_manifest_loads_and_a_misplaced_data_image_is_refused_end_to_end() {
+    let manifest = |off: &str| MANIFEST.replace(r#""0x8000":"partition_table/partition-table.bin""#, &format!(r#""0x8000":"partition_table/partition-table.bin","{off}":"ipxe.img""#));
+    let read = |rel: &str| -> Result<Vec<u8>, FlashError> {
+        match rel {
+            "partition_table/partition-table.bin" => Ok(data_table()),
+            "ipxe.img" => Ok(boot_image(4 << 20)),
+            _ => files(rel),
+        }
+    };
+    let im = Image::from_manifest(&manifest("0x110000"), read).unwrap();
+    assert_eq!(im.parts.len(), 4);
+    assert_eq!(im.parts[3].name, "ipxe");
+    assert!(Image::from_manifest(&manifest("0x120000"), read).is_err());
+}
+
+#[test]
+fn more_than_one_data_image_or_a_fifth_part_is_refused() {
+    let mut im = four_parts(0x110000, boot_image(4096));
+    im.parts.push(Part { name: "extra".into(), offset: 0x510000, data: boot_image(4096) });
+    assert!(im.validate().unwrap_err().0.contains("3 or 4 parts"));
 }

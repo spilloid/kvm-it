@@ -16,7 +16,7 @@
 enum { PROTO_ERRC_UNSUPPORTED = 1, PROTO_ERRC_BAD_VERSION, PROTO_ERRC_BAD_FLAGS, PROTO_ERRC_BAD_PAYLOAD,
        PROTO_ERRC_NOT_READY, PROTO_ERRC_HID_NOT_MOUNTED, PROTO_ERRC_BUSY, PROTO_ERRC_REFUSED, PROTO_ERRC_MTU_TOO_SMALL };
 
-enum { PROTO_CAP_KEYBOARD = 1, PROTO_CAP_MOUSE = 2, PROTO_CAP_SCROLL = 4, PROTO_CAP_KEEPALIVE = 8 };
+enum { PROTO_CAP_KEYBOARD = 1, PROTO_CAP_MOUSE = 2, PROTO_CAP_SCROLL = 4, PROTO_CAP_KEEPALIVE = 8, PROTO_CAP_BOOT_DRIVE = 16 };
 
 // HID operation results.
 typedef enum { HIDOP_OK = 0, HIDOP_NOT_MOUNTED, HIDOP_BUSY, HIDOP_REFUSED, HIDOP_INVALID } hidop_t;
@@ -33,6 +33,8 @@ typedef struct {
     bool (*any_held)(void *ctx);
     void (*counts)(void *ctx, uint8_t *keys, uint8_t *buttons);
     bool (*set_name)(void *ctx, const char *name, size_t len);  // persist; false on failure
+    bool (*set_boot_drive)(void *ctx, bool enabled);  // persist; if it changed, the device restarts shortly after (so the target re-enumerates); false on failure
+    bool (*boot_drive)(void *ctx);                    // is the boot drive being presented to the target right now
 } proto_ops_t;
 
 typedef struct {

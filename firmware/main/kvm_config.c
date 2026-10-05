@@ -46,6 +46,28 @@ esp_err_t kvm_config_set_name(const char *name, size_t len)
     return err;
 }
 
+bool kvm_config_boot_drive(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0; /* default: off */
+    if (nvs_open(NS, NVS_READONLY, &h) == ESP_OK) {
+        if (nvs_get_u8(h, "bootdrv", &v) != ESP_OK) v = 0;
+        nvs_close(h);
+    }
+    return v == 1;
+}
+
+esp_err_t kvm_config_set_boot_drive(bool enabled)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u8(h, "bootdrv", enabled ? 1 : 0);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
 void kvm_config_uuid(uint8_t out[16])
 {
     uint8_t mac[6];

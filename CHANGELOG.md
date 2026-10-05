@@ -2,13 +2,48 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-05 (network boot through the adapter)
+
+Firmware 0.2.0 and wire protocol 1.1 (backward compatible: one new message, one appended `STATUS` byte, one capability bit). **The boot drive is OFF until you turn it on**, with a
+button in the app's Adapter popup or `kvmit boot-drive on`; an adapter that upgrades shows its target nothing new until then. Verification: see the README status table.
+
 ### Added
+- **Network boot through the adapter (off by default).** When turned on, the adapter also presents a **4 MiB read-only USB drive** (a third USB interface, after the
+  keyboard and mouse) carrying iPXE and an `autoexec.ipxe`, so a UEFI target can boot from the network (WinPE, an installer, a rescue image). **Adapter popup > Boot
+  drive: Turn on (restarts adapter)**, or `kvmit boot-drive [on|off]` (`kvmit status` shows it). The setting is stored in the adapter; the adapter restarts when it
+  changes, because a USB descriptor is fixed for a session (the target sees it re-plug, with the drive added or removed). The drive is write-protected by the
+  device, lives in its own `ipxe` flash partition (the settings partition did not move, so existing adapters upgrade in place and keep their pairing), and the USB
+  product id is `303a:400a` (was `303a:4008`) **in both states**, so a USB allow-list or VM passthrough keyed on the old product id needs updating; with the drive off the configuration is still just the keyboard and mouse interfaces. The setting is remembered across power cycles and re-flashes.
+- **Safe default script:** on the drive, iPXE waits five seconds for a key and otherwise exits with a failure status, so a target that boots this drive by accident
+  carries on down its boot order; nothing is fetched or run without a key press. A key press does DHCP and chains to the iPXE project's public demo menu over HTTPS
+  (replace the URL with your own boot server: `docs/developing.md`). A legacy BIOS that tries the disk moves on (its boot sector is `INT 18h`; untested).
+- **Protocol 1.1:** `SET_BOOT_DRIVE` (0x61), a boot-drive byte appended to `STATUS`, capability bit 4; an older controller or firmware simply lacks them (the app says
+  "needs firmware 0.2.0" and offers the flasher).
+- **iPXE is built from unmodified upstream source** at a pinned commit by `scripts/build-ipxe.sh` (the binary is treated and shipped under the GNU GPL v2, with the licence
+  text and a source statement in every package); the upstream source archive is attached to the release by `.github/workflows/ipxe-source.yml`. See `THIRD_PARTY_NOTICES.md`.
+- The flasher writes one extra part, the boot drive image: it must land exactly in a FAT data partition of the new table (never the settings or any other partition), fit
+  it, and carry a boot signature; `scripts/refresh-firmware-release.py` refreshes `firmware/release` from a build.
+- `tools/ipxe-test/boot-vm.sh`: boots a UEFI VM from the real adapter (or a disk image) with Secure Boot off or on, for the Secure Boot work.
+
+### Verified (and what was not)
+- **Real adapter on a Linux host:** enumerates as keyboard + mouse + a write-protected 4 MiB disk; the whole disk reads back byte-identical to the image; mounts read-only;
+  raw SCSI commands sent straight at the device (bypassing the host's write-protect flag) are refused (WRITE(10) as DATA PROTECT; WRITE(6)/(12), FORMAT UNIT, WRITE SAME
+  and UNMAP as invalid commands) and the disk is unchanged. These first ran on an early build of the image. On the final firmware (app sha256 6a5d0525…, image sha256 587650f8…) the following were re-run on the real
+  adapter (2026-10-05): the four-image flash over COM with the pairing kept (`kvmit flash`), boot with the drive off, `kvmit boot-drive on` over Bluetooth (from a
+  Windows 11 VM) giving the disk with identical readback, read-only, a raw WRITE(10) refused as DATA PROTECT, and `off` returning to keyboard and mouse only.
+- **UEFI VM, Secure Boot off:** with no key iPXE falls through to the firmware's boot menu; with a key it gets an address, fetches the demo over HTTPS and boots a network Linux.
+- **Not exercised:** the app's Boot drive button (the CLI command was used), the flash wizard's four-image path in the packaged app, a real PC booting from the drive, a Windows host seeing the drive, legacy BIOS (unsupported). **Secure Boot on refuses the unsigned iPXE** ("Access
+  Denied", reproduced in an OVMF VM with the stock keys): a known limit, tracked for the 0.4.x releases.
+- Reviewed over several rounds; the review log (`docs/dev-process.md`) records each finding. Claude Opus 5.5 reviewed in place of the usual reviewer while it was out of
+  quota (a recorded deviation from STD-001); a Codex round also ran over an earlier state.
+
+### Also in this release
 - Screenshots of the real app on the website and in the README (overview, adapter, video, keys, type, scripts, run log, input captured, flash adapter), taken by an
   automated harness (`tools/screenshots`) against a synthetic demo target and checked per scene; the demo picture's overlapping countdown text was fixed.
 - Documentation rewritten in a product voice with red-arrow annotated pictures: README, home page and getting-started now say what is true (a signed installer or an
   AppImage, the adapter flashed from the app; no Rust, no Docker), and the build-from-source material moved to `docs/developing.md`. `getting-started.md` had still said
   there were no packaged releases and sent people to Podman.
-- Roadmap: 0.4.0 is the iPXE network-boot drive (Secure Boot passing, heavily tested, is a release gate), the wired link over COM (drive the adapter over its UART with no Bluetooth) is the 0.5.0 candidate, a late "phone and Apple-silicon controllers" item (Android, iPhone/iPad, macOS) and a list of small lifts are
+- Roadmap: 0.4.0 is the iPXE network-boot drive (Secure Boot is validated heavily through the 0.4.x minors), the wired link over COM (drive the adapter over its UART with no Bluetooth) is the 0.5.0 candidate, a late "phone and Apple-silicon controllers" item (Android, iPhone/iPad, macOS) and a list of small lifts are
   tracked next to them.
 
 ## [0.3.0] - 2026-10-04 (flash the adapter from the app)

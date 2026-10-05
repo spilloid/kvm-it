@@ -368,6 +368,23 @@ static bool o_held(void *c) { (void)c; return usb_hid_any_held(); }
 static void o_counts(void *c, uint8_t *k, uint8_t *b) { (void)c; usb_hid_counts(k, b); }
 static bool o_name(void *c, const char *n, size_t l) { (void)c; return kvm_config_set_name(n, l) == ESP_OK; }
 
+/* The USB descriptor is fixed for a session, so a changed boot-drive setting takes effect by restarting the adapter, shortly after the
+ * acknowledgement has been sent (a retried request is answered from the dedup window and never schedules a second restart). The target
+ * sees the adapter re-plug, with the drive added or removed. Unchanged: nothing happens. */
+static void restart_cb(void *arg) { (void)arg; esp_restart(); }
+static bool o_set_boot_drive(void *c, bool enabled)
+{
+    (void)c;
+    if (enabled == kvm_config_boot_drive()) return true; /* already so: no restart */
+    static esp_timer_handle_t t;
+    const esp_timer_create_args_t a = {.callback = restart_cb, .name = "bootdrv_restart"};
+    if (!t && esp_timer_create(&a, &t) != ESP_OK) return false; /* before the commit: a failure here must leave the stored setting alone */
+    if (kvm_config_set_boot_drive(enabled) != ESP_OK) return false;
+    esp_timer_start_once(t, 500 * 1000);
+    return true;
+}
+static bool o_boot_drive(void *c) { (void)c; return usb_hid_boot_drive(); }
+
 static uint32_t ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 static void worker(void *arg)
@@ -464,8 +481,8 @@ esp_err_t ble_link_start(void)
     const esp_timer_create_args_t ta = {.callback = window_expired, .name = "pair_window"};
     ESP_ERROR_CHECK(esp_timer_create(&ta, &g_window_timer));
 
-    proto_ops_t ops = {NULL, o_down, o_up, o_rel, o_move, o_btn, o_wheel, o_mounted, o_held, o_counts, o_name};
-    uint8_t uuid[16], fw[3] = {0, 1, 0};
+    proto_ops_t ops = {NULL, o_down, o_up, o_rel, o_move, o_btn, o_wheel, o_mounted, o_held, o_counts, o_name, o_set_boot_drive, o_boot_drive};
+    uint8_t uuid[16], fw[3] = {0, 2, 0};
     char name[KVM_NAME_MAX + 1];
     kvm_config_uuid(uuid);
     kvm_config_name(name);

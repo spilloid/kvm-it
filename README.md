@@ -8,7 +8,7 @@ See it. Type at it. Install it. No software on the target, no network, no hundre
 HDMI capture card, and one app.
 
 <p align="center"><img src="docs/assets/screenshots/tour-overview.png" alt="The kvm-it window: Adapter, Target USB, Video and Capture chips and the Keys, Type and Scripts buttons over a live picture of the target (a synthetic demo)" width="820"></p>
-<p align="center"><sub>The real app (0.3.0, Windows 11). The picture is a synthetic demo target, never a real machine.</sub></p>
+<p align="center"><sub>The real app (0.4.0, Windows 11). The picture is a synthetic demo target, never a real machine.</sub></p>
 
 ## Three steps
 
@@ -27,6 +27,8 @@ HDMI capture card, and one app.
 - **Zero-step reconnect.** Pair once. Move the cables to the next machine and the app reconnects by itself.
 - **Replayable setup scripts.** Native TOML or imported DuckyScript: text, keys, chords, delays, and *wait-for-the-screen* steps, so one slow
   install screen does not wreck everything after it. Preview and dry-run before anything is typed; abort leaves nothing held down.
+- **Boots a bare machine from the network.** One click turns on the adapter's read-only USB drive carrying iPXE (off by default): pick it in the target's boot menu and
+  reach an installer, WinPE or a rescue image (UEFI targets; Secure Boot must be off for now).
 - **Flashes its own adapter,** in the app, and keeps the pairing.
 - **Safe with secrets.** Passwords are masked, never logged, never saved. Pairing needs physical presence: plug it in or press its button.
 - **Open.** MIT-licensed; the wire protocol, firmware and every review round are in this repo.
@@ -47,7 +49,7 @@ the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what t
 
 **Hacking on it?** Building from source (that is where Rust and Docker live): [docs/developing.md](docs/developing.md).
 
-## Status: v0.3.0
+## Status: v0.4.0
 
 Labels are strict: **built** = compiles; **host-tested** = automated tests pass in CI/containers;
 **hardware-verified** = run on a physical board; **VM-verified** = run in a Windows 11 virtual machine on a Linux
@@ -70,8 +72,9 @@ not bare-metal Windows).
 | Desktop: egui GUI, v0.2.0 layout (top-bar status chips, popups, run-log strip) | **VM-verified** on Windows (chips, popups, capture, error dialog). **Not yet checked on Linux** since the redesign; exposes a UI Automation tree for screen readers and tests. No automated GUI tests |
 | Desktop: Windows keyboard grab (Win, Alt+Tab, ... go to the target while captured) | **VM-verified**: Win and Alt+Tab never reach the controller while captured, a held key reaches the adapter, Ctrl+Alt+Esc releases and the keyboard returns, and a hung GUI cannot trap the keyboard (the helper stops swallowing after 3 s). Not verified: non-US layouts and IMEs, bare metal. Linux has no equivalent |
 | Desktop: shared client change (mouse motion split into 127-unit frames, ordered before clicks) | host-tested; **not re-run on a Linux board yet** |
-| Windows as the controller (app) | **v0.3.0**: runs in a Windows 11 VM with real hardware passed through (rows above); **not verified on bare-metal Windows**. Windows as the *target* works as before: it only sees a USB keyboard and mouse |
-| Desktop: flash the adapter (`kvmit flash`, GUI **Flash adapter…**) | **hardware-verified** on Linux with a physical board over its COM port (`kvmit flash`): verified write of bootloader, partition table and app; the pairing survives a default flash and is wiped by `--erase-all`; refuses while the adapter's own USB port is plugged in (also with `--any-port`). **VM-verified** on Windows 11 (board's COM bridge passed through): the same CLI and the GUI wizard, end to end. an interrupted write was recovered by flashing again. **Not exercised:** the Linux GUI wizard, bare-metal Windows, a factory-fresh board (the full-erase path, run only on boards that already had firmware) |
+| Windows as the controller (app) | **v0.4.0**: runs in a Windows 11 VM with real hardware passed through (rows above); **not verified on bare-metal Windows**. Windows as the *target* sees a USB keyboard and mouse, and since firmware 0.2.0 also a small read-only drive (a drive letter and possibly an AutoPlay prompt); a Windows target seeing the drive has not been exercised |
+| Desktop: flash the adapter (`kvmit flash`, GUI **Flash adapter…**) | **hardware-verified** on Linux with a physical board over its COM port (`kvmit flash`): verified write of bootloader, partition table, app and (firmware 0.2.0) the boot-drive image; the pairing survives a default flash and is wiped by `--erase-all`; refuses while the adapter's own USB port is plugged in (also with `--any-port`). **VM-verified** on Windows 11 (board's COM bridge passed through): the same CLI and the GUI wizard, end to end. an interrupted write was recovered by flashing again. **Not exercised:** the Linux GUI wizard, bare-metal Windows, a factory-fresh board (the full-erase path, run only on boards that already had firmware) |
+| Firmware 0.2.0: read-only USB boot drive carrying iPXE, **off until turned on** (Adapter popup / `kvmit boot-drive`) | Protocol/dispatcher/config: **host-tested** (firmware logic tests, shared vectors, Rust parsing). **Hardware-verified** with the real adapter on a Linux host, the toggle driven from the Windows 11 VM over Bluetooth (`kvmit boot-drive`): the final firmware (app sha256 6a5d0525…) flashed over COM as four images with the pairing kept, booting with the drive off; `kvmit boot-drive on` over Bluetooth from the Windows 11 VM re-enumerated it with a read-only disk (3 interfaces) whose contents read back identical to the shipped image, a raw SCSI WRITE(10) sent at it was refused (DATA PROTECT) and the disk was unchanged; `off` returned it to two interfaces; the firmware then reports 0.2.0 (2026-10-05). **Not exercised on hardware:** the GUI button. Earlier hardware checks on a first build of the image (drive always on): enumerates beside the keyboard and mouse as a 4 MiB write-protected disk; the whole disk reads back byte-identical; mounts read-only; raw SCSI writes sent straight at the device (WRITE(10) as DATA PROTECT; WRITE(6)/(12), FORMAT UNIT, WRITE SAME, UNMAP as invalid commands) are refused and the disk is unchanged; pairing survived the new partition table. **VM-verified** (UEFI VM, Secure Boot **off**): the final image as a USB disk falls through when no key is pressed, and with a key gets an address, fetches the demo over HTTPS and boots a network Linux; and a private script on it chained to a Windows PE over HTTPS and brought it to its prompt. **With Secure Boot on (stock Microsoft keys) the firmware refuses the unsigned iPXE** ("Access Denied"): a known limit, work planned. **Not exercised:** the GUI button and the packaged app's four-image flash (the CLI flasher was used), a real PC booting from the drive, a Windows host seeing it, legacy BIOS (unsupported) |
 | Built-in OOBE script | template only, never run on a real OOBE |
 | Session recording | planned |
 

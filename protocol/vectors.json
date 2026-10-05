@@ -160,6 +160,33 @@
       "payload": "046465736b"
     },
     {
+      "name": "set_boot_drive_on",
+      "hex": "0161010f010001b90a",
+      "ver": 1,
+      "type": 97,
+      "flags": 1,
+      "seq": 15,
+      "payload": "01"
+    },
+    {
+      "name": "set_boot_drive_off",
+      "hex": "01610110010000d1d5",
+      "ver": 1,
+      "type": 97,
+      "flags": 1,
+      "seq": 16,
+      "payload": "00"
+    },
+    {
+      "name": "status_response_with_boot_drive",
+      "hex": "015002110c0001020107000000030000000195e6",
+      "ver": 1,
+      "type": 80,
+      "flags": 2,
+      "seq": 17,
+      "payload": "010201070000000300000001"
+    },
+    {
       "name": "error_unsupported",
       "hex": "017f020d02000199961e",
       "ver": 1,

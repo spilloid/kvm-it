@@ -886,7 +886,7 @@ impl App {
     // ---- popup bodies: what used to be the left sidebar, one method per top-bar button ----
     fn adapter_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, link: &Link) {
         match link {
-            Link::Connected { name, id, .. } => {
+            Link::Connected { name, id, dev } => {
                 ui.label(format!("{name}\n{id}"));
                 ui.horizontal(|ui| {
                     if ui.button("Release all keys").clicked() {
@@ -900,6 +900,7 @@ impl App {
                         self.stop_link();
                     }
                 });
+                self.boot_drive_ui(ui, ctx, dev);
             }
             _ => {
                 let scanning = matches!(&*self.scan.lock().unwrap(), Scan::Scanning);
@@ -951,6 +952,46 @@ impl App {
             self.cancel_pending_link();
             self.flash = Some(crate::flashwiz::Wizard::new());
         }
+    }
+
+    /// The adapter's read-only boot drive: OFF unless you turn it on here. Changing it restarts the adapter (the USB descriptor is fixed for a
+    /// session), so the target sees it re-plug, with the drive added or removed; the app reconnects by itself.
+    fn boot_drive_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, dev: &Device) {
+        ui.separator();
+        let state = self.status.lock().unwrap().as_ref().and_then(|s| s.boot_drive);
+        if !dev.info().supports_boot_drive() {
+            ui.small("Boot drive: this adapter's firmware predates it (0.2.0 or newer). Use Flash adapter… below.");
+            return;
+        }
+        let Some(on) = state else {
+            ui.small("Boot drive: reading…");
+            return;
+        };
+        let script_running = self.run_handle.as_ref().is_some_and(|r| !r.done.load(Ordering::SeqCst));
+        ui.horizontal(|ui| {
+            ui.label(if on { "Boot drive: on" } else { "Boot drive: off" });
+            let button = egui::Button::new(if on { "Turn off (restarts adapter)" } else { "Turn on (restarts adapter)" });
+            let hint = if script_running { "Wait for the running script to finish" } else { "The target sees the adapter re-plug, with the drive added or removed" };
+            if ui.add_enabled(!script_running, button).on_hover_text(hint).clicked() {
+                self.set_boot_drive(dev.clone(), !on, ctx.clone());
+            }
+        });
+        ui.small(if on {
+            "A read-only iPXE disk (UEFI): pick it in the target's boot menu to boot from the network."
+        } else {
+            "Shows the target a read-only iPXE disk so it can boot from the network. Off until you turn it on."
+        });
+    }
+
+    fn set_boot_drive(&mut self, dev: Device, enable: bool, ctx: egui::Context) {
+        let notice = self.notice.clone();
+        *notice.lock().unwrap() = format!("Turning the boot drive {}: the adapter restarts and reconnects by itself…", if enable { "on" } else { "off" });
+        self.rt.spawn(async move {
+            if let Err(e) = dev.set_boot_drive(enable).await {
+                *notice.lock().unwrap() = format!("Could not change the boot drive: {e}");
+            }
+            ctx.request_repaint();
+        });
     }
 
     fn video_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {

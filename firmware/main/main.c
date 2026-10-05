@@ -19,7 +19,7 @@ void app_main(void)
      * always sees a working keyboard/mouse even if BLE fails, then BLE (reconnect or pairing window). */
     ESP_ERROR_CHECK(kvm_config_init());
     if (led_start() != ESP_OK) ESP_LOGW(TAG, "status LED unavailable");
-    ESP_ERROR_CHECK(usb_hid_init());
+    ESP_ERROR_CHECK(usb_hid_init(kvm_config_boot_drive()));
     ESP_ERROR_CHECK(buttons_start());
     if (ble_link_start() != ESP_OK) ESP_LOGE(TAG, "BLE failed to start; USB HID still works but no remote control");
 #if CONFIG_KVMIT_SELFTEST
