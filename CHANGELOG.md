@@ -8,7 +8,7 @@
 - Documentation rewritten in a product voice with red-arrow annotated pictures: README, home page and getting-started now say what is true (a signed installer or an
   AppImage, the adapter flashed from the app; no Rust, no Docker), and the build-from-source material moved to `docs/developing.md`. `getting-started.md` had still said
   there were no packaged releases and sent people to Podman.
-- Roadmap: 0.4.0 is the iPXE network-boot drive, the wired link over COM (drive the adapter over its UART with no Bluetooth) is the 0.5.0 candidate, and a list of small lifts is
+- Roadmap: 0.4.0 is the iPXE network-boot drive (Secure Boot passing, heavily tested, is a release gate), the wired link over COM (drive the adapter over its UART with no Bluetooth) is the 0.5.0 candidate, and a list of small lifts is
   tracked next to them.
 
 ## [0.3.0] - 2026-10-04 (flash the adapter from the app)
