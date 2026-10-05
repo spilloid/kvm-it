@@ -10,7 +10,7 @@ import hashlib, pathlib, subprocess, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 INPUTS = ["firmware/main", "firmware/CMakeLists.txt", "firmware/sdkconfig.defaults", "firmware/partitions.csv", "firmware/patches",
-          "firmware/dependencies.lock", "scripts/fw.sh", "scripts/build-ipxe-image.sh",
+          "firmware/dependencies.lock", "scripts/fw.sh", "scripts/build-ipxe.sh", "scripts/build-ipxe-image.sh",
           "firmware/ipxe/ipxe.efi", "firmware/ipxe/autoexec.ipxe", "firmware/ipxe/ipxe.img"]
 
 

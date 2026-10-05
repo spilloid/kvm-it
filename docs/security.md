@@ -71,22 +71,22 @@ the fixed non-secret string `HELLO FROM KVM`.
 
 ## The boot drive (0.4.0)
 
-The adapter also presents a USB mass-storage drive carrying iPXE. What that does and does not change:
+The adapter can also present a USB mass-storage drive carrying iPXE. **It is off by default** and is switched on deliberately (the Adapter popup, or `kvmit boot-drive on`;
+the adapter stores the setting and restarts). While it is off, the adapter's USB descriptor is exactly the keyboard and mouse it has always presented. What the drive does
+and does not change when it is on:
 
-- **No write path.** The firmware reports the drive write-protected and rejects every write-class command, so a compromised target cannot alter the image
-  or use the drive to persist anything on the adapter. Tested on the real adapter by sending raw SCSI commands straight at it, bypassing the host's own
-  write-protect handling: WRITE(10) was refused as DATA PROTECT; WRITE(6), WRITE(12), FORMAT UNIT, WRITE SAME and UNMAP as invalid commands; the whole
-  disk hashed identically afterwards.
-- **The settings and pairing are not reachable from the drive:** it is its own flash partition; the settings partition is separate.
-- **A target that boots USB first will start iPXE.** The drive is a bootable removable disk, so some targets will offer it (or even prefer it). The
-  default script is **inert**: it waits five seconds for the key `n`, and otherwise exits so the target carries on with its next boot device; nothing is
-  fetched or run unless someone presses `n` (or you put your own script on the drive). Check the target's boot order if that matters to you. If a
-  particular target's firmware dislikes the extra drive, you can flash the previous firmware (the 0.3.0 release's `firmware` folder, with
-  `kvmit flash --firmware`): the pairing is kept. A switch to hide the drive is on the roadmap.
-- **What it adds is trust in the network path.** iPXE boots whatever the boot server offers. The default `n` path is the public iPXE demo (over HTTPS),
-  which proves the path and is **not** for anything you care about: use your own server and signed images.
-- **Secure Boot is the target's guard against unsigned boot code, and it will refuse this iPXE today.** Do not disable it on a machine you
-  care about just to try this. Making the drive work with Secure Boot on is planned work, not a promise yet.
+- **No write path.** The firmware reports the drive write-protected and rejects every write-class command, so a compromised target cannot alter the image or use the
+  drive to persist anything on the adapter. Tested on the real adapter by sending raw SCSI commands straight at it, bypassing the host's own write-protect handling:
+  WRITE(10) was refused as DATA PROTECT; WRITE(6), WRITE(12), FORMAT UNIT, WRITE SAME and UNMAP as invalid commands; the whole disk hashed identically afterwards.
+- **The settings and pairing are not reachable from the drive:** it is its own flash partition; the settings partition is separate. Turning the drive on or off is a
+  controller command, so it needs the paired controller; a target cannot turn it on.
+- **A target that boots USB first will start iPXE** while the drive is on. The default script is **inert**: it waits five seconds for a key press and otherwise exits
+  with a failure status, so the target carries on with its next boot device; nothing is fetched or run unless someone presses a key (or you put your own script on the
+  drive). Turn the drive off when you are not using it.
+- **What it adds is trust in the network path.** iPXE boots whatever the boot server offers. The default key-press path is the public iPXE demo (over HTTPS), which
+  proves the path and is **not** for anything you care about: use your own server and signed images.
+- **Secure Boot is the target's guard against unsigned boot code, and it will refuse this iPXE today.** Do not disable it on a machine you care about just to try this.
+  Making the drive work with Secure Boot on is planned work, not a promise yet.
 
 ## Windows controller (0.2.0)
 

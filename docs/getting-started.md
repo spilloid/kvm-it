@@ -97,26 +97,25 @@ kvmit flash
 
 ## 6. Boot a machine from the network (new in 0.4.0)
 
-The adapter is also a tiny **read-only USB drive** with iPXE on it. So a machine with nothing on it can fetch an installer, WinPE or a
-rescue image over the network, driven from your desk:
+The adapter can also be a tiny **read-only USB drive** with iPXE on it, so a machine with nothing on it can fetch an installer, WinPE or a rescue image over the
+network, driven from your desk. **It is off until you turn it on**, so by default your target sees only a keyboard and mouse, exactly as before.
 
-1. With the adapter's **USB** port in the target, open the target's boot menu (usually **F12**, **F11** or **Esc** at power-on; kvm-it's
-   **Keys** button can press them for you).
-2. Pick the entry that says **kvm-it** (it is listed as a USB device, "UEFI kvm-it kvm-it HID adapter…").
-3. iPXE starts, asks your network for an address, and boots whatever the boot server offers. Out of the box it asks
-   *press n to boot from the network* and waits five seconds; press **n** and it opens the iPXE project's public demo menu, which proves the whole
-   path without a server of your own. (If you do nothing, it exits and the target carries on with its normal boot order, so a target that
-   happens to boot USB first is not hijacked.)
+1. In kvm-it, click the **Adapter** chip and **Boot drive: Turn on (restarts adapter)**. (Command line: `kvmit boot-drive on`.) The adapter restarts, so the
+   target sees it re-plug, and the drive appears. Turn it off the same way when you are done.
+2. With the adapter's **USB** port in the target, open the target's boot menu (usually **F12**, **F11** or **Esc** at power-on; kvm-it's **Keys** button can press
+   them for you) and pick the entry that says **kvm-it** (listed as a USB device, "UEFI kvm-it kvm-it HID adapter…").
+3. iPXE starts and says *press any key to boot from the network*. Press a key within five seconds and it asks your network for an address and opens the iPXE
+   project's public demo menu, which proves the whole path without a server of your own. (If you do nothing it exits and the target carries on with its normal boot
+   order, so a target that happens to boot USB first is not hijacked.)
 
-The drive is **read-only by design**: the adapter reports it write-protected, so nothing on the target can ever change it.
+The drive is **read-only by design**: the adapter reports it write-protected and rejects every write, so nothing on the target can ever change it.
 
-One thing to know: the adapter is now a bootable USB disk, so a target with USB first in its boot order will start iPXE (and, by default, wait
-five seconds and carry on). If a target's firmware dislikes the extra drive, flash the previous firmware from the 0.3.0 release with
-`kvmit flash --firmware <its firmware folder>`; your pairing is kept. A switch to hide the drive is on the roadmap.
+If a target's firmware dislikes the extra drive, turn it off (the adapter goes back to exactly the keyboard and mouse it always was), or flash the previous firmware
+from the 0.3.0 release with `kvmit flash --firmware <its firmware folder>`; your pairing is kept.
 
-Three honest limits for now: **UEFI only** (not legacy BIOS), **Secure Boot must be off** on the target (a stock iPXE is not signed, so
-Secure Boot refuses it; making that work is the next piece of work), and the boot script is fixed to the demo menu until editing it
-from the app lands (developers can change it today: [developing.md](developing.md)).
+Three honest limits for now: **UEFI only** (not legacy BIOS), **Secure Boot must be off** on the target (a stock iPXE is not signed, so Secure Boot refuses it; making
+that work is the next piece of work), and the boot script on the drive is the demo until editing it from the app lands (developers can change it today:
+[developing.md](developing.md)).
 
 ## When something is off
 

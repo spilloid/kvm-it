@@ -14,7 +14,11 @@
 
 #include "esp_err.h"
 
-esp_err_t usb_hid_init(void);
+/* boot_drive: also present the read-only iPXE drive (a third USB interface). Off by default; the choice is read from NVS at boot. */
+esp_err_t usb_hid_init(bool boot_drive);
+
+/* Is the boot drive part of this session's USB descriptor. */
+bool usb_hid_boot_drive(void);
 
 /* True once the target host has configured the device. False when unplugged
  * or suspended; senders then return ESP_ERR_INVALID_STATE. */

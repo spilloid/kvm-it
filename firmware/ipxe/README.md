@@ -5,16 +5,17 @@ target can boot from the network. The drive is the `ipxe` flash partition (`../p
 
 | File | What |
 |---|---|
-| `ipxe.efi` | iPXE for x86-64 UEFI, **built from unmodified upstream** (`https://github.com/ipxe/ipxe` at `6262f1081fe185564e8ec8365a1d23597ec6e6f5`, 2026-10-01, `v2.0.0-375`) by `scripts/build-ipxe.sh` in a Debian 12 container with SOURCE_DATE_EPOCH pinned to the commit time: **reproducible** (two builds are byte-identical). SHA-256 `1e3252f2dd6163368e7908bb7ee53642aacc73bdf2bcfa6a41d0764332e9e8d4`. Unsigned. |
+| `ipxe.efi` | iPXE for x86-64 UEFI, **built from unmodified upstream** (`https://github.com/ipxe/ipxe` at `6262f1081fe185564e8ec8365a1d23597ec6e6f5`, 2026-10-01, `v2.0.0-375`) by `scripts/build-ipxe.sh` in a Debian 12 container with SOURCE_DATE_EPOCH pinned to the commit time: **repeatable** (two builds with the pinned container image are byte-identical; the container's apt toolchain is not pinned). SHA-256 `1e3252f2dd6163368e7908bb7ee53642aacc73bdf2bcfa6a41d0764332e9e8d4`. Unsigned. |
 | `autoexec.ipxe` | The script iPXE runs from the drive. **Inert by default:** it waits five seconds for the key `n` and otherwise exits, so a target that boots this drive by accident carries on with its next boot device; on `n` it does DHCP and chains to the iPXE project's public demo menu over HTTPS (proves the path without a boot server of your own). Replace the URL with yours. |
 | `ipxe.img` | Built from the two files above by `scripts/build-ipxe-image.sh`: a 4 MiB MBR disk, one FAT16 partition of type EFI system partition (not marked active; the boot sector is `INT 18h` so a legacy BIOS moves on), `EFI/BOOT/BOOTX64.EFI` + `autoexec.ipxe`. Deterministic: the same inputs give the same bytes. Committed so the firmware build (which runs in the ESP-IDF container) needs no disk tools. |
 
 ## Licence
 
-iPXE is free software under the **GPL, version 2 or later**, with many files also available under the project's Unmodified Binary Distribution Licence
-(<https://ipxe.org/licensing>). We ship the binary under the GPL, as a separate data image (not linked into kvm-it's MIT-licensed firmware). The
-corresponding source is the pinned upstream commit plus `scripts/build-ipxe.sh`; an archive of that source accompanies each release. See
-[`../../THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md).
+iPXE is free software; its files carry their own declarations, and iPXE's own `make ...licence` tool cannot determine one licence for this default build (it
+reports source files with no declaration). So the binary is treated and distributed under the **GNU GPL, version 2** (`COPYING.GPLv2` here; shipped as
+`ipxe-COPYING.GPLv2` in every package), as a separate data image (not linked into kvm-it's MIT-licensed firmware). The corresponding source is the pinned upstream
+commit plus `scripts/build-ipxe.sh`; an archive of that source is attached to each release that ships the drive (`.github/workflows/ipxe-source.yml`), and every
+package carries `ipxe-SOURCE.txt`. See [`../../THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md).
 
 ## Rebuilding
 

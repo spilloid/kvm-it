@@ -70,15 +70,17 @@ the same `type` and `seq`.
 | 0x23 | `SCROLL` | C | `v i8, h i8` | empty (if `ACK_REQ`) |
 | 0x30 | `RELEASE_ALL` | C | empty | empty (if `ACK_REQ`) |
 | 0x40 | `PING` | C | 0..=8 opaque bytes | same bytes echoed |
-| 0x50 | `STATUS` | C | empty | `hid_mounted u8, keys u8, buttons u8, dropped_motion u32, bad_crc u32` (may be extended) |
+| 0x50 | `STATUS` | C | empty | `hid_mounted u8, keys u8, buttons u8, dropped_motion u32, bad_crc u32, boot_drive u8` (the last byte exists from minor 1 on: 1 while the boot drive is presented to the target; receivers must accept the 11-byte form too) |
 | 0x60 | `SET_NAME` | C | `name_len u8, name (utf-8, 1..=32)` | empty (if `ACK_REQ`) |
+| 0x61 | `SET_BOOT_DRIVE` | C | `enabled u8` (0 or 1; anything else is `BAD_PAYLOAD`) | empty (if `ACK_REQ`) |
 | 0x7F | `ERROR` | D | — | `code u8, orig_type u8` |
 
 - `usage` is a USB HID Keyboard/Keypad page (0x07) usage ID. Modifiers are usages `0xE0..=0xE7`. `0x00..=0x03`
   (reserved/error roll-over) are rejected with `BAD_PAYLOAD`.
 - `mask` is the USB HID mouse button bitmask (bit0 left, bit1 right, bit2 middle); bits 3-7 must be 0.
 - `KEY_TAP` is down then up by the device with no controller-visible gap; for held timing use DOWN/UP.
-- `caps` bits (HELLO_ACK): bit0 keyboard, bit1 mouse, bit2 scroll, bit3 key-keepalive (reserved for M4).
+- `caps` bits (HELLO_ACK): bit0 keyboard, bit1 mouse, bit2 scroll, bit3 key-keepalive (reserved for M4), bit4 boot drive (`SET_BOOT_DRIVE` and `STATUS.boot_drive`, minor 1).
+- `SET_BOOT_DRIVE` stores the setting and, if it changed, the device **restarts about half a second after acknowledging** (the USB descriptor is fixed for a session, so the target must re-enumerate the adapter with or without the read-only boot drive). A retry of the same `seq` is answered from the dedup window and never schedules a second restart; setting the value it already has does nothing. The drive is off unless this message turned it on.
 - Only `HELLO`, `PING` and `STATUS` are accepted before a successful handshake; other C frames answer
   `ERROR(NOT_READY)`. Handshake state is per BLE connection.
 - `ERROR` codes: `1 UNSUPPORTED`, `2 BAD_VERSION`, `3 BAD_FLAGS`, `4 BAD_PAYLOAD`, `5 NOT_READY`,

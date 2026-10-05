@@ -10,7 +10,7 @@ static int fails;
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #c); fails++; } } while (0)
 
 // ---- fake HID backed by the real hid_state ----
-typedef struct { hid_state_t s; bool fail_up; bool mounted; int moves; int resets; int mx, my; char name[40]; } fake_t;
+typedef struct { hid_state_t s; bool fail_up; bool mounted; int moves; int resets; int mx, my; char name[40]; bool drive; bool fail_drive; int drive_sets; } fake_t;
 static hidop_t f_down(void *c, uint8_t u) { fake_t *f = c; if (!f->mounted) return HIDOP_NOT_MOUNTED;
     hid_state_result_t r = hid_state_key_down(&f->s, u); return r == HID_STATE_ROLLOVER ? HIDOP_REFUSED : r == HID_STATE_INVALID ? HIDOP_INVALID : HIDOP_OK; }
 static hidop_t f_up(void *c, uint8_t u) { fake_t *f = c; if (!f->mounted) return HIDOP_NOT_MOUNTED; if (f->fail_up) return HIDOP_BUSY; hid_state_key_up(&f->s, u); return HIDOP_OK; }
@@ -22,6 +22,8 @@ static bool f_mounted(void *c) { return ((fake_t *)c)->mounted; }
 static bool f_held(void *c) { return hid_state_any_held(&((fake_t *)c)->s); }
 static void f_counts(void *c, uint8_t *k, uint8_t *b) { fake_t *f = c; *b = f->s.buttons; *k = 0; for (int i = 0; i < 6; i++) *k += f->s.keys[i] != 0; }
 static bool f_name(void *c, const char *n, size_t l) { fake_t *f = c; memcpy(f->name, n, l); f->name[l] = 0; return true; }
+static bool f_set_drive(void *c, bool on) { fake_t *f = c; if (f->fail_drive) return false; f->drive = on; f->drive_sets++; return true; }
+static bool f_drive(void *c) { return ((fake_t *)c)->drive; }
 
 static fake_t fk;
 static proto_dev_t dev;
@@ -30,7 +32,7 @@ static uint32_t now;
 static void setup(void)
 {
     memset(&fk, 0, sizeof fk); fk.mounted = true; hid_state_init(&fk.s);
-    proto_ops_t ops = {&fk, f_down, f_up, f_rel, f_move, f_btn, f_wheel, f_mounted, f_held, f_counts, f_name};
+    proto_ops_t ops = {&fk, f_down, f_up, f_rel, f_move, f_btn, f_wheel, f_mounted, f_held, f_counts, f_name, f_set_drive, f_drive};
     uint8_t uuid[16] = {1, 2, 3}, fw[3] = {0, 1, 0};
     proto_dev_init(&dev, &ops, uuid, fw, "kvm-it-test");
     proto_dev_session_start(&dev, 0);
@@ -126,6 +128,36 @@ static void test_errors_and_status(void)
     CHECK(proto_decode(r, rl, &f) == PROTO_OK && f.payload[25] == 4);
 }
 
+static void test_boot_drive(void)
+{
+    uint8_t r[300], on[1] = {1}, off[1] = {0}, bad[1] = {2}, two[2] = {1, 1};
+    // not before the handshake (like every other setter)
+    setup(); size_t n = send(0x61, PROTO_FLAG_ACK_REQ, 1, on, 1, r);
+    CHECK(resp_err(r, n) == PROTO_ERRC_NOT_READY && fk.drive_sets == 0 && !fk.drive);
+    // HELLO advertises minor 1 and the boot-drive capability
+    uint8_t pp[2] = {1, 0}; proto_frame_t f; n = send(0x01, 0, 2, pp, 2, r);
+    CHECK(proto_decode(r, n, &f) == PROTO_OK && f.payload[1] == 1 && (f.payload[2] & PROTO_CAP_BOOT_DRIVE));
+    // STATUS reports the drive (off by default), as an appended 12th byte
+    n = send(0x50, 0, 3, NULL, 0, r);
+    CHECK(proto_decode(r, n, &f) == PROTO_OK && f.len == 12 && f.payload[11] == 0);
+    // on, acknowledged, then reflected in STATUS
+    n = send(0x61, PROTO_FLAG_ACK_REQ, 4, on, 1, r);
+    CHECK(n > 0 && resp_err(r, n) == -1 && fk.drive && fk.drive_sets == 1);
+    n = send(0x50, 0, 5, NULL, 0, r); CHECK(proto_decode(r, n, &f) == PROTO_OK && f.payload[11] == 1);
+    // a retry of the same request (same seq) is answered from the dedup window and applies nothing again (so no second restart)
+    n = send(0x61, PROTO_FLAG_ACK_REQ, 4, on, 1, r); CHECK(n > 0 && fk.drive_sets == 1);
+    // off again
+    n = send(0x61, PROTO_FLAG_ACK_REQ, 6, off, 1, r); CHECK(n > 0 && !fk.drive && fk.drive_sets == 2);
+    // malformed payloads change nothing
+    n = send(0x61, PROTO_FLAG_ACK_REQ, 7, bad, 1, r); CHECK(resp_err(r, n) == PROTO_ERRC_BAD_PAYLOAD);
+    n = send(0x61, PROTO_FLAG_ACK_REQ, 8, NULL, 0, r); CHECK(resp_err(r, n) == PROTO_ERRC_BAD_PAYLOAD);
+    n = send(0x61, PROTO_FLAG_ACK_REQ, 9, two, 2, r); CHECK(resp_err(r, n) == PROTO_ERRC_BAD_PAYLOAD);
+    CHECK(fk.drive_sets == 2 && !fk.drive);
+    // a setting that cannot be stored is reported, not pretended
+    fk.fail_drive = true; n = send(0x61, PROTO_FLAG_ACK_REQ, 10, on, 1, r);
+    CHECK(resp_err(r, n) == PROTO_ERRC_BUSY && !fk.drive);
+}
+
 static void test_astra_regressions(void)
 {
     uint8_t r[300], a = 4; size_t n;
@@ -204,7 +236,7 @@ static void test_button(void)
 int main(void)
 {
     test_handshake_gate(); test_keys_and_ack_dedup(); test_rollover_and_not_mounted(); test_mouse();
-    test_keepalive_and_session_end(); test_errors_and_status(); test_astra_regressions(); test_led(); test_button();
+    test_keepalive_and_session_end(); test_errors_and_status(); test_boot_drive(); test_astra_regressions(); test_led(); test_button();
     printf("logic tests: %s (%d failures)\n", fails ? "FAILED" : "all passed", fails);
     return fails != 0;
 }

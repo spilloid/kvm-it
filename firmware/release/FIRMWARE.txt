@@ -2,6 +2,6 @@ kvm-it adapter firmware 0.2.0 (ESP32-S3, 16 MB flash), the images the app flashe
 Built with scripts/fw.sh build (the pinned ESP-IDF container) from the firmware sources recorded below, plus the boot drive
 image firmware/ipxe/ipxe.img (scripts/build-ipxe-image.sh). Release builds are not byte-for-byte reproducible (the build time
 is embedded), so these exact files are what ships; verify with SHA256SUMS. Rebuild from source with scripts/fw.sh build and
-scripts/refresh-firmware-release.py. Refreshed 2026-10-04.
-source-sha256: 1e154300d382093f6a7d194bd4bf34675c0f092f70a7cc13a1c364efb9d070bc
+scripts/refresh-firmware-release.py. Refreshed 2026-10-05.
+source-sha256: e24e30a9084104d2d581f862d7a6a1c397b7dee8cf4911f9927dc9bb569ec685
 (hash of the firmware build inputs, see scripts/fw-source-hash.py; CI and verify-release.py check it)

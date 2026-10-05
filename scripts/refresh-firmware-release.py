@@ -14,7 +14,8 @@ BUILD, REL = ROOT / "firmware" / "build", ROOT / "firmware" / "release"
 COPIES = {"bootloader/bootloader.bin": BUILD / "bootloader/bootloader.bin",
           "partition_table/partition-table.bin": BUILD / "partition_table/partition-table.bin",
           "kvm-it-firmware.bin": BUILD / "kvm-it-firmware.bin",
-          "ipxe.img": ROOT / "firmware" / "ipxe" / "ipxe.img"}
+          "ipxe.img": ROOT / "firmware" / "ipxe" / "ipxe.img",
+          "ipxe-COPYING.GPLv2": ROOT / "firmware" / "ipxe" / "COPYING.GPLv2"}
 
 
 def main() -> None:
@@ -44,7 +45,16 @@ def main() -> None:
         f"scripts/refresh-firmware-release.py. Refreshed {datetime.date.today().isoformat()}.\n"
         f"source-sha256: {src_hash}\n"
         "(hash of the firmware build inputs, see scripts/fw-source-hash.py; CI and verify-release.py check it)\n")
-    names = ["kvm-it-firmware.bin", "bootloader/bootloader.bin", "partition_table/partition-table.bin", "ipxe.img", "flasher_args.json"]
+    commit = re.search(r"^IPXE_COMMIT=([0-9a-f]{40})", (ROOT / "scripts" / "build-ipxe.sh").read_text(), re.M).group(1)
+    (REL / "ipxe-SOURCE.txt").write_text(
+        "ipxe.img carries the iPXE UEFI binary (EFI/BOOT/BOOTX64.EFI), built from UNMODIFIED upstream iPXE source by scripts/build-ipxe.sh\n"
+        "in the kvm-it repository (default configuration, x86-64 UEFI target; the build is repeatable with the pinned container image).\n"
+        f"Upstream source: https://github.com/ipxe/ipxe at commit {commit} (2026-10-01, v2.0.0-375).\n"
+        f"An archive of exactly that source, ipxe-{commit[:12]}-source.tar.gz (with a .sha256), is attached to every kvm-it release that ships this file.\n"
+        "iPXE is licensed under the GNU General Public License, version 2 (individual files carry their own declarations; see COPYING in the\n"
+        "source and https://ipxe.org/licensing). The licence text is ipxe-COPYING.GPLv2 next to this file. It is shipped as a separate data image,\n"
+        "not linked into kvm-it's MIT-licensed firmware or app. See THIRD_PARTY_NOTICES.md in the kvm-it release.\n")
+    names = ["kvm-it-firmware.bin", "bootloader/bootloader.bin", "partition_table/partition-table.bin", "ipxe.img", "ipxe-COPYING.GPLv2", "ipxe-SOURCE.txt", "flasher_args.json"]
     (REL / "SHA256SUMS").write_text("".join(f"{hashlib.sha256((REL / n).read_bytes()).hexdigest()}  {n}\n" for n in names))
     print("refreshed", REL, "version", version, "source", src_hash[:16])
 

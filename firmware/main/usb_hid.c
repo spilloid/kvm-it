@@ -17,14 +17,15 @@ static const char *TAG = "usb_hid";
 
 /* The mass-storage drive is the LAST interface, so the two boot-protocol HID interfaces keep the numbers 0 and 1 that BIOS/UEFI keyboard
  * handling expects, and a firmware that ignores storage still sees exactly the keyboard and mouse it always did. */
-enum { ITF_KEYBOARD = 0, ITF_MOUSE = 1, ITF_MSC = 2, ITF_COUNT = 3 };
+enum { ITF_KEYBOARD = 0, ITF_MOUSE = 1, ITF_MSC = 2, ITF_COUNT_HID = 2, ITF_COUNT_WITH_DRIVE = 3 };
 
 /* No report IDs: each interface has exactly one report, which is also what the
  * boot protocol requires. */
 static const uint8_t kbd_report_desc[] = {TUD_HID_REPORT_DESC_KEYBOARD()};
 static const uint8_t mouse_report_desc[] = {TUD_HID_REPORT_DESC_MOUSE()};
 
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN)
+#define CONFIG_TOTAL_LEN_HID (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN)
+#define CONFIG_TOTAL_LEN_WITH_DRIVE (CONFIG_TOTAL_LEN_HID + TUD_MSC_DESC_LEN)
 #define EP_KBD_IN 0x81
 #define EP_MOUSE_IN 0x82
 #define EP_MSC_OUT 0x03
@@ -42,12 +43,22 @@ static const char *string_desc[] = {
     "kvm-it boot drive",    /* 6 */
 };
 
-static const uint8_t config_desc[] = {
-    TUD_CONFIG_DESCRIPTOR(1, ITF_COUNT, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+/* The default (and the only thing a fresh or upgraded adapter shows a target): the keyboard and mouse, exactly as before the boot drive existed. */
+static const uint8_t config_desc_hid[] = {
+    TUD_CONFIG_DESCRIPTOR(1, ITF_COUNT_HID, 0, CONFIG_TOTAL_LEN_HID, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+    TUD_HID_DESCRIPTOR(ITF_KEYBOARD, 4, HID_ITF_PROTOCOL_KEYBOARD, sizeof(kbd_report_desc), EP_KBD_IN, 8, 8),
+    TUD_HID_DESCRIPTOR(ITF_MOUSE, 5, HID_ITF_PROTOCOL_MOUSE, sizeof(mouse_report_desc), EP_MOUSE_IN, 8, 8),
+};
+
+/* Only when the user turned the boot drive on: the same two HID interfaces plus the read-only drive. */
+static const uint8_t config_desc_with_drive[] = {
+    TUD_CONFIG_DESCRIPTOR(1, ITF_COUNT_WITH_DRIVE, 0, CONFIG_TOTAL_LEN_WITH_DRIVE, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
     TUD_HID_DESCRIPTOR(ITF_KEYBOARD, 4, HID_ITF_PROTOCOL_KEYBOARD, sizeof(kbd_report_desc), EP_KBD_IN, 8, 8),
     TUD_HID_DESCRIPTOR(ITF_MOUSE, 5, HID_ITF_PROTOCOL_MOUSE, sizeof(mouse_report_desc), EP_MOUSE_IN, 8, 8),
     TUD_MSC_DESCRIPTOR(ITF_MSC, 6, EP_MSC_OUT, EP_MSC_IN, 64), /* full-speed bulk packet size */
 };
+
+static bool g_boot_drive;
 
 static void housekeeping_task(void *arg);
 
@@ -94,8 +105,9 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
     }
 }
 
-esp_err_t usb_hid_init(void)
+esp_err_t usb_hid_init(bool boot_drive)
 {
+    g_boot_drive = boot_drive;
     uint8_t mac[6];
     ESP_ERROR_CHECK(esp_read_mac(mac, ESP_MAC_WIFI_STA));
     snprintf(serial_str, sizeof(serial_str), "%02X%02X%02X%02X%02X%02X",
@@ -106,16 +118,18 @@ esp_err_t usb_hid_init(void)
         return ESP_ERR_NO_MEM;
     }
     hid_state_init(&g_state);
-    usb_msc_init();
+    if (g_boot_drive) {
+        usb_msc_init();
+    }
 
     const tinyusb_config_t cfg = {
         .device_descriptor = NULL, /* esp_tinyusb default (Espressif VID/PID) */
         .string_descriptor = string_desc,
         .string_descriptor_count = sizeof(string_desc) / sizeof(string_desc[0]),
         .external_phy = false,
-        .configuration_descriptor = config_desc,
+        .configuration_descriptor = g_boot_drive ? config_desc_with_drive : config_desc_hid,
     };
-    ESP_LOGI(TAG, "installing TinyUSB, serial %s", serial_str);
+    ESP_LOGI(TAG, "installing TinyUSB, serial %s, boot drive %s", serial_str, g_boot_drive ? "ON (read-only iPXE disk)" : "off");
     esp_err_t err = tinyusb_driver_install(&cfg);
     if (err != ESP_OK) {
         return err;
@@ -124,6 +138,11 @@ esp_err_t usb_hid_init(void)
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+
+bool usb_hid_boot_drive(void)
+{
+    return g_boot_drive;
 }
 
 bool usb_hid_mounted(void)

@@ -2,14 +2,15 @@
 # Build the iPXE UEFI binary the adapter's boot drive carries, from a pinned upstream commit, in a container.
 #   scripts/build-ipxe.sh                 -> firmware/ipxe/ipxe.efi (then: scripts/build-ipxe-image.sh)
 # The source is upstream iPXE, unmodified, at IPXE_COMMIT; the recipe is this script (default build configuration, x86_64 UEFI target).
-# That pair (upstream commit + this script) is the corresponding source for the shipped binary (see THIRD_PARTY_NOTICES.md).
+# That pair (upstream commit + this script) is the corresponding source for the shipped binary (see THIRD_PARTY_NOTICES.md); the upstream half is
+# archived by scripts/ipxe-source-archive.sh and attached to each release. Reproducible given the pinned container image and its apt toolchain.
 # Needs podman (or CONTAINER_RUNTIME=docker) and network access.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME="${CONTAINER_RUNTIME:-podman}"
 IPXE_REPO=https://github.com/ipxe/ipxe
 IPXE_COMMIT=6262f1081fe185564e8ec8365a1d23597ec6e6f5   # upstream master of 2026-10-01 ("v2.0.0-375-g6262f1081")
-BASE=docker.io/library/debian:bookworm
+BASE=docker.io/library/debian@sha256:704583dbf243593da87cf949fc0543ffeca24a28d36c2760dc9545410cb8ed02   # debian:bookworm, pinned by digest
 OUT="${1:-$ROOT/firmware/ipxe/ipxe.efi}"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 "$RUNTIME" run --rm -v "$W":/o:Z "$BASE" bash -c "set -euo pipefail

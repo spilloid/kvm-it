@@ -37,6 +37,12 @@ enum Cmd {
     Unpair,
     /// Connect and print adapter info, target-USB state and link round-trip time
     Status,
+    /// Show, turn on or turn off the adapter's read-only boot drive (iPXE, for network-booting a UEFI target). It is off unless you turn it on; the adapter
+    /// restarts when the setting changes, so the target sees it re-plug.
+    BootDrive {
+        /// on | off (omit to just show the state)
+        state: Option<String>,
+    },
     /// Type text on the target (reads stdin if no text is given; --secret prompts without echo)
     Type {
         text: Option<String>,
@@ -179,8 +185,37 @@ fn real_main(cli: Cli) -> R<()> {
             let s = rt.block_on(dev.status())?;
             println!("target USB: {}", if s.hid_mounted { "enumerated" } else { "NOT enumerated (cable, power or suspend?)" });
             println!("held: {} keys, buttons {:#04x}; dropped motion {}; bad frames {}", s.keys, s.buttons, s.dropped_motion, s.bad_crc);
+            match s.boot_drive {
+                Some(on) => println!("boot drive: {}", if on { "ON (the target sees a read-only iPXE disk)" } else { "off" }),
+                None => println!("boot drive: not supported by this firmware (needs 0.2.0 or newer)"),
+            }
             println!("round trip: {} ms", rt.block_on(dev.ping())?.as_millis());
             Ok(())
+        }),
+        Cmd::BootDrive { state } => with_device(cli.device, cfg, |rt, dev| {
+            let want = match state.as_deref() {
+                None => None,
+                Some("on") => Some(true),
+                Some("off") => Some(false),
+                Some(other) => return Err(format!("expected `on` or `off`, not {other:?}").into()),
+            };
+            let now = rt.block_on(dev.status())?.boot_drive;
+            match (want, now) {
+                (_, None) => Err("this adapter's firmware has no boot drive (needs 0.2.0 or newer): flash it with `kvmit flash`".into()),
+                (None, Some(on)) => {
+                    println!("boot drive: {}", if on { "on" } else { "off" });
+                    Ok(())
+                }
+                (Some(w), Some(n)) if w == n => {
+                    println!("boot drive is already {}", if n { "on" } else { "off" });
+                    Ok(())
+                }
+                (Some(w), Some(_)) => {
+                    rt.block_on(dev.set_boot_drive(w))?;
+                    println!("boot drive {}: the adapter restarts now and the target sees it re-plug (reconnect in a few seconds).", if w { "turned on" } else { "turned off" });
+                    Ok(())
+                }
+            }
         }),
         Cmd::Type { text, secret } => {
             let text = match text {

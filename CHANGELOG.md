@@ -4,25 +4,39 @@
 
 ## [0.4.0] - 2026-10-05 (network boot through the adapter)
 
-Firmware 0.2.0 (the adapter now also presents a read-only boot drive); wire protocol (v1) unchanged. The desktop app is unchanged apart from the flasher writing the new
-image. Verification: see the README status table. On the real adapter: enumeration as a write-protected 4 MiB disk, a byte-identical readback and a read-only mount on a
-Linux host, and (with the adapter passed through) a UEFI virtual machine with Secure Boot off booting iPXE and then a network Linux image. **Not exercised:** a real PC
-booting from it, the Windows host view of the drive, legacy BIOS (unsupported), and the four-image flash through the packaged app on hardware. **Secure Boot on refuses the
-unsigned iPXE** (a known limit, tracked for the 0.4.x releases). The feature was reviewed in the order Claude Opus 5.5 (a recorded deviation from STD-001: the usual
-reviewer was out of quota and the maintainer chose to release on this review) and, as a follow-up still to be run, Codex.
+Firmware 0.2.0 and wire protocol 1.1 (backward compatible: one new message, one appended `STATUS` byte, one capability bit). **The boot drive is OFF until you turn it on**, with a
+button in the app's Adapter popup or `kvmit boot-drive on`; an adapter that upgrades shows its target nothing new until then. Verification: see the README status table.
 
 ### Added
-- **Network boot through the adapter (0.4.0, firmware 0.2.0).** The adapter now also presents a **4 MiB read-only USB mass-storage drive** (a third USB interface, after the
-  keyboard and mouse) carrying the unmodified iPXE UEFI binary and an `autoexec.ipxe` (DHCP, then the iPXE project's public demo menu). Pick it in a UEFI target's
-  boot menu to boot from the network. It is write-protected by the device (every write refused) and lives in its own `ipxe` flash partition; the settings
-  partition did not move, so existing adapters upgrade in place and keep their pairing. The USB product id changed from `303a:4008` to `303a:400a`.
-  Verified: on a Linux host with the real adapter (enumerates write-protected, whole disk byte-identical to the image, mounts read-only; and a raw SCSI WRITE(10) sent straight at the device, bypassing the host's write-protect flag, is refused as DATA PROTECT while WRITE(6)/(12), FORMAT UNIT, WRITE SAME and UNMAP are refused as invalid commands, with the disk unchanged afterwards); and in a UEFI
-  virtual machine with the real adapter passed through and Secure Boot off (iPXE booted a network Linux image). **Safe by default:** the script on the drive waits five seconds for `n` and otherwise exits, so a target that boots USB first carries on with its next boot device, and a legacy BIOS that tries the disk moves on (its boot sector is `INT 18h`). iPXE is built from unmodified upstream source at a pinned commit by `scripts/build-ipxe.sh` (reproducible), with the corresponding source archive attached to the release. **Known limits:** Secure Boot on refuses the unsigned
-  iPXE ("Access Denied", recorded with `tools/ipxe-test/boot-vm.sh sb`), UEFI only (no legacy BIOS), the drive is always present (a switch to hide it is on the roadmap; the escape hatch is flashing the 0.3.0 firmware), the boot script is fixed to the demo menu (in-app editing is planned),
-  and a real PC booting from it has not been exercised yet. iPXE is GPL-2.0 with additional permissions: see `THIRD_PARTY_NOTICES.md` and `firmware/ipxe/README.md`.
-- The flasher writes one extra part, the boot drive image: it must land exactly in a FAT data partition of the new table (never the settings or any other partition),
-  fit it, and carry a boot signature; `scripts/refresh-firmware-release.py` refreshes `firmware/release` from a build.
+- **Network boot through the adapter (off by default).** When turned on, the adapter also presents a **4 MiB read-only USB drive** (a third USB interface, after the
+  keyboard and mouse) carrying iPXE and an `autoexec.ipxe`, so a UEFI target can boot from the network (WinPE, an installer, a rescue image). **Adapter popup > Boot
+  drive: Turn on (restarts adapter)**, or `kvmit boot-drive [on|off]` (`kvmit status` shows it). The setting is stored in the adapter; the adapter restarts when it
+  changes, because a USB descriptor is fixed for a session (the target sees it re-plug, with the drive added or removed). The drive is write-protected by the
+  device, lives in its own `ipxe` flash partition (the settings partition did not move, so existing adapters upgrade in place and keep their pairing), and the USB
+  product id is `303a:400a` (was `303a:4008`; the adapter without the drive keeps the keyboard-and-mouse-only descriptor it always had).
+- **Safe default script:** on the drive, iPXE waits five seconds for a key and otherwise exits with a failure status, so a target that boots this drive by accident
+  carries on down its boot order; nothing is fetched or run without a key press. A key press does DHCP and chains to the iPXE project's public demo menu over HTTPS
+  (replace the URL with your own boot server: `docs/developing.md`). A legacy BIOS that tries the disk moves on (its boot sector is `INT 18h`; untested).
+- **Protocol 1.1:** `SET_BOOT_DRIVE` (0x61), a boot-drive byte appended to `STATUS`, capability bit 4; an older controller or firmware simply lacks them (the app says
+  "needs firmware 0.2.0" and offers the flasher).
+- **iPXE is built from unmodified upstream source** at a pinned commit by `scripts/build-ipxe.sh` (the binary is treated and shipped under the GNU GPL v2, with the licence
+  text and a source statement in every package); the upstream source archive is attached to the release by `.github/workflows/ipxe-source.yml`. See `THIRD_PARTY_NOTICES.md`.
+- The flasher writes one extra part, the boot drive image: it must land exactly in a FAT data partition of the new table (never the settings or any other partition), fit
+  it, and carry a boot signature; `scripts/refresh-firmware-release.py` refreshes `firmware/release` from a build.
+- `tools/ipxe-test/boot-vm.sh`: boots a UEFI VM from the real adapter (or a disk image) with Secure Boot off or on, for the Secure Boot work.
 
+### Verified (and what was not)
+- **Real adapter on a Linux host:** enumerates as keyboard + mouse + a write-protected 4 MiB disk; the whole disk reads back byte-identical to the image; mounts read-only;
+  raw SCSI commands sent straight at the device (bypassing the host's write-protect flag) are refused (WRITE(10) as DATA PROTECT; WRITE(6)/(12), FORMAT UNIT, WRITE SAME
+  and UNMAP as invalid commands) and the disk is unchanged. These ran on the first build of the image; the final image (and the off-by-default firmware, the toggle over
+  Bluetooth and the flasher's four-image path on hardware) are listed in the README status row with what was run on them.
+- **UEFI VM, Secure Boot off:** with no key iPXE falls through to the firmware's boot menu; with a key it gets an address, fetches the demo over HTTPS and boots a network Linux.
+- **Not exercised:** a real PC booting from the drive, a Windows host seeing the drive, legacy BIOS (unsupported). **Secure Boot on refuses the unsigned iPXE** ("Access
+  Denied", reproduced in an OVMF VM with the stock keys): a known limit, tracked for the 0.4.x releases.
+- Reviewed over several rounds; the review log (`docs/dev-process.md`) records each finding. Claude Opus 5.5 reviewed in place of the usual reviewer while it was out of
+  quota (a recorded deviation from STD-001); a Codex round also ran over an earlier state.
+
+### Also in this release
 - Screenshots of the real app on the website and in the README (overview, adapter, video, keys, type, scripts, run log, input captured, flash adapter), taken by an
   automated harness (`tools/screenshots`) against a synthetic demo target and checked per scene; the demo picture's overlapping countdown text was fixed.
 - Documentation rewritten in a product voice with red-arrow annotated pictures: README, home page and getting-started now say what is true (a signed installer or an

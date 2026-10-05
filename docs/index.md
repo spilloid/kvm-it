@@ -31,7 +31,7 @@ HDMI capture card, and one app.
 - **Works where nothing else does:** BIOS/UEFI, OS installers, login screens, recovery shells. If it takes a USB keyboard, kvm-it can
   drive it from the first splash screen.
 - **Sends the keys your PC would swallow:** Ctrl+Alt+Del, Win, Alt+Tab, one click each. On Windows, the rest go to the target too.
-- **Boots a bare machine from the network:** the adapter is also a read-only USB drive carrying iPXE (UEFI targets, Secure Boot off for now).
+- **Boots a bare machine from the network:** turn on the adapter's read-only iPXE drive with one click (off by default; UEFI targets, Secure Boot off for now).
 - **Replays setup scripts:** TOML or DuckyScript; text, keys, chords, delays and *wait-for-the-screen* steps. Preview and dry-run first.
 - **Flashes its own adapter,** from the app, without touching a toolchain, and keeps the pairing.
 - **Keeps your secrets:** passwords are masked, never logged, never saved. Pairing needs your hands on the hardware.

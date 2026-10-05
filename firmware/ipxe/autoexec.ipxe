@@ -1,12 +1,14 @@
 #!ipxe
-# The adapter's boot drive. SAFE BY DEFAULT: nothing is fetched or run unless you ask for it, so a target that boots this drive by
-# accident (USB first in its boot order) waits a few seconds and then carries on with its next boot device.
-# Press n for the network path: DHCP, then the iPXE project's public demo menu over HTTPS (proves the path without a server of your
+# The adapter's boot drive. SAFE BY DEFAULT: nothing is fetched or run unless someone presses a key, so a target that boots this drive by
+# accident (USB first in its boot order) waits a few seconds and then moves on to its next boot device.
+# Press any key for the network path: DHCP, then the iPXE project's public demo menu over HTTPS (proves the path without a server of your
 # own). Replace the chain URL with your own boot server's.
-prompt --key n --timeout 5000 kvm-it: press n to boot from the network (iPXE demo); otherwise continuing normal boot... || exit
+# Every way out is `exit 1` (a failure status), NOT a bare `exit`: a boot entry that returns success makes EDK2-style firmware stop at its
+# boot menu, while a failure makes it carry on down the boot order.
+prompt --timeout 5000 kvm-it: press any key to boot from the network (iPXE demo); otherwise continuing normal boot... || exit 1
 dhcp || goto failed
 chain https://boot.ipxe.org/demo/boot.php || goto failed
-exit
+exit 1
 :failed
 echo kvm-it: network boot failed
-exit
+exit 1

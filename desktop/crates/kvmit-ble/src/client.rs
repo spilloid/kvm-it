@@ -297,6 +297,14 @@ impl Device {
         }
         self.ack(Request::SetName(name.to_string())).await
     }
+    /// Turn the adapter's read-only boot drive on or off. The adapter acknowledges, stores the setting and restarts shortly after, so the target
+    /// re-enumerates it (the link then drops and the controller reconnects). Fails with a protocol error on firmware that predates the drive.
+    pub async fn set_boot_drive(&self, enabled: bool) -> Result<(), LinkError> {
+        if !self.info().supports_boot_drive() {
+            return Err(LinkError::Protocol("this adapter's firmware has no boot drive (needs 0.2.0 or newer): flash it from the app".into()));
+        }
+        self.ack(Request::SetBootDrive(enabled)).await
+    }
     pub async fn status(&self) -> Result<StatusInfo, LinkError> {
         match self.inner.request(&Request::Status).await? {
             Reply::Status(s) => Ok(s),
