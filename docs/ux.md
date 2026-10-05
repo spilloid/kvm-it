@@ -32,6 +32,15 @@ The picture is the window. A single top bar holds everything else:
 - A running script's log is a strip along the bottom, with Abort, and outlives any popup.
 - The chips and buttons are exposed to screen readers and UI Automation by name.
 
+<img src="assets/screenshots/01-overview.png" alt="The window: chips and buttons along the top, the picture filling the rest" style="max-width:100%">
+
+The script library, with a script's preview, variables and the Run / Dry run / Abort buttons; and the run log strip that
+stays along the bottom after a (dry) run:
+
+<img src="assets/screenshots/06-scripts.png" alt="The Scripts popup: the script list, a preview of the selected script (steps, typed characters, secrets) and Run, Dry run, Abort" width="49%"> <img src="assets/screenshots/07-run-log.png" alt="The run-log strip along the bottom of the window after a dry run: Script finished, with the steps listed" width="49%">
+
+*The pictures on this site are of the real app (0.3.0, Windows 11) with a synthetic demo target in place of a real machine's screen, so nothing private is ever on show.*
+
 # Scripting and replay
 
 Goal (from the product owner): bundle replayable scripts, DuckyScript-style, to drive setup flows such as

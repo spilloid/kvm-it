@@ -20,6 +20,9 @@ Target HDMI out ──► USB capture card ──► your PC ──► kvm-it (l
 Your keyboard/mouse ──► kvm-it ──► Bluetooth LE ──► ESP32-S3 ──► USB HID ──► target PC
 ```
 
+<p align="center"><img src="docs/assets/screenshots/01-overview.png" alt="The kvm-it window: status chips along the top (adapter connected, target USB connected, video 1920x1080 at 30 fps) over a live picture of the target, here a synthetic demo" width="760"></p>
+<p align="center"><sub>The app. The picture is a synthetic demo target, never a real machine.</sub></p>
+
 ## What you get
 
 - **See and drive the target** in one window. Click the picture to capture your keyboard and mouse;

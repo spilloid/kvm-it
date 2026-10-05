@@ -40,24 +40,34 @@ Start menu. The app needs a graphics driver with OpenGL 2.0+ (it tells you in a 
 
 From then on the app reconnects by itself whenever the adapter is in range.
 
+<img src="assets/screenshots/02-adapter.png" alt="The Adapter popup: the adapter's name, Release all keys, Disconnect and Flash adapter" style="max-width:100%">
+
 ## Use it
 
 Run `kvmit` to open the app.
 
 The top bar is a row of status chips and buttons; the picture fills the rest of the window.
 
+<img src="assets/screenshots/01-overview.png" alt="The kvm-it window with a connected adapter and a live demo picture" style="max-width:100%">
+
 - **See**: click the **Video** chip and pick your capture card from the list (one click switches devices; **Rescan**
   finds a card you plugged in after the app started). The target's screen appears and the chip turns green with the
   resolution and frame rate.
+<img src="assets/screenshots/03-video.png" alt="The Video popup: the capture devices, Rescan and the open mode" style="max-width:100%">
+
 - **Drive**: click the picture (or the **Input** chip). Your keyboard and mouse now go to the target. The frame
   turns red and the Input chip reads *INPUT CAPTURED*. **Ctrl+Alt+Esc** releases; that chord is never sent. On
   Windows, keys such as Win and Alt+Tab go to the target too while you are captured.
+<img src="assets/screenshots/08-capturing.png" alt="Input captured: a red frame around the picture and a red chip reading INPUT CAPTURED, Ctrl+Alt+Esc to release" style="max-width:100%">
+
 - **Send keys your OS would swallow**: the **Keys** button has Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more
   (Ctrl+Alt+Del and Win+L can never be intercepted on Windows, so use this for them).
 - **Type text**: the **Type** button types a string (tick *Secret* for passwords: masked, never logged).
 - **Run a script**: put `.toml` or DuckyScript files in your scripts folder (`~/Documents/kvm-it/scripts`), open
   **Scripts**, pick one, review the preview, and press Run. Progress shows in a strip along the bottom, with Abort.
   See [scripts and replay](ux.md).
+
+<img src="assets/screenshots/04-keys.png" alt="The Keys popup: Ctrl+Alt+Del, Win, Alt+Tab and other chords the controller's OS would swallow" width="49%"> <img src="assets/screenshots/05-type.png" alt="The Type popup: a text box, a Secret (masked, never logged) option and a Type button" width="49%">
 
 Everything is also available from the command line:
 

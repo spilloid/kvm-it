@@ -15,6 +15,10 @@ Target HDMI out ──► USB capture card ──► your PC ──► kvm-it (l
 Your keyboard/mouse ──► kvm-it ──► Bluetooth LE ──► ESP32-S3 ──► USB ──► target keyboard + mouse
 ```
 
+<img src="assets/screenshots/01-overview.png" alt="The kvm-it window: status chips along the top (adapter connected, target USB connected, video 1920x1080 at 30 fps) over a live picture of the target, here a synthetic demo" style="max-width:100%">
+
+*The pictures on this site are of the real app (0.3.0, Windows 11) with a synthetic demo target in place of a real machine's screen, so nothing private is ever on show.*
+
 ## Start here
 
 1. **[Get started](getting-started.md)**: parts list, install, pair, first keystroke.

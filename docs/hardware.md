@@ -90,6 +90,8 @@ If `usermod` reports the group is missing, `getent group dialout` shows whether 
 
 The controller can flash the adapter itself, on Linux and Windows, with no ESP-IDF install:
 
+<img src="assets/screenshots/09-flash.png" alt="The Flash adapter window: the firmware folder, 'Firmware OK: 3 parts', the adapter's COM port selected, the erase-everything option unticked and the Flash adapter button" style="max-width:100%">
+
 1. Plug the board's **COM** USB port into the computer. **Keep its other (native USB) port unplugged**: it is the keyboard and
    mouse and would type into this computer. The app refuses to flash while it can see any Espressif USB device (`303a:*`) attached, because an adapter's own
    USB port cannot be told from other Espressif boards (and looks generic in download mode): unplug other ESP boards too.
