@@ -6,32 +6,50 @@ title: kvm-it
 
 <img src="assets/logo.png" alt="kvm-it logo" width="110" style="float:right; margin:0 0 12px 24px">
 
-**A KVM for the machine that has nothing on it yet.** A cheap USB HDMI capture card shows you the target's
-screen. A $10 ESP32-S3 board types and clicks for it over plain USB. Nothing is installed on the target: it
-works in BIOS/UEFI, OS installers, login screens and recovery shells.
+**A KVM for the machine that has nothing on it yet.**
 
-```
-Target HDMI out ──► USB capture card ──► your PC ──► kvm-it (live video)
-Your keyboard/mouse ──► kvm-it ──► Bluetooth LE ──► ESP32-S3 ──► USB ──► target keyboard + mouse
-```
+See it. Type at it. Install it. No software on the target, no network, no hundred-dollar IP-KVM: an ESP32-S3 dev board, a cheap
+HDMI capture card, and one app.
 
-<img src="assets/screenshots/01-overview.png" alt="The kvm-it window: status chips along the top (adapter connected, target USB connected, video 1920x1080 at 30 fps) over a live picture of the target, here a synthetic demo" style="max-width:100%">
+<img src="assets/screenshots/tour-overview.png" alt="The kvm-it window: Adapter, Target USB, Video and Capture chips and the Keys, Type and Scripts buttons over a live picture of the target (a synthetic demo)" style="max-width:100%">
 
-*The pictures on this site are of the real app (0.3.0, Windows 11) with a synthetic demo target in place of a real machine's screen, so nothing private is ever on show.*
+*The real app (0.3.0, Windows 11) with a synthetic demo target in place of a real machine's screen, so nothing private is ever on show.*
 
-## Start here
+## How easy is it?
 
-1. **[Get started](getting-started.md)**: parts list, install, pair, first keystroke.
-2. **[Scripts and replay](ux.md)**: automate OOBE, installers and BIOS settings; import DuckyScript.
-3. **[Hardware guide](hardware.md)**: ports, LED and button meanings, flashing, troubleshooting.
+1. **Get the parts.** A ~$10 ESP32-S3 board with two USB-C ports and a cheap USB HDMI capture card.
+2. **Install the app.** A signed installer on Windows, an AppImage on Linux. That is the entire "dev environment": no Rust, no Docker, no
+   drivers to wrestle.
+3. **Plug in.** Flash the adapter from the app (one click, the firmware is inside), pair it once, and drive the target.
 
-## How it works and why you can trust it
+**[Get started](getting-started.md)** walks through all of it with arrows on the pictures.
 
-- **[Security model](security.md)**: physical-presence pairing, one trusted controller, how secrets are handled.
+## What it does
+
+- **Sees and drives the target in one window.** Click the picture, and your keyboard and mouse belong to the target. **Ctrl+Alt+Esc**
+  gives them back.
+- **Works where nothing else does:** BIOS/UEFI, OS installers, login screens, recovery shells. If it takes a USB keyboard, kvm-it can
+  drive it from the first splash screen.
+- **Sends the keys your PC would swallow:** Ctrl+Alt+Del, Win, Alt+Tab, one click each. On Windows, the rest go to the target too.
+- **Replays setup scripts:** TOML or DuckyScript; text, keys, chords, delays and *wait-for-the-screen* steps. Preview and dry-run first.
+- **Flashes its own adapter,** from the app, without touching a toolchain, and keeps the pairing.
+- **Keeps your secrets:** passwords are masked, never logged, never saved. Pairing needs your hands on the hardware.
+
+## The docs
+
+- **[Get started](getting-started.md)**: parts, install, flash, pair, drive.
+- **[Scripts and replay](ux.md)**: automate OOBE, installers and BIOS settings.
+- **[Hardware guide](hardware.md)**: which port is which, the LED, the BOOT button, troubleshooting.
+- **[Security model](security.md)**: how pairing works and why you can trust it.
+- **[Roadmap](roadmap.md)**: what is next (wired link, network boot, many adapters at once).
+
+## For the curious and the suspicious
+
 - **[Architecture](architecture.md)** and **[wire protocol](protocol.md)**.
-- **[Roadmap](roadmap.md)** and **[development process](dev-process.md)**, including every adversarial review round.
+- **[Development process](dev-process.md)**, including every adversarial review round: what was found, what was fixed, what was accepted.
+- **[Building from source](developing.md)**: that is where Rust and Docker live. You do not need them to use kvm-it.
 
 ## What is verified
 
-Every claim on this site is labelled **built**, **host-tested** or **hardware-verified**. The authoritative
-table is in the [README](https://github.com/spilloid/kvm-it#status-v020).
+Every claim here is labelled **built**, **host-tested**, **VM-verified** or **hardware-verified**. The authoritative table is in the
+[README](https://github.com/spilloid/kvm-it#status-v030).

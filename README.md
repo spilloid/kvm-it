@@ -4,15 +4,34 @@
 
 **A KVM for the machine that has nothing on it yet.**
 
-Provisioning a headless appliance, a fresh install, a BIOS setting, a recovery shell: you need a screen and a
-keyboard on a machine that has no network, no remote-access agent and no OS. Real KVM hardware costs hundreds
-of dollars. kvm-it is two cheap parts and an open-source app:
+See it. Type at it. Install it. No software on the target, no network, no hundred-dollar IP-KVM: an ESP32-S3 dev board (~$10), a cheap
+HDMI capture card, and one app.
 
-- a generic **USB HDMI capture card** shows you the target's screen, and
-- an **ESP32-S3** board pretends to be a USB keyboard and mouse, driven from your PC over Bluetooth LE.
+<p align="center"><img src="docs/assets/screenshots/tour-overview.png" alt="The kvm-it window: Adapter, Target USB, Video and Capture chips and the Keys, Type and Scripts buttons over a live picture of the target (a synthetic demo)" width="820"></p>
+<p align="center"><sub>The real app (0.3.0, Windows 11). The picture is a synthetic demo target, never a real machine.</sub></p>
 
-The target needs no software, drivers, network or Bluetooth. If it takes a USB keyboard, kvm-it can drive it,
-from the BIOS splash screen onward.
+## Three steps
+
+1. **Get the parts.** An ESP32-S3 board with two USB-C ports (**COM** and **USB**) and a USB HDMI capture card. Details: [get started](docs/getting-started.md).
+2. **Install the app.** Download from [Releases](https://github.com/spilloid/kvm-it/releases): a signed `.msi`/`.zip` for **Windows 11**, an
+   `.AppImage` for **Linux**. Double-click or `chmod +x`. That is the whole "dev environment": **no Rust, no Docker, no drivers, no DLLs to hunt down.**
+3. **Plug in.** In the app: **Adapter > Flash adapter…** (one click; the firmware is inside the app), pair once, and drive.
+
+<p align="center"><img src="docs/assets/screenshots/tour-flash.png" alt="The Flash adapter window: the firmware ships with the app, your board's COM port is picked for you, one click flashes it" width="700"></p>
+
+## What you get
+
+- **See and drive the target in one window.** Click the picture and your keyboard and mouse belong to the target; **Ctrl+Alt+Esc** gives
+  them back (that chord is never sent). It works from the BIOS splash onward: if the target takes a USB keyboard, kvm-it can drive it.
+- **The keys your PC would swallow.** One-click Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more; on Windows, the rest go to the target too.
+- **Zero-step reconnect.** Pair once. Move the cables to the next machine and the app reconnects by itself.
+- **Replayable setup scripts.** Native TOML or imported DuckyScript: text, keys, chords, delays, and *wait-for-the-screen* steps, so one slow
+  install screen does not wreck everything after it. Preview and dry-run before anything is typed; abort leaves nothing held down.
+- **Flashes its own adapter,** in the app, and keeps the pairing.
+- **Safe with secrets.** Passwords are masked, never logged, never saved. Pairing needs physical presence: plug it in or press its button.
+- **Open.** MIT-licensed; the wire protocol, firmware and every review round are in this repo.
+
+The target needs no software, drivers, network or Bluetooth.
 
 ```
 Target HDMI out ──► USB capture card ──► your PC ──► kvm-it (live video)
@@ -20,72 +39,13 @@ Target HDMI out ──► USB capture card ──► your PC ──► kvm-it (l
 Your keyboard/mouse ──► kvm-it ──► Bluetooth LE ──► ESP32-S3 ──► USB HID ──► target PC
 ```
 
-<p align="center"><img src="docs/assets/screenshots/01-overview.png" alt="The kvm-it window: status chips along the top (adapter connected, target USB connected, video 1920x1080 at 30 fps) over a live picture of the target, here a synthetic demo" width="760"></p>
-<p align="center"><sub>The app. The picture is a synthetic demo target, never a real machine.</sub></p>
+Everything the app does is also on the command line:
+`kvmit scan | status | type "text" | key ctrl alt delete | run script.toml [--dry-run] | import payload.txt | flash`.
 
-## What you get
+**[Full walkthrough on the docs site](https://spilloid.github.io/kvm-it/)** or [docs/getting-started.md](docs/getting-started.md). Read
+the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what the LED and BOOT button mean.
 
-- **See and drive the target** in one window. Click the picture to capture your keyboard and mouse;
-  **Ctrl+Alt+Esc** releases them, and that chord never reaches the target. On Windows, the keys your OS would
-  keep for itself (Win, Alt+Tab, Ctrl+Esc, Alt+F4, ...) go to the target too while you are captured.
-- **Send the keys your OS would swallow.** One-click Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more.
-- **Zero-step reconnect.** Pair once. Move the cables to the next machine and the app reconnects by itself.
-- **Replayable setup scripts.** Native TOML or imported DuckyScript: text, keys, chords, delays, and
-  *wait-for-the-screen* steps, so one slow install screen does not wreck everything after it. Preview and dry
-  run before anything is typed; abort leaves nothing held down.
-- **Safe with secrets.** Passwords are masked, never logged, never saved. Pairing needs physical presence:
-  you press a button on the adapter.
-- **Honest status.** One row of colour-coded chips (green working, amber in progress, red broken, grey idle) shows
-  adapter, target USB, video and input capture, always; each opens the controls it describes.
-- **Open.** MIT-licensed; the wire protocol, firmware and every review round are in this repo.
-
-## Quick start (Windows 11)
-
-Download `kvmit-vX.Y.Z-windows-x64.msi` (or the `.zip`) from the Releases page and check it against its `.sha256`
-file. Whether a release is code-signed is stated in its release notes; an unsigned build makes Windows SmartScreen
-warn. Open **kvm-it** from the Start menu (`kvmit-gui.exe`), or use `kvmit.exe` from a terminal.
-
-Pair as on Linux: plug the adapter's **USB** port into the target and press **BOOT** briefly (or re-plug it) to open
-its pairing window, then run `kvmit pair` or use the app's **Adapter** chip. Windows pairs by itself; no system
-dialog appears.
-
-You need Bluetooth LE, a graphics driver with OpenGL 2.0 or newer (the app says so in a dialog if it cannot start;
-a software OpenGL works in a virtual machine), and, for the video, Settings > Privacy & security > Camera >
-*Let desktop apps access your camera* turned on. Windows 11 is what was tested; the app asks Windows for a faster
-Bluetooth connection where that API exists, and without it fast mouse movement can overwhelm the link.
-
-## Quick start (Linux)
-
-**AppImage:** download `kvm-it-X.Y.Z-x86_64.AppImage` from the Releases page (check it against its `.sha256`), `chmod +x`
-it and run it for the GUI, or `./kvm-it-X.Y.Z-x86_64.AppImage cli scan` for the command line. It needs BlueZ, a
-graphics driver (OpenGL) and the usual desktop libraries from your distro (`libxkbcommon`, plus `libxkbcommon-x11` and the X11
-libraries or Wayland, whichever your session uses); only the C library baseline is checked at build time. It runs on Debian 12 / Ubuntu 22.04 (glibc 2.35) and newer. 0.2.0's AppImage was started on Linux (CLI
-and GUI) but a Linux hardware pass with a board has not been run.
-
-Or build it yourself. You need `podman` (or docker). Toolchains live in containers.
-
-```bash
-git clone https://github.com/spilloid/kvm-it && cd kvm-it
-scripts/rs.sh build          # desktop app  -> desktop/target/release/kvmit
-scripts/fw.sh build          # firmware
-scripts/fw.sh flash          # with the adapter's COM port on your PC and its USB port unplugged
-# or, from the app: GUI Adapter > "Flash adapter…", or `kvmit flash` (see docs/hardware.md)
-```
-
-Plug the adapter's **USB** port into the target. For the next **15 s** it accepts a new pairing (after that,
-press **BOOT** briefly to reopen the window), so run:
-
-```bash
-desktop/target/release/kvmit pair      # once
-desktop/target/release/kvmit           # the app
-```
-
-Full walkthrough, parts list and troubleshooting: **[docs site](https://spilloid.github.io/kvm-it/)** or
-[docs/getting-started.md](docs/getting-started.md). **Read [docs/hardware.md](docs/hardware.md) before flashing:**
-which USB-C port goes where, what the LED and button mean.
-
-The CLI does everything the app does:
-`kvmit scan | status | type "text" | key ctrl alt delete | run script.toml [--dry-run] | import payload.txt`.
+**Hacking on it?** Building from source (that is where Rust and Docker live): [docs/developing.md](docs/developing.md).
 
 ## Status: v0.3.0
 
@@ -111,7 +71,7 @@ not bare-metal Windows).
 | Desktop: Windows keyboard grab (Win, Alt+Tab, ... go to the target while captured) | **VM-verified**: Win and Alt+Tab never reach the controller while captured, a held key reaches the adapter, Ctrl+Alt+Esc releases and the keyboard returns, and a hung GUI cannot trap the keyboard (the helper stops swallowing after 3 s). Not verified: non-US layouts and IMEs, bare metal. Linux has no equivalent |
 | Desktop: shared client change (mouse motion split into 127-unit frames, ordered before clicks) | host-tested; **not re-run on a Linux board yet** |
 | Windows as the controller (app) | **v0.3.0**: runs in a Windows 11 VM with real hardware passed through (rows above); **not verified on bare-metal Windows**. Windows as the *target* works as before: it only sees a USB keyboard and mouse |
-| Desktop: flash the adapter (`kvmit flash`, GUI **Flash adapter…**) | **hardware-verified** on Linux with a physical board over its COM port (`kvmit flash`): verified write of bootloader, partition table and app; the pairing survives a default flash and is wiped by `--erase-all`; refuses while the adapter's own USB port is plugged in (also with `--any-port`). **VM-verified** on Windows 11 (board's COM bridge passed through): the same CLI and the GUI wizard, end to end. an interrupted write was recovered by flashing again. **Not exercised:** the Linux GUI wizard, bare-metal Windows |
+| Desktop: flash the adapter (`kvmit flash`, GUI **Flash adapter…**) | **hardware-verified** on Linux with a physical board over its COM port (`kvmit flash`): verified write of bootloader, partition table and app; the pairing survives a default flash and is wiped by `--erase-all`; refuses while the adapter's own USB port is plugged in (also with `--any-port`). **VM-verified** on Windows 11 (board's COM bridge passed through): the same CLI and the GUI wizard, end to end. an interrupted write was recovered by flashing again. **Not exercised:** the Linux GUI wizard, bare-metal Windows, a factory-fresh board (the full-erase path, run only on boards that already had firmware) |
 | Built-in OOBE script | template only, never run on a real OOBE |
 | Session recording | planned |
 
