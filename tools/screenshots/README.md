@@ -29,4 +29,5 @@ covering a chip (both happened).
 ## Data safety
 
 Pictures show only the app and the synthetic demo target. `postprocess.py` crops the invisible window border (wallpaper bleeds in) and
-pixelates the one line that shows the adapter's full Bluetooth address. Turn off desktop notifications on the capture machine.
+pixelates the one line that shows the adapter's full Bluetooth address. `annotate.py <final-dir> <out-dir>` then draws the red-arrow tours
+(`tour-*.png`) that the docs use; check those by eye too. Turn off desktop notifications on the capture machine.

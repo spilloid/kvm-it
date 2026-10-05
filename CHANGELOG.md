@@ -5,6 +5,9 @@
 ### Added
 - Screenshots of the real app on the website and in the README (overview, adapter, video, keys, type, scripts, run log, input captured, flash adapter), taken by an
   automated harness (`tools/screenshots`) against a synthetic demo target and checked per scene; the demo picture's overlapping countdown text was fixed.
+- Documentation rewritten in a product voice with red-arrow annotated pictures: README, home page and getting-started now say what is true (a signed installer or an
+  AppImage, the adapter flashed from the app; no Rust, no Docker), and the build-from-source material moved to `docs/developing.md`. `getting-started.md` had still said
+  there were no packaged releases and sent people to Podman.
 - Roadmap: a candidate 0.4.0 "wired link over COM" (drive the adapter over its UART with no Bluetooth).
 
 ## [0.3.0] - 2026-10-04 (flash the adapter from the app)

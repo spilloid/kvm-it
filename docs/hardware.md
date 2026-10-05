@@ -57,7 +57,10 @@ COM port. The silkscreen names above are from the board vendor's documentation; 
 
 Colours are intentionally dim (≤ 40/255).
 
-## Linux build and flash
+## Building the firmware yourself (developers)
+
+**You do not need this to use kvm-it:** the app flashes the adapter for you (below), with the firmware inside it. This is for people
+changing the firmware. See also [building from source](developing.md).
 
 Requirements: `podman` (or set `CONTAINER_RUNTIME=docker`). Nothing else is installed on the host. The
 toolchain is the pinned image `docker.io/espressif/idf:v5.5` (override with `IDF_IMAGE`).

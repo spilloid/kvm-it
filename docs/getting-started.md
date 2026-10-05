@@ -1,75 +1,89 @@
 # Get started
 
-## What you need
+Three things to do: **get the parts, install the app, plug in.** No toolchains, no terminal, no yak.
 
-| Part | Notes |
+## 1. The parts
+
+| Part | What to get |
 |---|---|
-| ESP32-S3 dev board with two USB-C ports | One port is a serial/flash port (**COM**), the other is the native USB the target sees (**USB**). Details in [hardware](hardware.md). |
-| USB HDMI capture card (UVC) | Any generic one. Optional: you can drive input without video. |
-| A PC with Bluetooth LE | The controller runs on Linux (BlueZ) or Windows 11. The *target* can run any OS. |
+| **The hands** | An ESP32-S3 dev board with **two** USB-C ports, labelled **COM** and **USB**. About ten bucks. We test on the YD-ESP32-23; details in the [hardware guide](hardware.md). |
+| **The eyes** | A USB HDMI capture card, the cheap generic kind (it just has to be a normal USB video device). No drivers. Optional: without one you get no picture, but you can still type and click. |
+| **The brain** | Your PC, on **Windows 11** or **Linux**, with Bluetooth LE. The *target* can be anything with a USB port and an HDMI output, running anything or nothing. |
 
-## Install
+## 2. The app
 
-Build it (needs only `podman` or `docker`; there are no packaged releases yet):
+**Windows 11:** download `kvmit-vX.Y.Z-windows-x64.msi` from the [Releases page](https://github.com/spilloid/kvm-it/releases) and
+double-click it. That adds **kvm-it** to your Start menu. Prefer no installer? Grab the `.zip`, unzip it anywhere, and run
+`kvmit-gui.exe`. It is one self-contained program that uses only what Windows already has.
 
-```bash
-git clone https://github.com/spilloid/kvm-it && cd kvm-it
-scripts/rs.sh build            # → desktop/target/release/kvmit
-```
+**Linux:** download `kvm-it-X.Y.Z-x86_64.AppImage`, `chmod +x` it, run it. It wants BlueZ and the desktop libraries any
+normal distro (Debian 12 / Ubuntu 22.04 or newer) already has.
 
-Flash the adapter once, with its **COM** port on your PC and its **USB** port *not* plugged into anything:
+**macOS:** not yet.
 
-```bash
-scripts/fw.sh build && scripts/fw.sh flash
-```
+> **No Rust. No Docker. No DLL scavenger hunt.** If you can double-click an installer, you are done with this step. (Building
+> from source is for tinkerers: [developing.md](developing.md).)
 
-On **Windows 11**, install the `.msi` (or unzip the `.zip`) from the release page and check it against its `.sha256`;
-the release notes say whether it is code-signed (an unsigned build makes SmartScreen warn). Open **kvm-it** from the
-Start menu. The app needs a graphics driver with OpenGL 2.0+ (it tells you in a dialog if not), and the video needs
-*Settings > Privacy & security > Camera > Let desktop apps access your camera* turned on.
+Two small Windows things: you need a graphics driver with OpenGL 2.0 or newer (any real PC has one; the app tells you if not), and
+for the video, *Settings > Privacy & security > Camera > Let desktop apps access your camera* must be on.
 
-## Pair (once)
+## 3. Flash the adapter (once, in the app)
 
-1. Have `kvmit pair` (or the app's **Adapter** chip, then **Pair & connect**) ready on your PC. On Windows this
-   pairs without any system dialog.
-2. Plug the adapter's **USB** port into the target. For **15 s** after it powers up it accepts a new pairing,
-   even if it was paired before, so start pairing right away. The LED is meant to blink blue fast while it offers
-   to pair.
-3. Missed it? Press **BOOT** briefly: that opens the window for 5 minutes. Physical presence (plugging in, or the
-   button) is the whole authentication, so this is deliberate.
+<img src="assets/screenshots/tour-flash.png" alt="The Flash adapter window with callouts: the firmware ships with the app, your board's COM port is picked for you, and one click flashes it" style="max-width:100%">
 
-From then on the app reconnects by itself whenever the adapter is in range.
+1. Plug the board's **COM** port into your PC. **Leave the other one (USB) unplugged.** That one is a real keyboard and mouse
+   that takes orders from kvm-it, and plugged into the computer you are flashing from it would be typing into your own machine.
+   (kvm-it refuses to flash if it spots one.)
+2. Open **kvm-it**, click the **Adapter** chip, **Flash adapter…**, **Flash adapter**.
+3. Wait for *Flashed and verified.* That is the whole job.
 
-<img src="assets/screenshots/02-adapter.png" alt="The Adapter popup: the adapter's name, Release all keys, Disconnect and Flash adapter" style="max-width:100%">
+The firmware ships inside the app, so there is nothing to download. If your adapter was already running kvm-it, its pairing
+survives; if it is straight out of the bag, tick *Erase everything first* (there is no pairing to lose yet). Command-line
+fans: `kvmit flash`. (Verified on boards that already had firmware; a factory-fresh board has not been through it yet, so
+tell us how it goes.)
 
-## Use it
+## 4. Pair (once)
 
-Run `kvmit` to open the app.
+1. Move the cable: plug the adapter's **USB** port into the **target**. (COM can stay plugged in or not.)
+2. For **15 seconds** after it powers up, it accepts a new pairing. Missed it? Press **BOOT** briefly: that reopens the window
+   for 5 minutes. No physical access, no pairing. That is the entire security model, and it is a feature.
+3. In kvm-it: **Adapter** chip, **Scan for adapters**, **Pair & connect**. On Windows this pairs with no system dialog at all.
 
-The top bar is a row of status chips and buttons; the picture fills the rest of the window.
+From then on, move the cables to the next machine and the app reconnects by itself.
 
-<img src="assets/screenshots/01-overview.png" alt="The kvm-it window with a connected adapter and a live demo picture" style="max-width:100%">
+## 5. Drive
 
-- **See**: click the **Video** chip and pick your capture card from the list (one click switches devices; **Rescan**
-  finds a card you plugged in after the app started). The target's screen appears and the chip turns green with the
-  resolution and frame rate.
-<img src="assets/screenshots/03-video.png" alt="The Video popup: the capture devices, Rescan and the open mode" style="max-width:100%">
+<img src="assets/screenshots/tour-overview.png" alt="The kvm-it window with numbered callouts on the Adapter, Target USB, Video and Capture chips and the Keys, Type and Scripts buttons" style="max-width:100%">
 
-- **Drive**: click the picture (or the **Input** chip). Your keyboard and mouse now go to the target. The frame
-  turns red and the Input chip reads *INPUT CAPTURED*. **Ctrl+Alt+Esc** releases; that chord is never sent. On
-  Windows, keys such as Win and Alt+Tab go to the target too while you are captured.
-<img src="assets/screenshots/08-capturing.png" alt="Input captured: a red frame around the picture and a red chip reading INPUT CAPTURED, Ctrl+Alt+Esc to release" style="max-width:100%">
+The top bar is the whole control panel; the picture is the rest of the window. Green is working, amber is in progress, red is
+broken, grey is idle.
 
-- **Send keys your OS would swallow**: the **Keys** button has Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more
-  (Ctrl+Alt+Del and Win+L can never be intercepted on Windows, so use this for them).
-- **Type text**: the **Type** button types a string (tick *Secret* for passwords: masked, never logged).
-- **Run a script**: put `.toml` or DuckyScript files in your scripts folder (`~/Documents/kvm-it/scripts`), open
-  **Scripts**, pick one, review the preview, and press Run. Progress shows in a strip along the bottom, with Abort.
-  See [scripts and replay](ux.md).
+1. **Adapter**: is it connected? Click it to scan, pair, disconnect, flash.
+2. **Target USB**: does the target see the adapter as a keyboard and mouse? (An indicator, not a button.)
+3. **Video**: click it, pick your capture card, and the target's screen appears. One click switches cards; **Rescan** finds one you
+   plugged in later.
+4. **Capture**: click the picture (or this chip). Your keyboard and mouse now belong to the target.
+5. **Keys · Type · Scripts**: the three buttons that do the clever bits, below.
 
-<img src="assets/screenshots/04-keys.png" alt="The Keys popup: Ctrl+Alt+Del, Win, Alt+Tab and other chords the controller's OS would swallow" width="49%"> <img src="assets/screenshots/05-type.png" alt="The Type popup: a text box, a Secret (masked, never logged) option and a Type button" width="49%">
+<img src="assets/screenshots/tour-capture.png" alt="Input captured: a red frame around the picture, and the red chip saying Ctrl+Alt+Esc to release" style="max-width:100%">
 
-Everything is also available from the command line:
+**Getting out:** press **Ctrl+Alt+Esc**. That chord is never sent to the target, so it can never get stuck over there. On Windows, keys your
+PC would normally keep for itself (Win, Alt+Tab, Ctrl+Esc, Alt+F4) go to the target too while you are captured.
+
+**Keys** sends the chords your PC would swallow: Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and friends. (Ctrl+Alt+Del and Win+L cannot be
+intercepted by any program on Windows, so this is how you send them.)
+
+<img src="assets/screenshots/04-keys.png" alt="The Keys popup" width="49%"> <img src="assets/screenshots/05-type.png" alt="The Type popup" width="49%">
+
+**Type** types a string for you. Tick *Secret* for passwords: masked, never logged, never saved.
+
+**Scripts** replays a setup flow: Windows OOBE, an installer, a BIOS tour. Drop `.toml` or DuckyScript files in your scripts folder
+(`~/Documents/kvm-it/scripts`), pick one, read the preview, **Dry run** it first (it types nothing), then **Run**. Abort leaves nothing
+held down. More in [scripts and replay](ux.md).
+
+<img src="assets/screenshots/06-scripts.png" alt="The Scripts popup with a preview" width="49%"> <img src="assets/screenshots/07-run-log.png" alt="The run log strip after a dry run" width="49%">
+
+Everything is also on the command line:
 
 ```bash
 kvmit scan
@@ -78,20 +92,23 @@ kvmit type "hello"
 kvmit key ctrl alt delete
 kvmit run setup.toml --dry-run
 kvmit import payload.txt
+kvmit flash
 ```
 
 ## When something is off
 
-- The chips always show adapter, target-USB, video and capture state: green is working, amber is in progress, red
-  is broken, grey is idle. Read them first.
-- The app will not start and shows an OpenGL message: update the graphics driver (in a virtual machine without a
-  GPU, use a software OpenGL).
-- Video shows *not opened* or stops: check the card is plugged in, that no other app is using it, and (Windows) the
-  camera privacy setting above.
-- Adapter never appears in a scan: see *BLE troubleshooting* in the [hardware guide](hardware.md).
-- Keys stuck on the target: *Release all keys* in the **Adapter** popup. If the app dies, the adapter is designed to
-  release everything itself within about five seconds (not yet verified on hardware).
+- **Read the chips first.** They say which link is the problem.
+- **The app will not start and shows an OpenGL message:** update the graphics driver. (A virtual machine with no GPU needs a software
+  OpenGL.)
+- **Video says *not opened*, or stops:** is the card plugged in, and is nothing else using it? On Windows, check the camera setting above.
+- **The adapter never appears in a scan:** replug it (15-second window) or press **BOOT**, then scan again. More in the
+  [hardware guide](hardware.md).
+- **Keys stuck on the target:** *Release all keys* in the **Adapter** popup. If the app crashes, the adapter lets go of everything by
+  itself within a few seconds (designed that way; not yet verified on hardware).
+- **Flashing says an Espressif USB device is plugged in:** that is the safety check. Unplug the board's **USB** port (and any other ESP
+  board) from this computer; keep only **COM**.
 
 ## Treat it with care
 
-kvm-it types credentials into other machines. Read the [security model](security.md) first.
+kvm-it types into other machines, including credentials. Read the [security model](security.md) before you point it at anything you
+care about.
