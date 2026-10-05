@@ -66,6 +66,7 @@ git clone https://github.com/spilloid/kvm-it && cd kvm-it
 scripts/rs.sh build          # desktop app  -> desktop/target/release/kvmit
 scripts/fw.sh build          # firmware
 scripts/fw.sh flash          # with the adapter's COM port on your PC and its USB port unplugged
+# or, from the app: GUI Adapter > "Flash adapter…", or `kvmit flash` (see docs/hardware.md)
 ```
 
 Plug the adapter's **USB** port into the target. For the next **15 s** it accepts a new pairing (after that,
@@ -107,6 +108,7 @@ not bare-metal Windows).
 | Desktop: Windows keyboard grab (Win, Alt+Tab, ... go to the target while captured) | **VM-verified**: Win and Alt+Tab never reach the controller while captured, a held key reaches the adapter, Ctrl+Alt+Esc releases and the keyboard returns, and a hung GUI cannot trap the keyboard (the helper stops swallowing after 3 s). Not verified: non-US layouts and IMEs, bare metal. Linux has no equivalent |
 | Desktop: shared client change (mouse motion split into 127-unit frames, ordered before clicks) | host-tested; **not re-run on a Linux board yet** |
 | Windows as the controller (app) | **v0.2.1**: runs in a Windows 11 VM with real hardware passed through (rows above); **not verified on bare-metal Windows**. Windows as the *target* works as before: it only sees a USB keyboard and mouse |
+| Desktop: flash the adapter (`kvmit flash`, GUI **Flash adapter…**) | **hardware-verified** on Linux with a physical board over its COM port (`kvmit flash`): verified write of bootloader, partition table and app; the pairing survives a default flash and is wiped by `--erase-all`; refuses while the adapter's own USB port is plugged in (also with `--any-port`). **VM-verified** on Windows 11 (board's COM bridge passed through): the same CLI and the GUI wizard, end to end. an interrupted write was recovered by flashing again. **Not exercised:** the Linux GUI wizard, bare-metal Windows |
 | Built-in OOBE script | template only, never run on a real OOBE |
 | Session recording | planned |
 

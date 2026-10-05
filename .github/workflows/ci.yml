@@ -31,6 +31,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Bundled adapter firmware is current and intact
+        run: |
+          python3 scripts/fw-source-hash.py --check
+          cd firmware/release && sha256sum -c SHA256SUMS
       - name: Vectors are up to date
         run: python3 protocol/gen_vectors.py && git diff --exit-code protocol
       - name: Test, lint, cross-build (container)

@@ -174,7 +174,7 @@ async fn find(ad: &Adapter, id: &str, wait: Duration) -> Result<Peripheral> {
     }
 }
 
-/// An open GATT connection. Dropping it disconnects.
+/// An open GATT connection. Dropping it does NOT disconnect: call [`Connection::disconnect`].
 pub struct Connection {
     pub io: Option<LinkIo>,
     peripheral: Peripheral,

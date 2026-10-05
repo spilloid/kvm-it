@@ -8,7 +8,7 @@ right subsystem (kvmit.exe console, kvmit-gui.exe GUI), that the version stamp, 
 CHANGELOG agree with the tag (STD-003 rule 1), and reports whether a signature blob is present. A signature blob is
 NOT proof the signature is valid: validity is checked by Get-AuthenticodeSignature in build-release.ps1 on Windows.
 """
-import hashlib, pathlib, re, struct, sys, zipfile
+import hashlib, pathlib, re, struct, subprocess, sys, zipfile
 
 def die(msg):
     print("FAIL:", msg)
@@ -60,7 +60,12 @@ def main():
             die(f"SHA256SUMS disagrees with {a.name}")
         print(f"ok  sha256 {actual[:16]}...  {a.name}")
 
-    expected = {f"kvmit/{n}" for n in ("kvmit.exe", "kvmit-gui.exe", "README.md", "LICENSE", "CHANGELOG.md")}
+    fw_dir = pathlib.Path(__file__).resolve().parent.parent / "firmware" / "release"
+    fw_files = sorted(str(p.relative_to(fw_dir)).replace("\\", "/") for p in fw_dir.rglob("*") if p.is_file())
+    if not fw_files:
+        die(f"{fw_dir} holds no firmware: the app's Flash adapter... would have nothing to flash")
+    expected = {f"kvmit/{n}" for n in ("kvmit.exe", "kvmit-gui.exe", "README.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md")}
+    expected |= {f"kvmit/firmware/{n}" for n in fw_files}
     zpath = dist / f"{base}.zip"
     signed = {}
     with zipfile.ZipFile(zpath) as z:
@@ -68,6 +73,29 @@ def main():
             die(f"zip entries are {sorted(z.namelist())}, expected {sorted(expected)}")
         if z.testzip() is not None:
             die("zip CRC check failed")
+        for n in fw_files:  # the shipped firmware is exactly what is committed in firmware/release
+            if z.read(f"kvmit/firmware/{n}") != (fw_dir / n).read_bytes():
+                die(f"kvmit/firmware/{n} differs from firmware/release/{n}")
+        print(f"ok  firmware: {len(fw_files)} files identical to firmware/release")
+        inner = {}
+        for line in z.read("kvmit/firmware/SHA256SUMS").decode().splitlines():
+            if line.strip():
+                digest, name = line.split(None, 1)
+                name = name.strip().lstrip("*")
+                if name in inner:
+                    die(f"firmware/SHA256SUMS lists {name} twice")
+                inner[name] = digest
+        covered = {n for n in fw_files if n not in ("SHA256SUMS", "FIRMWARE.txt")}  # the sums cannot list themselves
+        if set(inner) != covered:
+            die(f"firmware/SHA256SUMS covers {sorted(inner)} but must cover exactly {sorted(covered)}")
+        for name, digest in inner.items():
+            if hashlib.sha256(z.read(f"kvmit/firmware/{name}")).hexdigest() != digest:
+                die(f"firmware/SHA256SUMS in the zip does not match {name} (line endings changed by a checkout?)")
+        print(f"ok  firmware/SHA256SUMS in the zip matches its {len(inner)} files")
+        try:
+            subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve().parent / "fw-source-hash.py"), "--check"], check=True)
+        except (subprocess.CalledProcessError, OSError):
+            die("the bundled firmware does not match the firmware sources (scripts/fw-source-hash.py --check)")
         for exe, want_subsystem in (("kvmit.exe", 3), ("kvmit-gui.exe", 2)):
             data = z.read(f"kvmit/{exe}")
             machine, subsystem, sec = pe_info(data, exe)

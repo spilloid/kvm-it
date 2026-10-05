@@ -2,9 +2,39 @@
 
 ## [Unreleased]
 
+### Added
+- `kvmit flash` (in progress for 0.3.0): writes the adapter's firmware through its UART (COM) port with the `espflash` library.
+  It validates the image first, refuses the board's native USB port (which would type into the flashing computer), keeps the
+  pairing and settings unless `--erase-all` is given, and asks for confirmation. Host-tested (image and port rules);
+  **hardware-verified once** on one board over its CH343 UART. Before writing it re-checks that the chosen port is still the same
+  device, that no Espressif USB device (which may be an adapter's own USB port: a keyboard and mouse, HID-only so not a serial port,
+  or the generic debug unit it shows in download mode) is plugged into the computer, that the chip is an ESP32-S3 with the image's flash size, and that the installed partition table keeps the settings
+  where they are; it validates the image (headers, partition table, file paths inside the firmware folder). Hardware
+  results: on Linux with a physical board the pairing survives a default flash and is wiped by `--erase-all`, and the native-USB
+  refusal works (also with `--any-port`); on Windows 11 (VM, the board's COM bridge passed through) the CLI and the GUI wizard
+  flash end to end. An interrupted flash (the Windows flasher killed halfway through the app) was recovered by flashing again, no BOOT button. Not exercised: the Linux GUI wizard, bare-metal Windows.
+- **Flash adapter…** in the GUI's Adapter popup (`flashwiz.rs`): a window that finds the board's COM port, checks the firmware
+  folder, blocks while any Espressif native USB port is plugged into the computer, requires a second tick before erasing the
+  pairing, refuses while a script runs or the adapter is connected, flashes on a worker thread with a progress bar (no close button
+  and no app exit while writing), and says how to recover if it fails. Its rules are unit-tested; a flash through the window was run end to end in the
+  Windows 11 VM. Opening it cancels a pending connection attempt (which would otherwise block it with nothing to press).
+- The adapter firmware ships with the app: `firmware/release/` (the exact images, with provenance and checksums) is installed
+  beside the program by the MSI, included in the zip and the AppImage, and found by `kvmit flash` and **Flash adapter…** with no
+  setup (`KVMIT_FIRMWARE` or `--firmware` override it). CI checks that the bundled images are not older than the firmware sources;
+  `verify-release.py` checks the zip carries them. Windows executables grew from ~21 MB to ~35 MB with the flasher (espflash).
+- `THIRD_PARTY_NOTICES.md` (MPL-2.0 notice for `serialport`) ships in the zip, the MSI and the AppImage; the AppImage builder moved to Rust 1.99.
+
 ### Changed
 - Build toolchain is Rust 1.99 (was 1.90), needed for the in-app flasher planned for 0.3.0; clippy lints fixed (`as_chunks`, an
   always-true `min` in a test, explicit `f32` for stroke widths). No behaviour change. The AppImage builder stays on 1.90 for now.
+
+### Known limitations
+- Flashing: identical boards behind a USB bridge with no serial number cannot be told apart (the app says so and re-checks chip, flash size and settings layout); a USB device
+  the OS will not let the enumerator describe, one plugged in after the check, or an adapter's USB port running other firmware under another vendor id are not detected as
+  a reason to refuse. Firmware is not signed; `KVMIT_FIRMWARE` / `--firmware` can point at any valid ESP32-S3 image set.
+- BLE lifecycle around the flasher (review round 13, Low): pairing and then immediately connecting elsewhere can leave an idle OS-level link unowned, and a failed first
+  connection after a pairing may not close its link; both are dropped when the board is flashed (it resets). Planned for 0.3.1.
+- The Linux GUI wizard, Linux pairing with the new code and bare-metal Windows were not exercised.
 
 ## [0.2.1] - 2026-10-04 (video switching, logo, Linux AppImage)
 

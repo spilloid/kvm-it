@@ -86,6 +86,24 @@ If `usermod` reports the group is missing, `getent group dialout` shows whether 
 > `sg dialout -c ".../esptool --chip esp32s3 --port /dev/ttyACM0 -b 460800 write-flash @flash_args"`.
 > This is how the first flash was done on the development host (hash-verified).
 
+### Flash from the app (0.3.0)
+
+The controller can flash the adapter itself, on Linux and Windows, with no ESP-IDF install:
+
+1. Plug the board's **COM** USB port into the computer. **Keep its other (native USB) port unplugged**: it is the keyboard and
+   mouse and would type into this computer. The app refuses to flash while it can see any Espressif USB device (`303a:*`) attached, because an adapter's own
+   USB port cannot be told from other Espressif boards (and looks generic in download mode): unplug other ESP boards too.
+2. GUI: Adapter chip > **Flash adapter…**; or CLI: `kvmit flash --list`, then `kvmit flash`. The firmware that ships with the app
+   (a `firmware` folder next to the program, from `firmware/release` in the repo) is used by default; set `KVMIT_FIRMWARE` or
+   pass `--firmware <dir>` (a folder with `flasher_args.json` and the three images, e.g. `firmware/build`) to use another.
+3. By default only the bootloader, partition table and app are written and the **pairing and settings are kept**. The tool
+   checks, from the board itself, that the settings stay where they are. `--erase-all` (GUI: the tick box plus a second
+   confirmation) erases everything including the pairing; pair again afterwards.
+4. It checks before writing that the chip is an ESP32-S3 with 16 MB of flash, and verifies what it wrote. A flash cannot be
+   interrupted safely: do not unplug the board or close the app while it runs. If it fails or is interrupted, just flash
+   again (the chip is put into its bootloader by the COM port itself; this recovered a write killed halfway through the app on
+   2026-10-04). Only if the board is not found, hold **BOOT** while plugging the COM cable in.
+
 ### Flash and watch
 
 ```bash

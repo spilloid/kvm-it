@@ -30,7 +30,9 @@ if ($Stage -in 'all', 'stage') {
     if (Test-Path $stageDir) { Remove-Item $stageDir -Recurse -Force }
     $app = (New-Item -ItemType Directory -Force $app).FullName
     foreach ($f in 'kvmit.exe', 'kvmit-gui.exe') { Copy-Item (Join-Path $ExeDir $f) $app }
-    foreach ($f in 'README.md', 'LICENSE', 'CHANGELOG.md') { Copy-Item $f $app }
+    foreach ($f in 'README.md', 'LICENSE', 'CHANGELOG.md', 'THIRD_PARTY_NOTICES.md') { Copy-Item $f $app }
+    # the adapter firmware the app's Flash adapter... flashes; the app looks for a `firmware` folder next to itself
+    Copy-Item 'firmware/release' (Join-Path $app 'firmware') -Recurse
     # 1. sign the executables first, so the MSI and the zip both carry signed binaries
     if ($Stage -eq 'all') { & "$PSScriptRoot/sign.ps1" -Path (Join-Path $app 'kvmit.exe'), (Join-Path $app 'kvmit-gui.exe') }
 }
@@ -60,8 +62,10 @@ if (Test-Path $zip) { Remove-Item $zip }
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 $z = [IO.Compression.ZipFile]::Open((Join-Path (Resolve-Path $out) "$base.zip"), [IO.Compression.ZipArchiveMode]::Create)
 try {
-    foreach ($f in Get-ChildItem $app -File) {
-        [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($z, $f.FullName, "kvmit/$($f.Name)", [IO.Compression.CompressionLevel]::Optimal)
+    $root = (Resolve-Path $app).Path.TrimEnd('\')
+    foreach ($f in Get-ChildItem $app -File -Recurse) {
+        $rel = $f.FullName.Substring($root.Length + 1).Replace('\', '/')
+        [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($z, $f.FullName, "kvmit/$rel", [IO.Compression.CompressionLevel]::Optimal)
     }
 } finally { $z.Dispose() }
 $assets += $zip

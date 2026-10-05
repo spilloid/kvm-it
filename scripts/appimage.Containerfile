@@ -9,5 +9,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libegl1-mesa-dev libclang-dev clang libv4l-dev \
     && rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
-# Same compiler as scripts/rs.Containerfile (rust:1.90).
-RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.90.0
+# Same compiler as scripts/rs.Containerfile (rust:1.99).
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.99.0

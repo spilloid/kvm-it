@@ -44,6 +44,23 @@ enum Input {
     Chord(&'static str, Vec<Key>),
 }
 
+/// Counts one pairing in flight for as long as it lives: registered synchronously when the attempt starts, released on drop (also
+/// if the task panics or is dropped), so the count can neither stay stuck nor be cleared by another pairing.
+struct PairingGuard(Arc<std::sync::atomic::AtomicUsize>);
+
+impl PairingGuard {
+    fn new(count: &Arc<std::sync::atomic::AtomicUsize>) -> PairingGuard {
+        count.fetch_add(1, Ordering::SeqCst);
+        PairingGuard(count.clone())
+    }
+}
+
+impl Drop for PairingGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Sender into the ordered input pump. Every queued item is counted until the pump has finished it, so the UI
 /// can tell when input is fully idle (nothing queued, nothing in flight) before starting another producer.
 #[derive(Clone)]
@@ -78,6 +95,8 @@ pub struct App {
     cfg: Config,
     link: Arc<Mutex<Link>>,
     link_gen: Arc<AtomicU64>,
+    /// Pairings in flight, counted from the moment they are started (a pairing cannot be cancelled, so the flasher waits).
+    pairing: Arc<std::sync::atomic::AtomicUsize>,
     scan: Arc<Mutex<Scan>>,
     status: Arc<Mutex<Option<StatusInfo>>>,
     notice: Arc<Mutex<String>>,
@@ -107,6 +126,7 @@ pub struct App {
     run_log: Vec<String>,
     type_text: String,
     type_secret: bool,
+    flash: Option<crate::flashwiz::Wizard>,
 }
 
 impl App {
@@ -119,6 +139,7 @@ impl App {
             rt,
             link: Arc::new(Mutex::new(Link::Disconnected)),
             link_gen: Arc::new(AtomicU64::new(0)),
+            pairing: Arc::default(),
             scan: Arc::new(Mutex::new(Scan::Idle)),
             status: Arc::default(),
             notice: Arc::default(),
@@ -144,6 +165,7 @@ impl App {
             run_log: Vec::new(),
             type_text: String::new(),
             type_secret: false,
+            flash: None,
             cfg,
         };
         // Zero-step reconnect: the last adapter and capture device come back on their own.
@@ -162,68 +184,130 @@ impl App {
 
     /// Connect and keep reconnecting until superseded (generation counter) or the app exits.
     fn start_link(&mut self, id: String, ctx: egui::Context, pair_first: bool) {
-        let generation = self.link_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        // Register the attempt synchronously, in the same step that supersedes any earlier one: the generation bump and the
+        // `Connecting` state happen under the link lock, so a cancel (the flasher opening) always sees this attempt and a
+        // superseded one can no longer publish.
+        let generation = {
+            let mut l = self.link.lock().unwrap();
+            let g = self.link_gen.fetch_add(1, Ordering::SeqCst) + 1;
+            *l = Link::Connecting(id.clone());
+            g
+        };
         self.cfg.last_device = Some(id.clone());
         self.cfg.save();
         let (link, gen_ref, status, notice) = (self.link.clone(), self.link_gen.clone(), self.status.clone(), self.notice.clone());
+        // Registered here, before the task is spawned, and held until the first connection attempt has resolved (Connected
+        // published, or failed): from the first click until then the flasher cannot open, so no cancel can find a pairing, or the
+        // link it leaves open, without an owner.
+        let mut pairing = pair_first.then(|| PairingGuard::new(&self.pairing));
+        // The only way this attempt touches shared state: run `f` if the attempt is still the current one, while holding the
+        // link lock. The cancels (`cancel_pending_link`, `stop_link`) bump the generation and clear the state under that same
+        // lock, so a cancelled or superseded attempt can never write after the cancel, not even between a check and a write.
+        // (Lock order: link, then status/notice.)
+        let with_link = {
+            let (link, gen_ref) = (link.clone(), gen_ref.clone());
+            move |f: &dyn Fn(&mut Link)| -> bool {
+                let mut l = link.lock().unwrap();
+                if gen_ref.load(Ordering::SeqCst) != generation {
+                    return false;
+                }
+                f(&mut l);
+                true
+            }
+        };
+        let publish = {
+            let with_link = with_link.clone();
+            move |state: Link| with_link(&|l: &mut Link| *l = state.clone())
+        };
         self.rt.spawn(async move {
             if pair_first {
-                *link.lock().unwrap() = Link::Connecting(id.clone());
-                ctx.request_repaint();
+                if gen_ref.load(Ordering::SeqCst) != generation {
+                    return; // superseded before it started
+                }
                 if let Err(e) = backend::pair(&id).await {
-                    *notice.lock().unwrap() = format!("Pairing failed: {e}. Re-plug the adapter (15 s pairing window) or press BOOT briefly on it, then try again.");
-                    *link.lock().unwrap() = Link::Disconnected;
+                    with_link(&|l: &mut Link| {
+                        *l = Link::Disconnected;
+                        *notice.lock().unwrap() = format!("Pairing failed: {e}. Re-plug the adapter (15 s pairing window) or press BOOT briefly on it, then try again.");
+                    });
                     ctx.request_repaint();
                     return;
                 }
             }
             while gen_ref.load(Ordering::SeqCst) == generation {
-                *link.lock().unwrap() = Link::Connecting(id.clone());
+                if !publish(Link::Connecting(id.clone())) {
+                    break;
+                }
                 ctx.request_repaint();
                 match session::connect(&id).await {
                     Ok((dev, conn)) => {
                         let name = dev.info().name.clone();
-                        *link.lock().unwrap() = Link::Connected { dev: dev.clone(), name, id: id.clone() };
-                        notice.lock().unwrap().clear();
+                        if !publish(Link::Connected { dev: dev.clone(), name, id: id.clone() }) {
+                            // cancelled (e.g. the flasher opened) while this attempt was in flight: close it, never publish it
+                            conn.disconnect().await;
+                            break;
+                        }
+                        pairing.take(); // connected and published: from here the app owns the link
+                        with_link(&|_| notice.lock().unwrap().clear());
                         ctx.request_repaint();
-                        // poll target-USB state while connected
+                        // poll target-USB state while connected, and give up the link if this attempt is cancelled
                         let poll = async {
                             let mut last_held = 0u8;
                             loop {
                                 tokio::time::sleep(Duration::from_secs(2)).await;
+                                if gen_ref.load(Ordering::SeqCst) != generation {
+                                    break;
+                                }
                                 if let Ok(s) = dev.status().await {
                                     if s.keys != last_held {
                                         debug_log(&format!("adapter reports {} key(s) held on the target", s.keys));
                                         last_held = s.keys;
                                     }
-                                    *status.lock().unwrap() = Some(s);
+                                    with_link(&|_| *status.lock().unwrap() = Some(s.clone()));
                                     ctx.request_repaint();
                                 }
                             }
                         };
                         tokio::select! { _ = dev.closed() => {}, _ = poll => {} }
-                        *status.lock().unwrap() = None;
+                        with_link(&|_| *status.lock().unwrap() = None);
                         conn.disconnect().await;
-                        *link.lock().unwrap() = Link::Failed("link lost, reconnecting…".into());
-                        ctx.request_repaint();
+                        if publish(Link::Failed("link lost, reconnecting…".into())) {
+                            ctx.request_repaint();
+                        }
                     }
                     Err(e) => {
-                        *link.lock().unwrap() = Link::Failed(e.to_string());
-                        ctx.request_repaint();
+                        if publish(Link::Failed(e.to_string())) {
+                            ctx.request_repaint();
+                        }
                     }
                 }
+                pairing.take(); // the first attempt has resolved: whatever pairing left behind is now owned (or closed)
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
         });
     }
 
-    fn stop_link(&mut self) {
-        self.link_gen.fetch_add(1, Ordering::SeqCst);
-        if let Link::Connected { dev, .. } = self.link.lock().unwrap().clone() {
-            let d = dev.clone();
-            self.rt.spawn(async move { d.shutdown().await });
+    /// Cancel any connection attempt or retry loop without forgetting which adapter was last used (the flasher needs the
+    /// adapter quiet, not forgotten). A live connection is left to the person to Disconnect.
+    fn cancel_pending_link(&mut self) {
+        let mut link = self.link.lock().unwrap();
+        if matches!(&*link, Link::Connecting(_) | Link::Failed(_)) {
+            self.link_gen.fetch_add(1, Ordering::SeqCst);
+            *link = Link::Disconnected;
+            *self.status.lock().unwrap() = None;
         }
-        *self.link.lock().unwrap() = Link::Disconnected;
+    }
+
+    fn stop_link(&mut self) {
+        // bump the generation and replace the state under one lock, so an in-flight attempt cannot publish in between
+        let previous = {
+            let mut l = self.link.lock().unwrap();
+            self.link_gen.fetch_add(1, Ordering::SeqCst);
+            *self.status.lock().unwrap() = None;
+            std::mem::replace(&mut *l, Link::Disconnected)
+        };
+        if let Link::Connected { dev, .. } = previous {
+            self.rt.spawn(async move { dev.shutdown().await });
+        }
         self.cfg.last_device = None;
         self.cfg.save();
     }
@@ -692,6 +776,22 @@ impl eframe::App for App {
             ui.add_space(2.0);
         });
 
+        // the flasher window (opened from the Adapter popup); it owns its own progress, so it can stay up while idle
+        if self.flash.is_some() && !self.capturing {
+            // flashing resets the board, so nothing may be using the adapter: no script, no connection to it
+            let mut external = Vec::new();
+            if running {
+                external.push("A script is running: wait for it to finish or abort it.".to_string());
+            }
+            if matches!(link, Link::Connected { .. }) {
+                external.push("The controller is connected to an adapter: use Disconnect in the Adapter popup first.".to_string());
+            }
+            let keep = self.flash.as_mut().is_some_and(|w| w.show(ctx, &external));
+            if !keep {
+                self.flash = None;
+            }
+        }
+
         // confirm dialog from a running script
         if let Some(h) = &self.run_handle {
             let pending = h.confirm.lock().unwrap().clone();
@@ -769,7 +869,11 @@ impl eframe::App for App {
             }
         });
 
-        if ctx.input(|i| i.viewport().close_requested()) {
+        if ctx.input(|i| i.viewport().close_requested()) && self.flash.as_ref().is_some_and(|w| w.busy()) {
+            // quitting mid-write could leave the board unbootable
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.set_notice("Flashing is in progress: wait for it to finish before closing the app.");
+        } else if ctx.input(|i| i.viewport().close_requested()) {
             self.end_capture(ctx);
             if let Some(d) = self.device() {
                 let _ = self.rt.block_on(async { tokio::time::timeout(Duration::from_millis(800), d.shutdown()).await });
@@ -799,7 +903,8 @@ impl App {
             }
             _ => {
                 let scanning = matches!(&*self.scan.lock().unwrap(), Scan::Scanning);
-                if ui.add_enabled(!scanning, egui::Button::new(if scanning { "Scanning…" } else { "Scan for adapters" })).clicked() {
+                let flashing = self.flash.is_some(); // no new connection while the flasher window is open
+                if ui.add_enabled(!scanning && !flashing, egui::Button::new(if scanning { "Scanning…" } else { "Scan for adapters" })).clicked() {
                     *self.scan.lock().unwrap() = Scan::Scanning;
                     let (scan, ctx2) = (self.scan.clone(), ctx.clone());
                     self.rt.spawn(async move {
@@ -819,10 +924,10 @@ impl App {
                         for f in list {
                             ui.horizontal(|ui| {
                                 ui.label(format!("{} ({} dBm)", f.name, f.rssi.map(|r| r.to_string()).unwrap_or("?".into())));
-                                if ui.button("Pair & connect").clicked() {
+                                if ui.add_enabled(!flashing, egui::Button::new("Pair & connect")).clicked() {
                                     chosen = Some((f.id.clone(), true));
                                 }
-                                if ui.button("Connect").clicked() {
+                                if ui.add_enabled(!flashing, egui::Button::new("Connect")).clicked() {
                                     chosen = Some((f.id.clone(), false));
                                 }
                             });
@@ -837,6 +942,14 @@ impl App {
                     self.start_link(id, ctx.clone(), pair);
                 }
             }
+        }
+        ui.separator();
+        let pairing = self.pairing.load(Ordering::SeqCst) > 0;
+        let hint = if pairing { "A pairing is in progress: wait for it to finish" } else { "Write the adapter's firmware through its COM USB port" };
+        if ui.add_enabled(self.flash.is_none() && !pairing, egui::Button::new("Flash adapter…")).on_hover_text(hint).clicked() {
+            // a connection attempt in progress or waiting to retry (no Disconnect to press) must not outlive this
+            self.cancel_pending_link();
+            self.flash = Some(crate::flashwiz::Wizard::new());
         }
     }
 

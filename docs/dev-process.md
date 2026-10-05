@@ -330,3 +330,166 @@ belongs to.
 
 - Tests after the fixes: `scripts/rs.sh test` green (new: oversized and non-file demo pictures); the AppImage rebuilt with
   the changed script, `cli --version` run from it. The GUI popup interaction (reopen click) is not covered by a test.
+
+## 2026-10-04 — 0.3.0 flasher (`feat/flash`): review round 7
+
+Read-only review by a different model (codex `gpt-6-astra`) of `main...feat/flash` at `8bc17e9`: verdict "do not ship until device
+identity, native-USB detection, NVS preservation and flash-operation lifecycle are enforced". 13 findings, all confirmed by reading;
+fixed in the commit after this log.
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | High | A reused port name (`/dev/ttyACM0`) bypasses the checks: nothing re-identifies the device at flash time | **Confirmed.** `flash()` now takes the chosen `PortInfo` (name, vid:pid, USB serial), re-enumerates, and refuses if the same name is another device or gone. A small window between the check and the open remains (stated, unavoidable) |
+| 2 | High | The native-USB rule is blind: the adapter's native port is HID-only and is not a serial port at all | **Confirmed, and the worst one.** Seen on the real board (`303a:4008`, no CDC). Now found by enumerating USB devices (`nusb`): the adapter's pid, a "kvm-it" name, or an unreadable Espressif device blocks; a differently named Espressif board does not. Checked in the CLI before the prompt, in the wizard on open/rescan, and again inside `flash()`. A cable plugged in *after* the check is not detectable |
+| 3 | High | CH343 does not prove it is a kvm-it board; the chip is never checked | **Confirmed.** After connecting: must be an ESP32-S3 with the image's flash size and not in secure download mode, else nothing is written. Another ESP32-S3 with 16 MB behind a CH343 is still accepted; the person's choice and confirmation remain the last line |
+| 4 | High | Validation ignores padding and erase sectors | **Confirmed.** Sector footprints (4 KiB) are used for overlap and for the settings check |
+| 5 | High | A replaced partition table can move or shrink the settings | **Confirmed.** The installed table is read from the chip and its nvs region must equal the new image's, else a full erase is required |
+| 6 | High | "Firmware OK" accepts one-byte images | **Confirmed.** Header checks (magic, segment count, ESP32-S3 chip id), a partition table with an app partition at the app's offset that fits it, nvs required. No checksum/hash walk of the images; they come from our own build |
+| 7 | High | Manifest paths can read files outside the folder | **Confirmed.** Relative-only, no `..`, symlinks resolved and contained, regular files only |
+| 8 | Med | Reads are unbounded; FIFOs hang; the wizard loads on the UI thread | **Confirmed, mostly.** Manifest 64 KiB, 8 entries, files regular and at most the flash size, duplicate keys rejected. Loading is still on the UI thread, now bounded and cannot block on a FIFO |
+| 9 | High | Closing the wizard or the app mid-flash abandons a running write | **Confirmed.** No close button while writing, no second wizard, and an app close request is cancelled with a notice while flashing |
+| 10 | Med | Flashing ignores scripts and the adapter connection | **Confirmed.** Blocked while a script runs or the controller is connected/connecting; the wizard is hidden while capturing |
+| 11 | Med | "Verified" claimed even in secure download mode | **Confirmed.** Secure download mode is refused |
+| 12 | Med | espflash needs Rust 1.95, the AppImage builder has 1.90 | **Confirmed.** AppImage builder moved to 1.99; rebuilt, glibc floor still 2.35, `cli flash --list` runs from it |
+| 13 | Med | `serialport` is MPL-2.0 and nothing in the packages says so | **Confirmed.** `THIRD_PARTY_NOTICES.md` (shipped in the zip, the MSI and the AppImage; `verify-release.py` expects it). A generated all-dependencies licence listing is still to do |
+
+- Tests after the fixes: 21 flash-crate tests (traversal incl. symlink, duplicate keys, sector sharing, headers, partition rules,
+  same-name-other-device, the real board's HID-only descriptor, installed-vs-new tables) and the wizard's blocker rules;
+  clippy clean; real firmware build validated by the tests.
+- Hardware (second board; evening of 2026-10-04): the hardened `kvmit flash` on Linux: chip and flash-size identity, installed-table
+  read-back, verified write of all three parts; the pairing survived a default flash (boot log "trusted controller stored", and a
+  Windows controller reconnected after the pairing window closed) and was wiped by `--erase-all` ("trusted controller none"); with
+  the adapter's native USB port plugged in, `kvmit flash` and `--any-port` both refused. Windows 11 VM (COM bridge passed through,
+  COM3): `kvmit flash` and the GUI wizard each wrote and verified. Fixed in passing: the wizard was blocked by a connection
+  attempt that keeps retrying. A write killed halfway through the app (Windows CLI) left a half-written app; flashing again recovered it with no BOOT button. **Not exercised on hardware:** the Linux GUI wizard, bare-metal Windows.
+- The new MSI component (`THIRD_PARTY_NOTICES.md`) is built only by CI/the release machine, not tried here. (Later, in the VM: the
+  zip and MSI built with `build-release.ps1`, the MSI installed, uninstalled, and `verify-release.py` passed.)
+- Found while bundling the firmware: the local `firmware/build` that had been flashed so far was built 2.5 minutes before the last
+  firmware commit (the pairing-window-once-per-boot fix), and builds are not byte-reproducible (the build time is embedded), so it
+  cannot be said whether that board had the fix. `firmware/release` was rebuilt from current sources and flashed; pairing and
+  reconnect were re-checked with exactly those bytes.
+
+### Round 8 (re-review of the round-7 fixes, `8bc17e9..59a6f22`)
+
+The reviewer's verdict: "do not ship until wrong-device/native-port gaps, temporary-file safety, validation/preservation holes and
+BLE cancellation are fixed and re-reviewed". Of the 13 round-7 fixes it called 4 fully fixed, 7 partial and 1 regressed (round 7's
+findings 3, 9, 11, 12, 13 fixed; 1, 2, 4, 5, 6, 8 partial; 10 regressed by the wizard's own connection cancel). 13 new findings (F1-F13):
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| F1 | High | Bridges with no (or duplicate) USB serial number: a swapped board under the same port name compares equal | **Confirmed; narrowed, not closed.** Without a serial two identical boards cannot be told apart by software. The app now says so beside the choice (GUI and CLI), re-checks the chip is an ESP32-S3 of the right flash size with a compatible settings layout, and prints the chip's MAC when done. The residual (a physical cable swap in the seconds between choosing and confirming, onto a board that passes all of those) is accepted |
+| F2 | High | The adapter's ROM-mode native port (`303a:1001`, generic debug unit) was explicitly allowed | **Confirmed.** My test blessed it as "unrelated". Now *any* Espressif USB device blocks flashing (an adapter's own port cannot be told from another ESP board), documented |
+| F3 | High | USB enumeration is not a complete inventory (nusb drops unreadable devices on Linux; half-readable descriptors slipped through) | **Partly fixed.** The descriptor-string heuristics are gone (vendor id alone decides). A device the OS will not let nusb describe can still be missing from the list, and a cable plugged in after the check is not seen: stated limits |
+| F4 | High | The installed-table temp file is a predictable, replaceable path | **Confirmed.** A private, exclusively created, owner-only folder, removed on drop; the file is read as a bounded regular file |
+| F5 | High | Invalid images pass (bare 24-byte header; partition table with a flipped MD5) | **Confirmed.** Images are walked like the ROM does (segments inside the file, XOR checksum, appended SHA-256); the table is parsed strictly (bad entries, MD5 verified, data after the MD5, ranges, overlaps, one `nvs`). The committed release images are checked by an always-on test |
+| F6 | High | Equal NVS ranges do not prove the pairing stays reachable (labels, flags ignored) | **Confirmed.** The settings partition must be identical (offset, size, name, flags) in the installed and new tables; exactly one nvs partition, named `nvs` (what the firmware opens) |
+| F7 | Med | Table location accepted anywhere, read-back always at 0x8000 | **Confirmed.** The table part must be at 0x8000 |
+| F8 | Med | Erase footprint arithmetic assumes aligned offsets | **Confirmed.** Every part and partition must be 4 KiB aligned |
+| F9 | Med | Opening the wizard does not cancel or exclude BLE work (retry in `Failed`, in-flight connect publishing late, Adapter popup still usable) | **Confirmed.** An attempt cancelled while in flight disconnects and never publishes (also on its error paths); the wizard cancels `Connecting` and `Failed` loops without forgetting the remembered adapter; Scan/Connect are disabled while it is open. A live connection must still be Disconnected by the person |
+| F10 | Med | Containment/size checks race the actual open | **Partly fixed.** One open, checks on the handle, bounded read. A concurrent swap of a directory component needs write access to the firmware folder: accepted |
+| F11 | Med | Implicit firmware lookup can pick attacker-controlled firmware (cwd; env var wins) | **Partly fixed.** Release builds never look in the working directory; only a debug build tries `firmware/release`. `KVMIT_FIRMWARE` still overrides on purpose (shown in the wizard and the CLI before confirming); there is no runtime signature on firmware |
+| F12 | Med | The CI freshness guard compares commit ids (stale images pass, squash merges fail, scripts not covered) | **Confirmed.** A content hash of the firmware build inputs (sources, patches, lockfile, `scripts/fw.sh`) is recorded in `FIRMWARE.txt` and checked by CI and by `verify-release.py` (which the signed release runs). It binds the inputs to the record, not to the output bytes (builds are not reproducible) |
+| F13 | Med | Windows `autocrlf` can rewrite the bundled JSON so its checksum is stale; verification never checks the inner sums | **Confirmed.** `.gitattributes` marks `firmware/release/**` as `-text`; `verify-release.py` verifies the zip's inner `SHA256SUMS` against its files |
+
+- Tests after the fixes: 23 flash-crate tests (strict images and tables built with real checksums/SHA-256/MD5, the real release images
+  always validated, label/size/move refusals, ROM-mode and half-readable USB devices, scratch folder), wizard rules; clippy clean.
+- Hardware after the fixes (Windows 11 VM, COM bridge): the CLI default flash read back and strictly parsed the board's installed
+  table; the GUI wizard blocked while connected ("Disconnect first"), then after Disconnect flashed and verified.
+
+### Round 9 (re-review of the round-8 fixes, `59a6f22..7b8eafa`)
+
+Verdict "do not ship yet": F5, F9, F10, F12, F13 incomplete, two regressions of mine, and a coverage gap. 11 findings (+1 low):
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | Med | A cancelled BLE attempt can still publish `Connected` (generation checked before taking the link lock) and its poll loop never notices cancellation | **Confirmed.** Every link-state write now goes through one `publish` that checks the generation *under the link lock*; the cancel bumps it under the same lock; the connected poll loop exits when cancelled |
+| 2 | Med | `pair_first` paths write state unguarded; a failed handshake drops the connection without disconnecting (`Connection` has no `Drop`, its doc said it did) | **Confirmed.** Pair paths guarded; `session::connect` disconnects on handshake failure; the doc is corrected. Cancelling does not abort an in-flight OS operation, it closes it when it completes |
+| 3 | High | Image walk accepts hash flag 2 (skipping SHA) and odd segment lengths | **Confirmed.** Any nonzero flag means a digest is present and checked; segment lengths must be multiples of 4; checked arithmetic (also the 32-bit low finding) |
+| 4 | High | A table filled to its last slot (no terminator) passes | **Confirmed.** An erased terminator entry inside the 0xC00 window is required |
+| 5 | High | App not on a 64 KiB boundary, a 0x1000 `data/ota`, bounds from a global maximum | **Confirmed.** App partitions on 64 KiB boundaries, OTA data exactly 0x2000, partition bounds from the image's flash size. This is a bounded rule set, not a reimplementation of ESP-IDF's partition semantics |
+| 6 | Med | Valid installed tables without an MD5 entry are refused (needless "full erase") | **Confirmed.** The MD5 is required of the *new* table only; an installed table without one is accepted for the settings comparison |
+| 7 | Med | Opening a FIFO blocks before it can be rejected | **Confirmed (my regression).** The file type is checked before opening, and again on the handle |
+| 8 | Med | The manifest is read unbounded after its size check | **Confirmed.** One bounded reader for the manifest, parts and read-back; too big is an error, not a truncation |
+| 9 | Med | `autocrlf` rewrites the hash inputs on Windows, so the freshness check fails there | **Confirmed (my regression).** `.gitattributes`: `firmware/**` and `scripts/fw.sh` are `-text` |
+| 10 | Med | Inner `SHA256SUMS` coverage not required complete or unique | **Confirmed.** Must cover exactly the bundled files (except itself and FIRMWARE.txt); duplicates refused |
+| 11 | High | Native USB of an S3 already running other firmware under another VID is not detected | **Accepted, documented.** Nothing in the descriptors says that device is an adapter; the rule stays "any Espressif device blocks". A stated detection limit alongside the OS-hidden-device and late-cable ones |
+
+- Tests after the fixes: 28 flash-crate tests (new: hash flag, odd and overflowing segments, full table, OTA geometry, 64 KiB alignment,
+  flash-size bounds, MD5-less installed table, FIFO, oversize); clippy clean. The BLE publish race has no automated test (the
+  window is a few microseconds); it is covered by construction (one lock) and by the hardware run below.
+- Hardware after the fixes (Windows 11 VM, COM bridge, the board): CLI flash; GUI Scan > Connect > wizard blocks while connected >
+  Disconnect > flash verified.
+
+### Round 10 (re-review of the round-9 fixes, `7b8eafa..18f2916`)
+
+Verdict: "Medium BLE lifecycle defects remain; no High defect remains within the reviewed scope and stated accepted residuals". The reviewer
+re-derived that the shipped firmware passes every check and found no path to the wrong port, a default erase of the pairing, or typing into the
+flashing machine. 3 Medium, 2 Low, all confirmed, all in `gui.rs` start/cancel and the parser boundary:
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | Med | A superseded attempt (`start_link(B)` while A is mid-publish) can still publish: the bump did not take the link lock | **Confirmed.** `start_link` bumps the generation and sets `Connecting` under the link lock, in the same step |
+| 2 | Med | An attempt queued but not yet running (state still `Disconnected`) escapes the wizard's cancel | **Confirmed.** Same change: the attempt is registered as `Connecting` synchronously, so `cancel_pending_link` always sees it |
+| 3 | Med | A pairing that succeeds after cancellation leaves BlueZ's link open with no owner | **Confirmed (Linux).** After a cancelled pairing succeeds the controller calls the new `backend::release(id)` (BlueZ `Disconnect`; no-op elsewhere). **Compiled, not exercised**: the Bluetooth adapter belongs to the VM. (Superseded in round 11: removed.) |
+| 4 | Low | Cancelled attempts can still write status and notices | **Confirmed.** Writes check the generation; `stop_link` and `cancel_pending_link` clear the status |
+| 5 | Low | The public parser accepts a slice longer than the 0xC00 window | **Confirmed**, not exploitable (callers cap at 0xC00). The parser now refuses it |
+
+- Tests: 29 flash-crate tests (new: the 0xC00 window); clippy clean. The cancellation interleavings still have no automated test (they are
+  covered by construction: one lock, one registration step) and the hardware GUI flow (Scan > Connect > wizard blocks > Disconnect > flash)
+  passes on the real board. **Not exercised:** the wizard opening while an attempt is mid-flight, and `backend::release`.
+
+### Round 11 (re-review of the round-10 fixes, `18f2916..21aa7c1`)
+
+Round-10 findings 1, 2 and 5 verified fixed. The new `backend::release` (round-10 finding 3) drew three Medium findings and the status-guard fix
+a Low one:
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | Med | Cancel between pairing success and the connection loop bypasses the `release` cleanup | **Confirmed.** |
+| 2 | Med | `release` identifies an address, not an owner: a stale pairing's cleanup can disconnect a newer attempt's wanted connection | **Confirmed (regression from round 10).** |
+| 3 | Med | `release` re-resolves the default controller and can miss the one used for pairing (hci0/hci1); errors are discarded | **Confirmed (conditional on controller hotplug).** |
+| 4 | Low | Generation checks are separate from the writes: a stale status/notice write can still land after a cancel | **Confirmed.** |
+
+Decision: **`backend::release` is removed rather than patched.** It was Linux-only code that cannot be exercised on this rig and each fix
+invited another ownership question. A pairing cannot be cancelled and takes seconds, so the case is removed by construction: the Flash
+adapter button is disabled while a pairing is in flight (and Pair & connect is already disabled while the wizard is open). For finding 4,
+all writes an attempt makes (link state, status, notices) now run under the link lock only if the attempt is still current, and the cancels
+clear state under the same lock (lock order: link, then status/notice), so a write cannot slip between a check and the cancel.
+- Tests: unchanged (29 flash-crate tests); clippy clean; hardware GUI flow (Scan > Connect > wizard blocks > Disconnect > flash) passes. The
+  pairing-in-flight guard is not exercised (the test board was already paired, and Windows pairing returns at once).
+
+### Round 12 (re-review of the round-11 fixes, `21aa7c1..af10e5c`)
+
+Round-11 findings 2, 3 and 4 verified resolved (removing `release` removed its ownership and controller problems; attempt writes are atomic with the
+cancels). The replacement design's pairing flag drew three Medium findings, all confirmed:
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | Med | The flag is cleared as soon as pairing returns, before the connection loop owns anything: a cancel in that gap still strands the link | **Confirmed.** The guard is now held until the first connection attempt has resolved (Connected published, or failed) |
+| 2 | Med | A queued pairing can start after the wizard opened (the flag is set inside the task; the entry generation gate was gone) | **Confirmed.** The pairing is registered synchronously in `start_link`, before the task is spawned, and the task checks its generation before calling `pair` |
+| 3 | Med | One shared boolean: overlapping pairings clear each other's flag | **Confirmed.** A counter with a drop guard (`PairingGuard`): registered per attempt, released on drop even if the task panics or is dropped |
+
+- Tests: 29 flash-crate tests; clippy clean. The guard has no unit test (it lives in the egui app); hardware (Windows 11 VM, the board):
+  Scan > Connect > wizard blocks > Disconnect > flash verified, and, after a Windows unpair, **Pair & connect** through the GUI inside the board's
+  pairing window went Connecting > Connected. Not exercised: Flash adapter… enablement while a pairing is in flight (too brief to observe on
+  Windows), Linux pairing.
+
+### Round 13 (final verification of the round-12 fixes, `af10e5c..96cb43f`) — reviewer: Claude Opus 5.5
+
+**Deviation from STD-001, recorded:** the usual reviewer (codex `gpt-6-astra`) was out of quota until 23:55 on 2026-10-04 (round 13 failed with a usage
+limit and produced no findings). With the maintainer's explicit agreement, this round was done by a Claude Opus 5.5 subagent (read-only, same scope and
+prompt shape as the Codex rounds), a different model from the one that wrote the code but in the same family. A Codex round 13 over the same diff is to be
+run after the quota resets and its result logged here; it also covers the follow-up below.
+
+Result: the three round-12 findings are resolved; **no High or Medium defect**; three Low (plausible) items, accepted for 0.3.0 and listed in the CHANGELOG
+known limitations:
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| 1 | Low | A pairing that is *superseded* (a deliberate second click on Connect while it runs) returns without connect and may leave BlueZ's leftover link with no owner; the wizard only checks `Connected`, so it cannot see it | Accepted for 0.3.0 (needs a second click inside the pairing seconds; the link is idle and flashing resets the board, which drops it). Fix planned: disable Pair & connect / Connect while a pairing is in flight |
+| 2 | Low | `backend::connect` returns early with `?` after `p.connect()` succeeded (on `discover_services`/`subscribe`/`notifications` errors) without disconnecting; if that is the first attempt after a pairing the guard is released with the link open | Accepted for 0.3.0 (older code outside this diff). Fix planned: disconnect on those error paths |
+| 3 | Low | The guard is held for as long as `pair` plus the first connect take; neither has an overall timeout, so a hang keeps Flash adapter… disabled until it returns | Accepted; no path leaks the count permanently |
+
+Checked and found sound by the reviewer: guard lifetime and `take()` placement; no task leaves the state `Connecting`; lock order (link, then status/notice) and
+no await under a std mutex; `cancel_pending_link`/`stop_link`; auto-connect at startup; no path to flashing while connected or pairing other than the two orphan
+links above.

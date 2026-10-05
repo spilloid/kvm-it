@@ -28,6 +28,7 @@ controlled over BLE from a Rust desktop app. Read `README.md`, then `docs/archit
 | `protocol/` | SPEC.md + generated golden vectors shared by C and Rust tests |
 | `desktop/` | Rust workspace (`kvmit` app + crates); `scripts/rs.sh test\|clippy\|build\|windows` (container) |
 | `scripts/fw.sh` | test/build/flash via the ESP-IDF container |
+| `desktop/crates/kvmit-flash/` , `kvmit/src/{flashcmd,flashwiz}.rs` | flash the adapter over its COM port (`kvmit flash`, GUI wizard): image/port/identity safety rules are in the crate and tested; never loosen them in the UI |
 | `desktop/crates/kvmit/src/syskeys.rs` | Windows keyboard grab: pure logic (tested) + helper process; never log which keys |
 | `desktop/crates/kvmit-video/src/demo.rs` | synthetic video source (`KVMIT_DEMO_VIDEO=<png>`): use it for any screenshot or demo, never a real machine's screen |
 | `scripts/build-release.ps1`, `sign.ps1`, `verify-release.py`, `installer/`, `docs/RELEASING.md` | Windows release packaging (run on the release machine) |
