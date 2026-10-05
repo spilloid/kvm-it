@@ -1162,10 +1162,16 @@ fn app_icon() -> Option<egui::IconData> {
     Some(egui::IconData { rgba: img.into_raw(), width, height })
 }
 
+/// The window title: the app name and its version, so the running build is always visible (and stamped into the executable, which
+/// `scripts/verify-release.py` checks).
+pub fn window_title() -> String {
+    format!("kvm-it {}", env!("CARGO_PKG_VERSION"))
+}
+
 pub fn run_gui() -> eframe::Result<()> {
     let opts = eframe::NativeOptions {
         viewport: {
-            let v = egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_title("kvm-it");
+            let v = egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_title(window_title());
             match app_icon() {
                 Some(icon) => v.with_icon(icon),
                 None => v,
@@ -1192,6 +1198,13 @@ mod tests {
         assert_eq!(selection_after_rescan(Some("/dev/video9"), &after), 0, "gone: back to the first");
         assert_eq!(selection_after_rescan(None, &after), 0);
         assert_eq!(selection_after_rescan(Some("/dev/video0"), &[]), 0, "no devices at all");
+    }
+
+    #[test]
+    fn the_window_title_carries_the_build_version() {
+        let t = window_title();
+        assert!(t.starts_with("kvm-it "), "{t}");
+        assert!(t.ends_with(env!("CARGO_PKG_VERSION")), "{t}");
     }
 
     #[test]
