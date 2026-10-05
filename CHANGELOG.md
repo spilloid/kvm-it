@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+- Screenshots of the real app on the website and in the README (overview, adapter, video, keys, type, scripts, run log, input captured, flash adapter), taken by an
+  automated harness (`tools/screenshots`) against a synthetic demo target and checked per scene; the demo picture's overlapping countdown text was fixed.
+- Roadmap: a candidate 0.4.0 "wired link over COM" (drive the adapter over its UART with no Bluetooth).
+
 ## [0.3.0] - 2026-10-04 (flash the adapter from the app)
 
 Firmware (0.1.0) and wire protocol (v1) are unchanged. The controller can now flash the adapter itself, on Linux and Windows.
