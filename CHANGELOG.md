@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-04 (flash the adapter from the app)
+
+Firmware (0.1.0) and wire protocol (v1) are unchanged. The controller can now flash the adapter itself, on Linux and Windows.
+Verification: see the README status table. On a physical board: `kvmit flash` on Linux (verified write, pairing kept by a
+default flash and wiped by `--erase-all`, refusal while the adapter's USB port is plugged in, recovery from a write killed
+halfway). In the Windows 11 VM with the board's COM bridge passed through: the CLI and the GUI wizard, and an MSI built, installed
+and uninstalled. Not exercised: the Linux GUI wizard, bare-metal Windows, the signed release pipeline with the new packaging
+before this tag. The flasher was adversarially reviewed over rounds 7-13 (docs/dev-process.md; round 13 by Claude Opus 5.5 because the usual reviewer was out of quota, a recorded deviation from STD-001, with a Codex round to follow); the adapter firmware now ships with the app.
+
 ### Added
 - `kvmit flash` (in progress for 0.3.0): writes the adapter's firmware through its UART (COM) port with the `espflash` library.
   It validates the image first, refuses the board's native USB port (which would type into the flashing computer), keeps the
