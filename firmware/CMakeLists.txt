@@ -16,3 +16,6 @@ endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(kvm-it-firmware)
+
+# The read-only boot drive (iPXE) is written into the `ipxe` partition together with the app by `idf.py flash`.
+esptool_py_flash_to_partition(flash "ipxe" "${CMAKE_CURRENT_SOURCE_DIR}/ipxe/ipxe.img")

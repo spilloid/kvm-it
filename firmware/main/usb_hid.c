@@ -11,19 +11,24 @@
 #include "freertos/task.h"
 #include "hid_state.h"
 #include "tinyusb.h"
+#include "usb_msc.h"
 
 static const char *TAG = "usb_hid";
 
-enum { ITF_KEYBOARD = 0, ITF_MOUSE = 1, ITF_COUNT = 2 };
+/* The mass-storage drive is the LAST interface, so the two boot-protocol HID interfaces keep the numbers 0 and 1 that BIOS/UEFI keyboard
+ * handling expects, and a firmware that ignores storage still sees exactly the keyboard and mouse it always did. */
+enum { ITF_KEYBOARD = 0, ITF_MOUSE = 1, ITF_MSC = 2, ITF_COUNT = 3 };
 
 /* No report IDs: each interface has exactly one report, which is also what the
  * boot protocol requires. */
 static const uint8_t kbd_report_desc[] = {TUD_HID_REPORT_DESC_KEYBOARD()};
 static const uint8_t mouse_report_desc[] = {TUD_HID_REPORT_DESC_MOUSE()};
 
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + ITF_COUNT * TUD_HID_DESC_LEN)
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + 2 * TUD_HID_DESC_LEN + TUD_MSC_DESC_LEN)
 #define EP_KBD_IN 0x81
 #define EP_MOUSE_IN 0x82
+#define EP_MSC_OUT 0x03
+#define EP_MSC_IN 0x83
 
 static char serial_str[13]; /* MAC as hex, stable per board */
 
@@ -34,12 +39,14 @@ static const char *string_desc[] = {
     serial_str,             /* 3: serial */
     "kvm-it keyboard",      /* 4 */
     "kvm-it mouse",         /* 5 */
+    "kvm-it boot drive",    /* 6 */
 };
 
 static const uint8_t config_desc[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_COUNT, 0, CONFIG_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
     TUD_HID_DESCRIPTOR(ITF_KEYBOARD, 4, HID_ITF_PROTOCOL_KEYBOARD, sizeof(kbd_report_desc), EP_KBD_IN, 8, 8),
     TUD_HID_DESCRIPTOR(ITF_MOUSE, 5, HID_ITF_PROTOCOL_MOUSE, sizeof(mouse_report_desc), EP_MOUSE_IN, 8, 8),
+    TUD_MSC_DESCRIPTOR(ITF_MSC, 6, EP_MSC_OUT, EP_MSC_IN, 64), /* full-speed bulk packet size */
 };
 
 static void housekeeping_task(void *arg);
@@ -99,6 +106,7 @@ esp_err_t usb_hid_init(void)
         return ESP_ERR_NO_MEM;
     }
     hid_state_init(&g_state);
+    usb_msc_init();
 
     const tinyusb_config_t cfg = {
         .device_descriptor = NULL, /* esp_tinyusb default (Espressif VID/PID) */

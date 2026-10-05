@@ -1,0 +1,10 @@
+#!ipxe
+# Runs when iPXE starts from the adapter's drive. DHCP, then the iPXE project's public demo menu, which proves the network path
+# end to end without needing a boot server of your own. Replace the URL with your own boot server's.
+echo kvm-it: starting network boot
+dhcp || goto failed
+chain http://boot.ipxe.org/demo/boot.php || goto failed
+exit
+:failed
+echo kvm-it: network boot failed, dropping to the iPXE shell
+shell

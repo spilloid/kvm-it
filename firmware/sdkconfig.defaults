@@ -6,12 +6,19 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # a wrong octal-PSRAM setting is a boot-loop risk on first flash. Revisit if
 # BLE/OTA buffers ever need it.
 
-# Native USB is owned by TinyUSB (two HID interfaces: boot keyboard, boot mouse).
+# Native USB is owned by TinyUSB (three interfaces: boot keyboard, boot mouse, and a read-only mass-storage drive carrying iPXE).
 # The console therefore stays on UART0, i.e. the board's "COM" USB-C port.
 CONFIG_ESP_CONSOLE_UART_DEFAULT=y
 CONFIG_TINYUSB_HID_COUNT=2
 CONFIG_TINYUSB_CDC_ENABLED=n
-CONFIG_TINYUSB_MSC_ENABLED=n
+# MSC is enabled for TinyUSB's class driver only; the storage callbacks are ours (usb_msc.c, read-only, served from the `ipxe`
+# partition). esp_tinyusb's own storage module is never referenced, so it is not linked.
+CONFIG_TINYUSB_MSC_ENABLED=y
+
+# Partition table: the three original partitions plus the `ipxe` drive image (see partitions.csv).
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 CONFIG_TINYUSB_NET_MODE_NONE=y
 
 # Recovery: a hung task resets the chip. The USB device re-enumerates on reboot.
