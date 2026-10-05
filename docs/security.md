@@ -69,6 +69,18 @@ provisioning credentials.
 The firmware stores no typed text and has no logging of key events beyond counters. The self-test types only
 the fixed non-secret string `HELLO FROM KVM`.
 
+## The boot drive (0.4.0)
+
+The adapter also presents a USB mass-storage drive carrying iPXE. What that does and does not change:
+
+- **No write path.** The firmware reports the drive write-protected and refuses every write command, so a compromised target cannot alter the image
+  or use the drive to persist anything on the adapter. (Verified on a Linux host: write-protect on, a read-write remount refused.)
+- **The settings and pairing are not reachable from the drive:** it is its own flash partition; the settings partition is separate.
+- **What it adds is trust in the network path.** iPXE boots whatever the boot server offers. The default script is the public iPXE demo over plain
+  HTTP, which is fine for proving the path and **not** for anything you care about: use your own server, prefer HTTPS and signed images.
+- **Secure Boot is the target's guard against unsigned boot code, and it will refuse this iPXE today.** Do not disable it on a machine you
+  care about just to try this. Making the drive work with Secure Boot on is planned work, not a promise yet.
+
 ## Windows controller (0.2.0)
 
 - **Pairing on Windows** uses the WinRT custom-pairing API and accepts the pairing request in code so no system

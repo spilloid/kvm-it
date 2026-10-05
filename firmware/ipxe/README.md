@@ -5,7 +5,7 @@ target can boot from the network. The drive is the `ipxe` flash partition (`../p
 
 | File | What |
 |---|---|
-| `ipxe.efi` | The official iPXE UEFI binary, **unmodified, unsigned**. Source: <https://boot.ipxe.org/x86_64-efi/ipxe.efi> (server `Last-Modified` 2026-10-01), fetched 2026-10-05, 1,163,776 bytes, SHA-256 `3b6285d2a1f8f184e86336a840c5e974780badfda06224acd5d3cf10a721ad81`. |
+| `ipxe.efi` | The official iPXE UEFI binary, **unmodified, unsigned**. Source: <https://boot.ipxe.org/x86_64-efi/ipxe.efi> (server `Last-Modified` 2026-10-01), fetched 2026-10-05, 1,163,776 bytes, SHA-256 `3b6285d2a1f8f184e86336a840c5e974780badfda06224acd5d3cf10a721ad81`; reports itself as `2.0.0+ (g6262f)`. |
 | `autoexec.ipxe` | The script iPXE runs from the drive: DHCP, then the iPXE project's public demo menu (proves the network path without a boot server of your own). Replace the URL with yours. |
 | `ipxe.img` | Built from the two files above by `scripts/build-ipxe-image.sh`: a 4 MiB MBR disk, one FAT16 partition marked as an EFI system partition, `EFI/BOOT/BOOTX64.EFI` + `autoexec.ipxe`. Deterministic: the same inputs give the same bytes. Committed so the firmware build (which runs in the ESP-IDF container) needs no disk tools. |
 

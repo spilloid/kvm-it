@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 # Firmware version reported over the serial console now and over BLE later.
 # Bump together with CHANGELOG.md and VERSION at the repo root.
-set(PROJECT_VER "0.1.0")
+set(PROJECT_VER "0.2.0")
 
 # The pinned ESP-IDF must carry patches/esp-idf-v5.5-nimble-conn-handle-index.patch (scripts/fw.sh applies it).
 # Without it NimBLE corrupts memory on connect on the ESP32-S3; refuse to build rather than ship that.

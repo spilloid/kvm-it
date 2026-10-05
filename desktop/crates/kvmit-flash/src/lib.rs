@@ -24,6 +24,9 @@ const ESP32S3_CHIP_ID: u16 = 9;
 const SECTOR: u32 = 4096;
 /// Where the bootloader reads the partition table, and so where the table part must be written and the installed one read.
 const PARTITION_TABLE_OFFSET: u32 = 0x8000;
+/// Partition type `data` and subtype `fat`: the only kind of partition an optional data image may be written to.
+const DATA_TYPE: u8 = 1;
+const DATA_FAT_SUBTYPE: u8 = 0x81;
 const MAX_MANIFEST: u64 = 64 * 1024;
 const MAX_ENTRIES: usize = 8;
 const MAX_FLASH: u32 = 16 * 1024 * 1024;
@@ -304,8 +307,8 @@ impl Image {
     /// SHA-256); a valid partition table at 0x8000 with one `nvs` partition and an app partition at the app's offset that the
     /// app fits in.
     pub fn validate(&self) -> Result<(), FlashError> {
-        if self.parts.len() != 3 {
-            return err(format!("expected bootloader, partition table and app (3 parts), found {}", self.parts.len()));
+        if !(3..=4).contains(&self.parts.len()) {
+            return err(format!("expected bootloader, partition table and app, plus at most one data image (3 or 4 parts), found {}", self.parts.len()));
         }
         if self.parts[0].offset != 0 {
             return err("the first part must be the bootloader at 0x0");
@@ -345,6 +348,22 @@ impl Image {
             Some(p) if p.size >= need => {}
             Some(p) => return err(format!("the app ({need} bytes) does not fit its partition ({} bytes)", p.size)),
             None => return err(format!("the partition table has no app partition at 0x{:x}", app.offset)),
+        }
+        // an optional data image (the adapter's read-only boot drive): it must be written into a FAT data partition of the table
+        // (never the settings, never anything else), fit it, and look like a disk or filesystem image (boot signature 55 AA)
+        for p in &self.parts[3..] {
+            match table.iter().find(|t| t.offset == p.offset) {
+                Some(t) if t.ptype == DATA_TYPE && t.subtype == DATA_FAT_SUBTYPE => {
+                    if p.data.len() as u64 > t.size as u64 {
+                        return err(format!("{} ({} bytes) does not fit its partition {:?} ({} bytes)", p.name, p.data.len(), t.name, t.size));
+                    }
+                }
+                Some(t) => return err(format!("{} would be written to partition {:?}, which is not a FAT data partition: only the app and one FAT data image are ever written", p.name, t.name)),
+                None => return err(format!("the partition table has no partition at 0x{:x} for {}", p.offset, p.name)),
+            }
+            if p.data.len() < 512 || p.data[510] != 0x55 || p.data[511] != 0xAA {
+                return err(format!("{} is not a disk or filesystem image (no 55 AA boot signature)", p.name));
+            }
         }
         Ok(())
     }

@@ -3,6 +3,17 @@
 ## [Unreleased]
 
 ### Added
+- **Network boot through the adapter (0.4.0, firmware 0.2.0).** The adapter now also presents a **4 MiB read-only USB mass-storage drive** (a third USB interface, after the
+  keyboard and mouse) carrying the unmodified iPXE UEFI binary and an `autoexec.ipxe` (DHCP, then the iPXE project's public demo menu). Pick it in a UEFI target's
+  boot menu to boot from the network. It is write-protected by the device (every write refused) and lives in its own `ipxe` flash partition; the settings
+  partition did not move, so existing adapters upgrade in place and keep their pairing. The USB product id changed from `303a:4008` to `303a:400a`.
+  Verified: on a Linux host with the real adapter (enumerates write-protected, whole disk byte-identical to the image, mounts read-only, writes refused); and in a UEFI
+  virtual machine with the real adapter passed through and Secure Boot off (iPXE booted a network Linux image). **Known limits:** Secure Boot on refuses the unsigned
+  iPXE ("Access Denied", recorded with `tools/ipxe-test/boot-vm.sh sb`), UEFI only (no legacy BIOS), the boot script is fixed to the demo menu (in-app editing is planned),
+  and a real PC booting from it has not been exercised yet. iPXE is GPL-2.0 with additional permissions: see `THIRD_PARTY_NOTICES.md` and `firmware/ipxe/README.md`.
+- The flasher writes one extra part, the boot drive image: it must land exactly in a FAT data partition of the new table (never the settings or any other partition),
+  fit it, and carry a boot signature; `scripts/refresh-firmware-release.py` refreshes `firmware/release` from a build.
+
 - Screenshots of the real app on the website and in the README (overview, adapter, video, keys, type, scripts, run log, input captured, flash adapter), taken by an
   automated harness (`tools/screenshots`) against a synthetic demo target and checked per scene; the demo picture's overlapping countdown text was fixed.
 - Documentation rewritten in a product voice with red-arrow annotated pictures: README, home page and getting-started now say what is true (a signed installer or an

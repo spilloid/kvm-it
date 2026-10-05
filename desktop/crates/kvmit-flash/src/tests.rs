@@ -100,7 +100,8 @@ fn the_committed_release_images_pass_the_strict_checks() {
     // always runs: firmware/release is what every package ships
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../firmware/release");
     let im = Image::from_build_dir(&dir).expect("firmware/release must be a valid image set");
-    assert_eq!(im.parts.len(), 3);
+    assert_eq!(im.parts.len(), 4, "bootloader, partition table, app and the boot drive");
+    assert_eq!(im.parts[3].name, "ipxe");
     im.check_keeps_settings().unwrap();
     assert_eq!(im.nvs_regions(), vec![(0x9000, 0xf000)]);
     // and its own table is its own installed table
@@ -457,4 +458,51 @@ fn the_parser_enforces_the_bootloaders_0xc00_window() {
     t.extend([0xFF; 32]);
     assert!(parse(&t).unwrap_err().0.contains("0xC00"));
     assert!(parse(&project_table()).is_ok());
+}
+
+fn data_table() -> Vec<u8> {
+    table(&[(1, 2, 0x9000, 0x6000, "nvs"), (1, 1, 0xf000, 0x1000, "phy_init"), (0, 0, 0x10000, 0x100000, "factory"), (1, 0x81, 0x110000, 0x400000, "ipxe")])
+}
+
+fn boot_image(len: usize) -> Vec<u8> {
+    let mut v = vec![0u8; len];
+    v[510] = 0x55;
+    v[511] = 0xAA;
+    v
+}
+
+fn four_parts(data_off: u32, data: Vec<u8>) -> Image {
+    let mut im = image_with(data_table(), 21_088, 0x10000);
+    im.parts.push(Part { name: "ipxe".into(), offset: data_off, data });
+    im
+}
+
+#[test]
+fn a_fat_data_image_in_its_own_partition_is_accepted_and_keeps_the_settings() {
+    let im = four_parts(0x110000, boot_image(4 << 20));
+    im.validate().unwrap();
+    im.check_keeps_settings().unwrap();
+    // an installed table that already has the data partition matches, and so does the old three-partition one (the settings are the same)
+    im.check_matches_installed(&data_table()).unwrap();
+    im.check_matches_installed(&project_table()).unwrap();
+}
+
+#[test]
+fn a_data_image_is_refused_unless_it_lands_exactly_in_a_fat_data_partition_that_fits() {
+    assert!(four_parts(0x120000, boot_image(4096)).validate().unwrap_err().0.contains("no partition at"));
+    assert!(four_parts(0x110000, boot_image((4 << 20) + 4096)).validate().unwrap_err().0.contains("does not fit"));
+    assert!(four_parts(0x9000, boot_image(4096)).validate().is_err(), "never into the settings");
+    assert!(four_parts(0xf000, boot_image(4096)).validate().is_err(), "never into phy_init");
+    assert!(four_parts(0x110000, vec![0u8; 4096]).validate().unwrap_err().0.contains("55 AA"));
+    // a data partition that is not FAT (subtype 0x82 = spiffs) is not a place the flasher writes
+    let mut im = four_parts(0x110000, boot_image(4096));
+    im.parts[1].data = table(&[(1, 2, 0x9000, 0x6000, "nvs"), (0, 0, 0x10000, 0x100000, "factory"), (1, 0x82, 0x110000, 0x400000, "ipxe")]);
+    assert!(im.validate().unwrap_err().0.contains("not a FAT data partition"));
+}
+
+#[test]
+fn more_than_one_data_image_or_a_fifth_part_is_refused() {
+    let mut im = four_parts(0x110000, boot_image(4096));
+    im.parts.push(Part { name: "extra".into(), offset: 0x510000, data: boot_image(4096) });
+    assert!(im.validate().unwrap_err().0.contains("3 or 4 parts"));
 }

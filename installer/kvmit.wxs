@@ -45,6 +45,9 @@
       <Component Id="FwInfo" Guid="*" Subdirectory="firmware">
         <File Id="FwInfoFile" Source="$(SourceDir)\firmware\FIRMWARE.txt" KeyPath="yes" />
       </Component>
+      <Component Id="FwBootDrive" Guid="*" Subdirectory="firmware">
+        <File Id="FwBootDriveFile" Source="$(SourceDir)\firmware\ipxe.img" KeyPath="yes" />
+      </Component>
       <Component Id="FwBootloader" Guid="*" Subdirectory="firmware\bootloader">
         <File Id="FwBootloaderFile" Source="$(SourceDir)\firmware\bootloader\bootloader.bin" KeyPath="yes" />
       </Component>

@@ -95,6 +95,23 @@ kvmit import payload.txt
 kvmit flash
 ```
 
+## 6. Boot a machine from the network (new in 0.4.0)
+
+The adapter is also a tiny **read-only USB drive** with iPXE on it. So a machine with nothing on it can fetch an installer, WinPE or a
+rescue image over the network, driven from your desk:
+
+1. With the adapter's **USB** port in the target, open the target's boot menu (usually **F12**, **F11** or **Esc** at power-on; kvm-it's
+   **Keys** button can press them for you).
+2. Pick the entry that says **kvm-it** (it is listed as a USB device, "UEFI kvm-it kvm-it HID adapter…").
+3. iPXE starts, asks your network for an address, and boots whatever the boot server offers. Out of the box it opens the iPXE
+   project's public demo menu, which proves the whole path without a server of your own.
+
+The drive is **read-only by design**: the adapter reports it write-protected, so nothing on the target can ever change it.
+
+Three honest limits for now: **UEFI only** (not legacy BIOS), **Secure Boot must be off** on the target (a stock iPXE is not signed, so
+Secure Boot refuses it; making that work is the next piece of work), and the boot script is fixed to the demo menu until editing it
+from the app lands (developers can change it today: [developing.md](developing.md)).
+
 ## When something is off
 
 - **Read the chips first.** They say which link is the problem.
@@ -105,6 +122,8 @@ kvmit flash
   [hardware guide](hardware.md).
 - **Keys stuck on the target:** *Release all keys* in the **Adapter** popup. If the app crashes, the adapter lets go of everything by
   itself within a few seconds (designed that way; not yet verified on hardware).
+- **The target does not offer a "kvm-it" boot entry, or says "Access Denied":** the boot drive is UEFI-only, and Secure Boot must be off
+  (see step 6).
 - **Flashing says an Espressif USB device is plugged in:** that is the safety check. Unplug the board's **USB** port (and any other ESP
   board) from this computer; keep only **COM**.
 

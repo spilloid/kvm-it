@@ -7,7 +7,7 @@ The board has two USB-C ports. They are **not interchangeable**:
 | Port (silkscreen) | Wired to | Use it for |
 |---|---|---|
 | **COM** | CH343 USB-UART bridge → ESP32-S3 UART0 | **Development**: flashing, serial log. Connect to your controller/dev PC. |
-| **USB** | ESP32-S3 native USB (GPIO19/20) | **Target**: this is the keyboard/mouse the target computer sees. Connect to the target. |
+| **USB** | ESP32-S3 native USB (GPIO19/20) | **Target**: this is the keyboard/mouse (and the read-only boot drive, see below) the target computer sees. Connect to the target. |
 
 Evidence from this repo's development host: with only the COM port connected, Linux reports
 `1a86:55d3 QinHeng Electronics USB Single Serial` (a WCH CH343) and creates `/dev/ttyACM0`. That matches the
@@ -120,10 +120,24 @@ scripts/fw.sh flash-monitor
 
 If the device node is different (`ls /dev/ttyACM* /dev/ttyUSB*`), pass it as the second argument.
 
+## The boot drive (firmware 0.2.0)
+
+The USB port also presents a **4 MiB read-only mass-storage drive** (the third USB interface, after the keyboard and mouse, so the two
+boot-protocol HID interfaces keep the numbers BIOS/UEFI expects). It holds an EFI system partition with iPXE (`EFI/BOOT/BOOTX64.EFI`) and an
+`autoexec.ipxe` script. It lives in its own flash partition (`ipxe`, 4 MiB at 0x110000); the settings partition (and so the pairing) has not
+moved, so existing adapters upgrade in place.
+
+- **Read-only:** the drive reports itself write-protected and the firmware refuses every write.
+- **UEFI only.** Pick the "kvm-it" entry in the target's boot menu. Legacy BIOS boot is not supported.
+- **Secure Boot must be off** on the target for now: a stock iPXE is unsigned and Secure Boot refuses it.
+- **Linux host:** it shows up as a write-protected `/dev/sdX`; `sha256sum` of the whole disk equals `firmware/ipxe/ipxe.img`.
+- Serial log lines (`usb_msc`) say when the target configures the device and when it first reads the drive.
+- Provenance, licence and how to rebuild the image: [`firmware/ipxe/README.md`](https://github.com/spilloid/kvm-it/blob/main/firmware/ipxe/README.md).
+
 ## Verification checklist — please report back
 
 Already hardware-verified (2026-10-03): flash over COM; USB enumeration (`lsusb`: `303a:4008`, keyboard + mouse
-boot HID); the old M2 self-test typed. The 0.1.0 firmware **no longer types at boot** (self-test is the
+boot HID; since firmware 0.2.0 the product id is `303a:400a` because the device also has the boot drive); the old M2 self-test typed. The 0.1.0 firmware **no longer types at boot** (self-test is the
 `KVMIT_SELFTEST` option, default off).
 
 Hardware-verified 2026-10-03 (Surface Laptop 4, Intel AX201, BlueZ 5.x; board on COM only, USB port not on a
