@@ -457,3 +457,19 @@ all writes an attempt makes (link state, status, notices) now run under the link
 clear state under the same lock (lock order: link, then status/notice), so a write cannot slip between a check and the cancel.
 - Tests: unchanged (29 flash-crate tests); clippy clean; hardware GUI flow (Scan > Connect > wizard blocks > Disconnect > flash) passes. The
   pairing-in-flight guard is not exercised (the test board was already paired, and Windows pairing returns at once).
+
+### Round 12 (re-review of the round-11 fixes, `21aa7c1..af10e5c`)
+
+Round-11 findings 2, 3 and 4 verified resolved (removing `release` removed its ownership and controller problems; attempt writes are atomic with the
+cancels). The replacement design's pairing flag drew three Medium findings, all confirmed:
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | Med | The flag is cleared as soon as pairing returns, before the connection loop owns anything: a cancel in that gap still strands the link | **Confirmed.** The guard is now held until the first connection attempt has resolved (Connected published, or failed) |
+| 2 | Med | A queued pairing can start after the wizard opened (the flag is set inside the task; the entry generation gate was gone) | **Confirmed.** The pairing is registered synchronously in `start_link`, before the task is spawned, and the task checks its generation before calling `pair` |
+| 3 | Med | One shared boolean: overlapping pairings clear each other's flag | **Confirmed.** A counter with a drop guard (`PairingGuard`): registered per attempt, released on drop even if the task panics or is dropped |
+
+- Tests: 29 flash-crate tests; clippy clean. The guard has no unit test (it lives in the egui app); hardware (Windows 11 VM, the board):
+  Scan > Connect > wizard blocks > Disconnect > flash verified, and, after a Windows unpair, **Pair & connect** through the GUI inside the board's
+  pairing window went Connecting > Connected. Not exercised: Flash adapter… enablement while a pairing is in flight (too brief to observe on
+  Windows), Linux pairing.

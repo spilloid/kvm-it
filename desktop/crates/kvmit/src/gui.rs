@@ -44,6 +44,23 @@ enum Input {
     Chord(&'static str, Vec<Key>),
 }
 
+/// Counts one pairing in flight for as long as it lives: registered synchronously when the attempt starts, released on drop (also
+/// if the task panics or is dropped), so the count can neither stay stuck nor be cleared by another pairing.
+struct PairingGuard(Arc<std::sync::atomic::AtomicUsize>);
+
+impl PairingGuard {
+    fn new(count: &Arc<std::sync::atomic::AtomicUsize>) -> PairingGuard {
+        count.fetch_add(1, Ordering::SeqCst);
+        PairingGuard(count.clone())
+    }
+}
+
+impl Drop for PairingGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Sender into the ordered input pump. Every queued item is counted until the pump has finished it, so the UI
 /// can tell when input is fully idle (nothing queued, nothing in flight) before starting another producer.
 #[derive(Clone)]
@@ -78,8 +95,8 @@ pub struct App {
     cfg: Config,
     link: Arc<Mutex<Link>>,
     link_gen: Arc<AtomicU64>,
-    /// A pairing is in flight (it cannot be cancelled, so the flasher waits for it).
-    pairing: Arc<std::sync::atomic::AtomicBool>,
+    /// Pairings in flight, counted from the moment they are started (a pairing cannot be cancelled, so the flasher waits).
+    pairing: Arc<std::sync::atomic::AtomicUsize>,
     scan: Arc<Mutex<Scan>>,
     status: Arc<Mutex<Option<StatusInfo>>>,
     notice: Arc<Mutex<String>>,
@@ -178,7 +195,11 @@ impl App {
         };
         self.cfg.last_device = Some(id.clone());
         self.cfg.save();
-        let (link, gen_ref, status, notice, pairing) = (self.link.clone(), self.link_gen.clone(), self.status.clone(), self.notice.clone(), self.pairing.clone());
+        let (link, gen_ref, status, notice) = (self.link.clone(), self.link_gen.clone(), self.status.clone(), self.notice.clone());
+        // Registered here, before the task is spawned, and held until the first connection attempt has resolved (Connected
+        // published, or failed): from the first click until then the flasher cannot open, so no cancel can find a pairing, or the
+        // link it leaves open, without an owner.
+        let mut pairing = pair_first.then(|| PairingGuard::new(&self.pairing));
         // The only way this attempt touches shared state: run `f` if the attempt is still the current one, while holding the
         // link lock. The cancels (`cancel_pending_link`, `stop_link`) bump the generation and clear the state under that same
         // lock, so a cancelled or superseded attempt can never write after the cancel, not even between a check and a write.
@@ -200,10 +221,10 @@ impl App {
         };
         self.rt.spawn(async move {
             if pair_first {
-                pairing.store(true, Ordering::SeqCst); // a pairing cannot be cancelled: the flasher waits for it (see `Flash adapter…`)
-                let result = backend::pair(&id).await;
-                pairing.store(false, Ordering::SeqCst);
-                if let Err(e) = result {
+                if gen_ref.load(Ordering::SeqCst) != generation {
+                    return; // superseded before it started
+                }
+                if let Err(e) = backend::pair(&id).await {
                     with_link(&|l: &mut Link| {
                         *l = Link::Disconnected;
                         *notice.lock().unwrap() = format!("Pairing failed: {e}. Re-plug the adapter (15 s pairing window) or press BOOT briefly on it, then try again.");
@@ -225,6 +246,7 @@ impl App {
                             conn.disconnect().await;
                             break;
                         }
+                        pairing.take(); // connected and published: from here the app owns the link
                         with_link(&|_| notice.lock().unwrap().clear());
                         ctx.request_repaint();
                         // poll target-USB state while connected, and give up the link if this attempt is cancelled
@@ -258,6 +280,7 @@ impl App {
                         }
                     }
                 }
+                pairing.take(); // the first attempt has resolved: whatever pairing left behind is now owned (or closed)
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
         });
@@ -921,7 +944,7 @@ impl App {
             }
         }
         ui.separator();
-        let pairing = self.pairing.load(Ordering::SeqCst);
+        let pairing = self.pairing.load(Ordering::SeqCst) > 0;
         let hint = if pairing { "A pairing is in progress: wait for it to finish" } else { "Write the adapter's firmware through its COM USB port" };
         if ui.add_enabled(self.flash.is_none() && !pairing, egui::Button::new("Flash adapter…")).on_hover_text(hint).clicked() {
             // a connection attempt in progress or waiting to retry (no Disconnect to press) must not outlive this
