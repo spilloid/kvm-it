@@ -13,7 +13,7 @@ button in the app's Adapter popup or `kvmit boot-drive on`; an adapter that upgr
   drive: Turn on (restarts adapter)**, or `kvmit boot-drive [on|off]` (`kvmit status` shows it). The setting is stored in the adapter; the adapter restarts when it
   changes, because a USB descriptor is fixed for a session (the target sees it re-plug, with the drive added or removed). The drive is write-protected by the
   device, lives in its own `ipxe` flash partition (the settings partition did not move, so existing adapters upgrade in place and keep their pairing), and the USB
-  product id is `303a:400a` (was `303a:4008`; the adapter without the drive keeps the keyboard-and-mouse-only descriptor it always had).
+  product id is `303a:400a` (was `303a:4008`) **in both states**, so a USB allow-list or VM passthrough keyed on the old product id needs updating; with the drive off the configuration is still just the keyboard and mouse interfaces. The setting is remembered across power cycles and re-flashes.
 - **Safe default script:** on the drive, iPXE waits five seconds for a key and otherwise exits with a failure status, so a target that boots this drive by accident
   carries on down its boot order; nothing is fetched or run without a key press. A key press does DHCP and chains to the iPXE project's public demo menu over HTTPS
   (replace the URL with your own boot server: `docs/developing.md`). A legacy BIOS that tries the disk moves on (its boot sector is `INT 18h`; untested).

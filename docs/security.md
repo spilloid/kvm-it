@@ -72,7 +72,7 @@ the fixed non-secret string `HELLO FROM KVM`.
 ## The boot drive (0.4.0)
 
 The adapter can also present a USB mass-storage drive carrying iPXE. **It is off by default** and is switched on deliberately (the Adapter popup, or `kvmit boot-drive on`;
-the adapter stores the setting and restarts). While it is off, the adapter's USB descriptor is exactly the keyboard and mouse it has always presented. What the drive does
+the adapter stores the setting and restarts). While it is off, the adapter's USB configuration is just the keyboard and mouse interfaces it has always presented (its product id did change from `303a:4008` to `303a:400a` with firmware 0.2.0, drive on or off). What the drive does
 and does not change when it is on:
 
 - **No write path.** The firmware reports the drive write-protected and rejects every write-class command, so a compromised target cannot alter the image or use the

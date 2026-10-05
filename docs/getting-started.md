@@ -98,7 +98,7 @@ kvmit flash
 ## 6. Boot a machine from the network (new in 0.4.0)
 
 The adapter can also be a tiny **read-only USB drive** with iPXE on it, so a machine with nothing on it can fetch an installer, WinPE or a rescue image over the
-network, driven from your desk. **It is off until you turn it on**, so by default your target sees only a keyboard and mouse, exactly as before.
+network, driven from your desk. **It is off until you turn it on**, so by default your target sees only a keyboard and mouse. (The setting is remembered, so it stays on across power cycles until you turn it off.)
 
 1. In kvm-it, click the **Adapter** chip and **Boot drive: Turn on (restarts adapter)**. (Command line: `kvmit boot-drive on`.) The adapter restarts, so the
    target sees it re-plug, and the drive appears. Turn it off the same way when you are done.
@@ -110,7 +110,7 @@ network, driven from your desk. **It is off until you turn it on**, so by defaul
 
 The drive is **read-only by design**: the adapter reports it write-protected and rejects every write, so nothing on the target can ever change it.
 
-If a target's firmware dislikes the extra drive, turn it off (the adapter goes back to exactly the keyboard and mouse it always was), or flash the previous firmware
+If a target's firmware dislikes the extra drive, turn it off (the adapter goes back to presenting just a keyboard and mouse), or flash the previous firmware
 from the 0.3.0 release with `kvmit flash --firmware <its firmware folder>`; your pairing is kept.
 
 Three honest limits for now: **UEFI only** (not legacy BIOS), **Secure Boot must be off** on the target (a stock iPXE is not signed, so Secure Boot refuses it; making

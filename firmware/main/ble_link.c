@@ -376,10 +376,10 @@ static bool o_set_boot_drive(void *c, bool enabled)
 {
     (void)c;
     if (enabled == kvm_config_boot_drive()) return true; /* already so: no restart */
-    if (kvm_config_set_boot_drive(enabled) != ESP_OK) return false;
     static esp_timer_handle_t t;
     const esp_timer_create_args_t a = {.callback = restart_cb, .name = "bootdrv_restart"};
-    if (!t && esp_timer_create(&a, &t) != ESP_OK) return false;
+    if (!t && esp_timer_create(&a, &t) != ESP_OK) return false; /* before the commit: a failure here must leave the stored setting alone */
+    if (kvm_config_set_boot_drive(enabled) != ESP_OK) return false;
     esp_timer_start_once(t, 500 * 1000);
     return true;
 }

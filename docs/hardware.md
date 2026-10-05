@@ -127,7 +127,7 @@ numbers BIOS/UEFI expects). It holds an EFI system partition with iPXE (`EFI/BOO
 4 MiB at 0x110000); the settings partition (and so the pairing) has not moved, so existing adapters upgrade in place.
 
 - **Off by default.** Turn it on in the app (Adapter popup > Boot drive) or with `kvmit boot-drive on`; the adapter stores the setting and restarts, because the USB
-  descriptor is fixed for a session (the target sees it re-plug). With it off, the descriptor is the keyboard and mouse only (`303a:4008`); with it on, `303a:400a`.
+  descriptor is fixed for a session (the target sees it re-plug). Off, the adapter presents two interfaces (keyboard, mouse); on, three (plus the drive). The USB product id is `303a:400a` in both states (it was `303a:4008` before firmware 0.2.0), so tell your tooling by interface list, not by product id. The setting is remembered across power cycles and re-flashes (only `--erase-all` clears it).
 - **Read-only:** the drive reports itself write-protected and the firmware refuses every write.
 - **UEFI only.** Pick the "kvm-it" entry in the target's boot menu. Legacy BIOS is not supported: the disk's boot sector just hands over to the next boot device (INT 18h),
   and no partition is marked active, so a legacy BIOS that tries the drive should move on instead of hanging (untested).
@@ -139,8 +139,8 @@ numbers BIOS/UEFI expects). It holds an EFI system partition with iPXE (`EFI/BOO
 
 ## Verification checklist — please report back
 
-Already hardware-verified (2026-10-03): flash over COM; USB enumeration (`lsusb`: `303a:4008`, keyboard + mouse
-boot HID; with firmware 0.2.0 and the boot drive turned on the product id is `303a:400a`); the old M2 self-test typed. The 0.1.0 firmware **no longer types at boot** (self-test is the
+Already hardware-verified (2026-10-03): flash over COM; USB enumeration (`lsusb`: `303a:4008` on firmware 0.1.0, keyboard + mouse
+boot HID; firmware 0.2.0 is `303a:400a` whether the boot drive is on or off); the old M2 self-test typed. The 0.1.0 firmware **no longer types at boot** (self-test is the
 `KVMIT_SELFTEST` option, default off).
 
 Hardware-verified 2026-10-03 (Surface Laptop 4, Intel AX201, BlueZ 5.x; board on COM only, USB port not on a

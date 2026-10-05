@@ -49,7 +49,7 @@ def main() -> None:
     (REL / "ipxe-SOURCE.txt").write_text(
         "ipxe.img carries the iPXE UEFI binary (EFI/BOOT/BOOTX64.EFI), built from UNMODIFIED upstream iPXE source by scripts/build-ipxe.sh\n"
         "in the kvm-it repository (default configuration, x86-64 UEFI target; the build is repeatable with the pinned container image).\n"
-        f"Upstream source: https://github.com/ipxe/ipxe at commit {commit} (2026-10-01, v2.0.0-375).\n"
+        f"Upstream source: https://github.com/ipxe/ipxe at commit {commit}.\n"
         f"An archive of exactly that source, ipxe-{commit[:12]}-source.tar.gz (with a .sha256), is attached to every kvm-it release that ships this file.\n"
         "iPXE is licensed under the GNU General Public License, version 2 (individual files carry their own declarations; see COPYING in the\n"
         "source and https://ipxe.org/licensing). The licence text is ipxe-COPYING.GPLv2 next to this file. It is shipped as a separate data image,\n"
