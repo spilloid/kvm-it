@@ -28,6 +28,14 @@
 - Build toolchain is Rust 1.99 (was 1.90), needed for the in-app flasher planned for 0.3.0; clippy lints fixed (`as_chunks`, an
   always-true `min` in a test, explicit `f32` for stroke widths). No behaviour change. The AppImage builder stays on 1.90 for now.
 
+### Known limitations
+- Flashing: identical boards behind a USB bridge with no serial number cannot be told apart (the app says so and re-checks chip, flash size and settings layout); a USB device
+  the OS will not let the enumerator describe, one plugged in after the check, or an adapter's USB port running other firmware under another vendor id are not detected as
+  a reason to refuse. Firmware is not signed; `KVMIT_FIRMWARE` / `--firmware` can point at any valid ESP32-S3 image set.
+- BLE lifecycle around the flasher (review round 13, Low): pairing and then immediately connecting elsewhere can leave an idle OS-level link unowned, and a failed first
+  connection after a pairing may not close its link; both are dropped when the board is flashed (it resets). Planned for 0.3.1.
+- The Linux GUI wizard, Linux pairing with the new code and bare-metal Windows were not exercised.
+
 ## [0.2.1] - 2026-10-04 (video switching, logo, Linux AppImage)
 
 Patch release on 0.2.0; firmware (0.1.0) and wire protocol (v1) are unchanged. Verification: the video-switch fix was
