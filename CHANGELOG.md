@@ -28,10 +28,11 @@ button in the app's Adapter popup or `kvmit boot-drive on`; an adapter that upgr
 ### Verified (and what was not)
 - **Real adapter on a Linux host:** enumerates as keyboard + mouse + a write-protected 4 MiB disk; the whole disk reads back byte-identical to the image; mounts read-only;
   raw SCSI commands sent straight at the device (bypassing the host's write-protect flag) are refused (WRITE(10) as DATA PROTECT; WRITE(6)/(12), FORMAT UNIT, WRITE SAME
-  and UNMAP as invalid commands) and the disk is unchanged. These ran on the first build of the image; the final image (and the off-by-default firmware, the toggle over
-  Bluetooth and the flasher's four-image path on hardware) are listed in the README status row with what was run on them.
+  and UNMAP as invalid commands) and the disk is unchanged. These first ran on an early build of the image. On the final firmware (app sha256 6a5d0525…, image sha256 587650f8…) the following were re-run on the real
+  adapter (2026-10-05): the four-image flash over COM with the pairing kept (`kvmit flash`), boot with the drive off, `kvmit boot-drive on` over Bluetooth (from a
+  Windows 11 VM) giving the disk with identical readback, read-only, a raw WRITE(10) refused as DATA PROTECT, and `off` returning to keyboard and mouse only.
 - **UEFI VM, Secure Boot off:** with no key iPXE falls through to the firmware's boot menu; with a key it gets an address, fetches the demo over HTTPS and boots a network Linux.
-- **Not exercised:** a real PC booting from the drive, a Windows host seeing the drive, legacy BIOS (unsupported). **Secure Boot on refuses the unsigned iPXE** ("Access
+- **Not exercised:** the app's Boot drive button (the CLI command was used), the flash wizard's four-image path in the packaged app, a real PC booting from the drive, a Windows host seeing the drive, legacy BIOS (unsupported). **Secure Boot on refuses the unsigned iPXE** ("Access
   Denied", reproduced in an OVMF VM with the stock keys): a known limit, tracked for the 0.4.x releases.
 - Reviewed over several rounds; the review log (`docs/dev-process.md`) records each finding. Claude Opus 5.5 reviewed in place of the usual reviewer while it was out of
   quota (a recorded deviation from STD-001); a Codex round also ran over an earlier state.
