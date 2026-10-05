@@ -482,7 +482,7 @@ esp_err_t ble_link_start(void)
     ESP_ERROR_CHECK(esp_timer_create(&ta, &g_window_timer));
 
     proto_ops_t ops = {NULL, o_down, o_up, o_rel, o_move, o_btn, o_wheel, o_mounted, o_held, o_counts, o_name, o_set_boot_drive, o_boot_drive};
-    uint8_t uuid[16], fw[3] = {0, 1, 0};
+    uint8_t uuid[16], fw[3] = {0, 2, 0};
     char name[KVM_NAME_MAX + 1];
     kvm_config_uuid(uuid);
     kvm_config_name(name);
