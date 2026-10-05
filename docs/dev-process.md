@@ -473,3 +473,23 @@ cancels). The replacement design's pairing flag drew three Medium findings, all 
   Scan > Connect > wizard blocks > Disconnect > flash verified, and, after a Windows unpair, **Pair & connect** through the GUI inside the board's
   pairing window went Connecting > Connected. Not exercised: Flash adapter… enablement while a pairing is in flight (too brief to observe on
   Windows), Linux pairing.
+
+### Round 13 (final verification of the round-12 fixes, `af10e5c..96cb43f`) — reviewer: Claude Opus 5.5
+
+**Deviation from STD-001, recorded:** the usual reviewer (codex `gpt-6-astra`) was out of quota until 23:55 on 2026-10-04 (round 13 failed with a usage
+limit and produced no findings). With the maintainer's explicit agreement, this round was done by a Claude Opus 5.5 subagent (read-only, same scope and
+prompt shape as the Codex rounds), a different model from the one that wrote the code but in the same family. A Codex round 13 over the same diff is to be
+run after the quota resets and its result logged here; it also covers the follow-up below.
+
+Result: the three round-12 findings are resolved; **no High or Medium defect**; three Low (plausible) items, accepted for 0.3.0 and listed in the CHANGELOG
+known limitations:
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| 1 | Low | A pairing that is *superseded* (a deliberate second click on Connect while it runs) returns without connect and may leave BlueZ's leftover link with no owner; the wizard only checks `Connected`, so it cannot see it | Accepted for 0.3.0 (needs a second click inside the pairing seconds; the link is idle and flashing resets the board, which drops it). Fix planned: disable Pair & connect / Connect while a pairing is in flight |
+| 2 | Low | `backend::connect` returns early with `?` after `p.connect()` succeeded (on `discover_services`/`subscribe`/`notifications` errors) without disconnecting; if that is the first attempt after a pairing the guard is released with the link open | Accepted for 0.3.0 (older code outside this diff). Fix planned: disconnect on those error paths |
+| 3 | Low | The guard is held for as long as `pair` plus the first connect take; neither has an overall timeout, so a hang keeps Flash adapter… disabled until it returns | Accepted; no path leaks the count permanently |
+
+Checked and found sound by the reviewer: guard lifetime and `take()` placement; no task leaves the state `Connecting`; lock order (link, then status/notice) and
+no await under a std mutex; `cancel_pending_link`/`stop_link`; auto-connect at startup; no path to flashing while connected or pairing other than the two orphan
+links above.
