@@ -13,7 +13,7 @@ HDMI capture card, and one app.
 
 <img src="assets/screenshots/tour-overview.png" alt="The kvm-it window: Adapter, Target USB, Video and Capture chips and the Keys, Type and Scripts buttons over a live picture of the target (a synthetic demo)" style="max-width:100%">
 
-*The real app (0.3.0, Windows 11) with a synthetic demo target in place of a real machine's screen, so nothing private is ever on show.*
+*The real app (0.4.0, Windows 11) with a synthetic demo target in place of a real machine's screen, so nothing private is ever on show.*
 
 ## How easy is it?
 
@@ -53,4 +53,4 @@ HDMI capture card, and one app.
 ## What is verified
 
 Every claim here is labelled **built**, **host-tested**, **VM-verified** or **hardware-verified**. The authoritative table is in the
-[README](https://github.com/spilloid/kvm-it#status-v030).
+[README](https://github.com/spilloid/kvm-it#status-v040).

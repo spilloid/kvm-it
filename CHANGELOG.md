@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-05 (network boot through the adapter)
+
+Firmware 0.2.0 (the adapter now also presents a read-only boot drive); wire protocol (v1) unchanged. The desktop app is unchanged apart from the flasher writing the new
+image. Verification: see the README status table. On the real adapter: enumeration as a write-protected 4 MiB disk, a byte-identical readback and a read-only mount on a
+Linux host, and (with the adapter passed through) a UEFI virtual machine with Secure Boot off booting iPXE and then a network Linux image. **Not exercised:** a real PC
+booting from it, the Windows host view of the drive, legacy BIOS (unsupported), and the four-image flash through the packaged app on hardware. **Secure Boot on refuses the
+unsigned iPXE** (a known limit, tracked for the 0.4.x releases). The feature was reviewed in the order Claude Opus 5.5 (a recorded deviation from STD-001: the usual
+reviewer was out of quota and the maintainer chose to release on this review) and, as a follow-up still to be run, Codex.
+
 ### Added
 - **Network boot through the adapter (0.4.0, firmware 0.2.0).** The adapter now also presents a **4 MiB read-only USB mass-storage drive** (a third USB interface, after the
   keyboard and mouse) carrying the unmodified iPXE UEFI binary and an `autoexec.ipxe` (DHCP, then the iPXE project's public demo menu). Pick it in a UEFI target's

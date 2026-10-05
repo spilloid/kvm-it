@@ -8,7 +8,7 @@ See it. Type at it. Install it. No software on the target, no network, no hundre
 HDMI capture card, and one app.
 
 <p align="center"><img src="docs/assets/screenshots/tour-overview.png" alt="The kvm-it window: Adapter, Target USB, Video and Capture chips and the Keys, Type and Scripts buttons over a live picture of the target (a synthetic demo)" width="820"></p>
-<p align="center"><sub>The real app (0.3.0, Windows 11). The picture is a synthetic demo target, never a real machine.</sub></p>
+<p align="center"><sub>The real app (0.4.0, Windows 11). The picture is a synthetic demo target, never a real machine.</sub></p>
 
 ## Three steps
 
@@ -49,7 +49,7 @@ the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what t
 
 **Hacking on it?** Building from source (that is where Rust and Docker live): [docs/developing.md](docs/developing.md).
 
-## Status: v0.3.0
+## Status: v0.4.0
 
 Labels are strict: **built** = compiles; **host-tested** = automated tests pass in CI/containers;
 **hardware-verified** = run on a physical board; **VM-verified** = run in a Windows 11 virtual machine on a Linux
@@ -72,7 +72,7 @@ not bare-metal Windows).
 | Desktop: egui GUI, v0.2.0 layout (top-bar status chips, popups, run-log strip) | **VM-verified** on Windows (chips, popups, capture, error dialog). **Not yet checked on Linux** since the redesign; exposes a UI Automation tree for screen readers and tests. No automated GUI tests |
 | Desktop: Windows keyboard grab (Win, Alt+Tab, ... go to the target while captured) | **VM-verified**: Win and Alt+Tab never reach the controller while captured, a held key reaches the adapter, Ctrl+Alt+Esc releases and the keyboard returns, and a hung GUI cannot trap the keyboard (the helper stops swallowing after 3 s). Not verified: non-US layouts and IMEs, bare metal. Linux has no equivalent |
 | Desktop: shared client change (mouse motion split into 127-unit frames, ordered before clicks) | host-tested; **not re-run on a Linux board yet** |
-| Windows as the controller (app) | **v0.3.0**: runs in a Windows 11 VM with real hardware passed through (rows above); **not verified on bare-metal Windows**. Windows as the *target* works as before: it only sees a USB keyboard and mouse |
+| Windows as the controller (app) | **v0.4.0**: runs in a Windows 11 VM with real hardware passed through (rows above); **not verified on bare-metal Windows**. Windows as the *target* works as before: it only sees a USB keyboard and mouse |
 | Desktop: flash the adapter (`kvmit flash`, GUI **Flash adapter…**) | **hardware-verified** on Linux with a physical board over its COM port (`kvmit flash`): verified write of bootloader, partition table and app; the pairing survives a default flash and is wiped by `--erase-all`; refuses while the adapter's own USB port is plugged in (also with `--any-port`). **VM-verified** on Windows 11 (board's COM bridge passed through): the same CLI and the GUI wizard, end to end. an interrupted write was recovered by flashing again. **Not exercised:** the Linux GUI wizard, bare-metal Windows, a factory-fresh board (the full-erase path, run only on boards that already had firmware) |
 | Firmware 0.2.0: read-only USB boot drive carrying iPXE (third USB interface) | **hardware-verified** on a Linux host with the real adapter: enumerates beside the keyboard and mouse as a 4 MiB write-protected disk, the whole disk reads back byte-identical to the image, mounts read-only with iPXE inside, writes refused; pairing survived the new partition table. **VM-verified with the real adapter passed through:** a UEFI VM with Secure Boot **off** booted from it, iPXE got an address and booted a network Linux image. **With Secure Boot on (stock Microsoft keys) the firmware refuses the unsigned iPXE** ("Access Denied"): a known limit, work planned. **Not exercised:** a real PC booting from it, a Windows 11 host seeing it, legacy BIOS (not supported) |
 | Built-in OOBE script | template only, never run on a real OOBE |
