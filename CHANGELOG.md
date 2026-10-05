@@ -9,7 +9,7 @@ Verification: see the README status table. On a physical board: `kvmit flash` on
 default flash and wiped by `--erase-all`, refusal while the adapter's USB port is plugged in, recovery from a write killed
 halfway). In the Windows 11 VM with the board's COM bridge passed through: the CLI and the GUI wizard, and an MSI built, installed
 and uninstalled. Not exercised: the Linux GUI wizard, bare-metal Windows, the signed release pipeline with the new packaging
-before this tag. The flasher was adversarially reviewed (docs/dev-process.md, rounds 7 and 8).
+before this tag. The flasher was adversarially reviewed over rounds 7-13 (docs/dev-process.md; round 13 by Claude Opus 5.5 because the usual reviewer was out of quota, a recorded deviation from STD-001, with a Codex round to follow); the adapter firmware now ships with the app.
 
 ### Added
 - `kvmit flash` (in progress for 0.3.0): writes the adapter's firmware through its UART (COM) port with the `espflash` library.
