@@ -493,3 +493,11 @@ known limitations:
 Checked and found sound by the reviewer: guard lifetime and `take()` placement; no task leaves the state `Connecting`; lock order (link, then status/notice) and
 no await under a std mutex; `cancel_pending_link`/`stop_link`; auto-connect at startup; no path to flashing while connected or pairing other than the two orphan
 links above.
+
+### Release cut (0.3.0): verifier found a latent flaw
+
+The first `v0.3.0` release run failed in `verify-release.py` ("kvmit-gui.exe: the version 0.3.0 is not stamped into the binary"); signing, packaging and the new
+firmware checks had all passed. The check searches the executable for the version string; for 0.2.1 it passed only because the dependency path
+`windows-future-0.2.1/...` is in the binary. The GUI had never embedded its own version. Fix: the window title is `kvm-it <version>` (a test guards it). Nothing was ever
+attached to the v0.3.0 release, so with the maintainer's agreement the tag and the empty release were deleted and 0.3.0 re-cut on the fixed commit. (The Opus-5.5 review
+did not cover this; it is one format string and a test.)

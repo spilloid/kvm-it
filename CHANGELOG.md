@@ -37,6 +37,10 @@ before this tag. The flasher was adversarially reviewed over rounds 7-13 (docs/d
 - Build toolchain is Rust 1.99 (was 1.90), needed for the in-app flasher planned for 0.3.0; clippy lints fixed (`as_chunks`, an
   always-true `min` in a test, explicit `f32` for stroke widths). No behaviour change. The AppImage builder stays on 1.90 for now.
 
+### Changed (found cutting the release)
+- The window title now carries the version ("kvm-it 0.3.0"), which also stamps it into `kvmit-gui.exe`. `scripts/verify-release.py` checks that stamp, and it had only
+  passed for 0.2.1 by coincidence (a dependency's source path in the executable happened to contain "0.2.1"): the GUI never embedded its own version before.
+
 ### Known limitations
 - Flashing: identical boards behind a USB bridge with no serial number cannot be told apart (the app says so and re-checks chip, flash size and settings layout); a USB device
   the OS will not let the enumerator describe, one plugged in after the check, or an adapter's USB port running other firmware under another vendor id are not detected as
