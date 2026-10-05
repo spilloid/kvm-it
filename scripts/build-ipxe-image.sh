@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the adapter's read-only boot drive: a 4 MiB disk image (MBR + one FAT16 partition marked as an EFI system partition)
+# Build the adapter's read-only boot drive: a 4 MiB disk image (MBR + one FAT16 partition of type EFI system partition, not active)
 # holding EFI/BOOT/BOOTX64.EFI (iPXE) and autoexec.ipxe. Output: firmware/ipxe/ipxe.img, flashed into the `ipxe` partition.
 #   scripts/build-ipxe-image.sh
 # Needs dosfstools, mtools and util-linux (sfdisk) on the build machine. The image is deterministic for the same inputs
@@ -14,7 +14,10 @@ export SOURCE_DATE_EPOCH=1700000000       # mtools/mkfs.vfat timestamps
 for f in "$D/ipxe.efi" "$D/autoexec.ipxe"; do [ -f "$f" ] || { echo "missing $f" >&2; exit 1; }; done
 rm -f "$OUT"; truncate -s "${SIZE_MIB}M" "$OUT"
 # one MBR partition, type 0xEF (EFI system partition), filling the disk after the 1 MiB offset
-printf 'label: dos\nlabel-id: 0x4b564d49\nunit: sectors\n\n%s,,ef,*\n' "$OFFSET_SECTORS" | sfdisk -q "$OUT"
+printf 'label: dos\nlabel-id: 0x4b564d49\nunit: sectors\n\n%s,,ef\n' "$OFFSET_SECTORS" | sfdisk -q "$OUT"
+# The MBR is not bootable on purpose: this disk is for UEFI. A legacy BIOS that tries it anyway would run empty boot code and hang, so
+# the boot sector holds INT 18h (CD 18: "boot failed, try the next device") and a spin loop (EB FE), and no partition is marked active.
+printf '\xcd\x18\xeb\xfe' | dd of="$OUT" bs=1 seek=0 conv=notrunc status=none
 PART_SECTORS=$(( SIZE_MIB * 2048 - OFFSET_SECTORS ))
 mkfs.vfat -F 16 -s 1 -S 512 -i 4b564d49 --offset "$OFFSET_SECTORS" "$OUT" "$(( PART_SECTORS / 2 ))" >/dev/null
 IMG="$OUT@@$(( OFFSET_SECTORS * 512 ))"

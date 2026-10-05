@@ -128,7 +128,11 @@ boot-protocol HID interfaces keep the numbers BIOS/UEFI expects). It holds an EF
 moved, so existing adapters upgrade in place.
 
 - **Read-only:** the drive reports itself write-protected and the firmware refuses every write.
-- **UEFI only.** Pick the "kvm-it" entry in the target's boot menu. Legacy BIOS boot is not supported.
+- **UEFI only.** Pick the "kvm-it" entry in the target's boot menu. Legacy BIOS is not supported: the disk's boot sector just hands over to the next
+  boot device (INT 18h), and no partition is marked active, so a legacy BIOS that tries the drive moves on instead of hanging.
+- **Inert by default:** the script on the drive waits five seconds for `n` and otherwise exits, so a target that boots USB first carries on.
+- **Escape hatch:** if a target's firmware dislikes the composite device, flash the 0.3.0 firmware (`kvmit flash --firmware <its firmware folder>`); the
+  pairing is kept. (A switch to hide the drive is on the roadmap.)
 - **Secure Boot must be off** on the target for now: a stock iPXE is unsigned and Secure Boot refuses it.
 - **Linux host:** it shows up as a write-protected `/dev/sdX`; `sha256sum` of the whole disk equals `firmware/ipxe/ipxe.img`.
 - Serial log lines (`usb_msc`) say when the target configures the device and when it first reads the drive.

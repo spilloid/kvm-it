@@ -18,6 +18,8 @@ COPIES = {"bootloader/bootloader.bin": BUILD / "bootloader/bootloader.bin",
 
 
 def main() -> None:
+    # rebuild the boot drive from its inputs (deterministic), so a changed ipxe.efi or autoexec.ipxe can never ship a stale image
+    subprocess.run([str(ROOT / "scripts" / "build-ipxe-image.sh")], check=True, stdout=subprocess.DEVNULL)
     for dst, src in COPIES.items():
         if not src.is_file():
             sys.exit(f"missing {src}: run scripts/fw.sh build first")
@@ -28,8 +30,9 @@ def main() -> None:
     for off, rel in manifest["flash_files"].items():
         files[off] = "ipxe.img" if "ipxe" in rel and rel.endswith(".img") else rel
     manifest["flash_files"] = files
-    for k in ("bootloader", "app", "partition-table"):  # IDF's per-part blocks name build-relative paths: same files
-        pass
+    for block in manifest.values():  # IDF's per-part blocks ("bootloader", "app", ...) name files too: keep every path inside the folder
+        if isinstance(block, dict) and isinstance(block.get("file"), str) and block["file"].startswith("../ipxe/"):
+            block["file"] = "ipxe.img"
     (REL / "flasher_args.json").write_text(json.dumps(manifest, indent=4) + "\n")
     version = re.search(r'set\(PROJECT_VER "([^"]+)"\)', (ROOT / "firmware" / "CMakeLists.txt").read_text()).group(1)
     src_hash = subprocess.run([sys.executable, str(ROOT / "scripts" / "fw-source-hash.py")], check=True, capture_output=True, text=True).stdout.strip()

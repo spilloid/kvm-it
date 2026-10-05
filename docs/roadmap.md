@@ -41,6 +41,7 @@ Direction, not commitments; each release is cut with its own notes and only clai
 Cheap, user-visible or debt-paying, none of them a theme on its own:
 
 - **0.3.1 review follow-ups:** disable *Pair & connect* / *Connect* while a pairing runs; disconnect on early errors in `backend::connect`; a timeout on the pairing guard; the Codex round that was owed after round 13.
+- **A switch to hide the boot drive** (an NVS flag with a toggle in the Adapter popup and a reboot), for targets whose firmware dislikes the composite device or boots USB first.
 - **Windows polish:** embed the icon and a proper version resource in `kvmit.exe` / `kvmit-gui.exe` and the MSI (today only the window icon is set, and the version is stamped via the window title).
 - **A kinder "no Bluetooth adapter found" on Linux** (BlueZ not running, adapter blocked, adapter owned by a VM).
 - **Flasher touches:** say "now unplug COM and plug USB into the target" when it finishes; flash several boards in one go (rides with 0.6.0).

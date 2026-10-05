@@ -20,16 +20,18 @@ MPL-2.0 is file-level: it applies to serialport's own source files and does not 
 Used for writing firmware and for finding USB devices. Sources: <https://crates.io/crates/espflash/4.6.0>,
 <https://crates.io/crates/nusb>.
 
-## iPXE: GPL-2.0 with additional permissions
+## iPXE: GPL-2.0-or-later (many files also under the UBDL)
 
-The adapter's read-only boot drive carries the **iPXE** UEFI binary, **unmodified** from the iPXE project
-(<https://boot.ipxe.org/x86_64-efi/ipxe.efi>; SHA-256 `3b6285d2a1f8f184e86336a840c5e974780badfda06224acd5d3cf10a721ad81`; see
-`firmware/ipxe/README.md`). iPXE is licensed under the **GNU General Public License v2** with additional permissions for UEFI
-binary distribution; the licence text is at <https://github.com/ipxe/ipxe/blob/master/COPYING.GPLv2> and the exact source of the
-upstream project is at <https://github.com/ipxe/ipxe>. It ships as a separate data image written to its own flash partition, not
-linked into kvm-it's MIT-licensed firmware or app. The binary reports its own version as `2.0.0+ (g6262f)`, i.e. a build of upstream
-`master` at a commit starting `6262f`; the corresponding source is that revision of the repository above. For an archive of exactly
-that source, open an issue on this repository. Building iPXE from a pinned tag here (needed anyway for Secure Boot work) is planned.
+The adapter's read-only boot drive carries the **iPXE** UEFI binary, **built from unmodified upstream source** by `scripts/build-ipxe.sh` (a pinned commit,
+default configuration, in a container; the build is reproducible). iPXE (<https://ipxe.org/>) is free software licensed under the **GNU General Public
+License, version 2 or later**, with many files additionally available under the iPXE project's **Unmodified Binary Distribution Licence (UBDL)**: see
+<https://ipxe.org/licensing>. We distribute the binary under the GPL, as a separate data image written to its own flash partition, not linked into kvm-it's
+MIT-licensed firmware or app.
+
+**Corresponding source:** upstream <https://github.com/ipxe/ipxe> at commit `6262f1081fe185564e8ec8365a1d23597ec6e6f5` (2026-10-01, `v2.0.0-375`),
+unmodified, plus `scripts/build-ipxe.sh` in this repository (the exact recipe; this repository at the release tag is the rest). An archive of that
+upstream source is attached to each release that ships the drive (`ipxe-6262f1081fe1-source.tar.gz`). The resulting `firmware/ipxe/ipxe.efi` has SHA-256
+`1e3252f2dd6163368e7908bb7ee53642aacc73bdf2bcfa6a41d0764332e9e8d4`.
 
 ---
 

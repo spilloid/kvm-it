@@ -1,10 +1,12 @@
 #!ipxe
-# Runs when iPXE starts from the adapter's drive. DHCP, then the iPXE project's public demo menu, which proves the network path
-# end to end without needing a boot server of your own. Replace the URL with your own boot server's.
-echo kvm-it: starting network boot
+# The adapter's boot drive. SAFE BY DEFAULT: nothing is fetched or run unless you ask for it, so a target that boots this drive by
+# accident (USB first in its boot order) waits a few seconds and then carries on with its next boot device.
+# Press n for the network path: DHCP, then the iPXE project's public demo menu over HTTPS (proves the path without a server of your
+# own). Replace the chain URL with your own boot server's.
+prompt --key n --timeout 5000 kvm-it: press n to boot from the network (iPXE demo); otherwise continuing normal boot... || exit
 dhcp || goto failed
-chain http://boot.ipxe.org/demo/boot.php || goto failed
+chain https://boot.ipxe.org/demo/boot.php || goto failed
 exit
 :failed
-echo kvm-it: network boot failed, dropping to the iPXE shell
-shell
+echo kvm-it: network boot failed
+exit

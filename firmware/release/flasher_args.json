@@ -35,7 +35,7 @@
     },
     "ipxe": {
         "offset": "0x110000",
-        "file": "../ipxe/ipxe.img",
+        "file": "ipxe.img",
         "encrypted": "false"
     },
     "extra_esptool_args": {

@@ -103,10 +103,16 @@ rescue image over the network, driven from your desk:
 1. With the adapter's **USB** port in the target, open the target's boot menu (usually **F12**, **F11** or **Esc** at power-on; kvm-it's
    **Keys** button can press them for you).
 2. Pick the entry that says **kvm-it** (it is listed as a USB device, "UEFI kvm-it kvm-it HID adapter…").
-3. iPXE starts, asks your network for an address, and boots whatever the boot server offers. Out of the box it opens the iPXE
-   project's public demo menu, which proves the whole path without a server of your own.
+3. iPXE starts, asks your network for an address, and boots whatever the boot server offers. Out of the box it asks
+   *press n to boot from the network* and waits five seconds; press **n** and it opens the iPXE project's public demo menu, which proves the whole
+   path without a server of your own. (If you do nothing, it exits and the target carries on with its normal boot order, so a target that
+   happens to boot USB first is not hijacked.)
 
 The drive is **read-only by design**: the adapter reports it write-protected, so nothing on the target can ever change it.
+
+One thing to know: the adapter is now a bootable USB disk, so a target with USB first in its boot order will start iPXE (and, by default, wait
+five seconds and carry on). If a target's firmware dislikes the extra drive, flash the previous firmware from the 0.3.0 release with
+`kvmit flash --firmware <its firmware folder>`; your pairing is kept. A switch to hide the drive is on the roadmap.
 
 Three honest limits for now: **UEFI only** (not legacy BIOS), **Secure Boot must be off** on the target (a stock iPXE is not signed, so
 Secure Boot refuses it; making that work is the next piece of work), and the boot script is fixed to the demo menu until editing it

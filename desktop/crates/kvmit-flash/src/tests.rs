@@ -489,15 +489,37 @@ fn a_fat_data_image_in_its_own_partition_is_accepted_and_keeps_the_settings() {
 
 #[test]
 fn a_data_image_is_refused_unless_it_lands_exactly_in_a_fat_data_partition_that_fits() {
-    assert!(four_parts(0x120000, boot_image(4096)).validate().unwrap_err().0.contains("no partition at"));
-    assert!(four_parts(0x110000, boot_image((4 << 20) + 4096)).validate().unwrap_err().0.contains("does not fit"));
-    assert!(four_parts(0x9000, boot_image(4096)).validate().is_err(), "never into the settings");
-    assert!(four_parts(0xf000, boot_image(4096)).validate().is_err(), "never into phy_init");
-    assert!(four_parts(0x110000, vec![0u8; 4096]).validate().unwrap_err().0.contains("55 AA"));
-    // a data partition that is not FAT (subtype 0x82 = spiffs) is not a place the flasher writes
-    let mut im = four_parts(0x110000, boot_image(4096));
-    im.parts[1].data = table(&[(1, 2, 0x9000, 0x6000, "nvs"), (0, 0, 0x10000, 0x100000, "factory"), (1, 0x82, 0x110000, 0x400000, "ipxe")]);
-    assert!(im.validate().unwrap_err().0.contains("not a FAT data partition"));
+    // the rule itself, against a table with every kind of partition, so no other check can be what refuses it
+    let t = parse_partition_table(&table(&[
+        (1, 2, 0x9000, 0x6000, "nvs"), (1, 1, 0xf000, 0x1000, "phy_init"), (0, 0, 0x10000, 0x100000, "factory"),
+        (1, 0, 0x110000, 0x2000, "otadata"), (1, 0x81, 0x120000, 0x400000, "ipxe"), (1, 0x82, 0x520000, 0x10000, "spiffs"),
+    ]), 16 << 20, true).unwrap();
+    let image = |off: u32, data: Vec<u8>| Part { name: "ipxe".into(), offset: off, data };
+    check_data_image(&t, &image(0x120000, boot_image(4 << 20))).unwrap();
+    assert!(check_data_image(&t, &image(0x120000, boot_image((4 << 20) + 1))).unwrap_err().0.contains("does not fit"));
+    assert!(check_data_image(&t, &image(0x130000, boot_image(4096))).unwrap_err().0.contains("no partition at"), "inside a partition, not at its start");
+    assert!(check_data_image(&t, &image(0x120000, vec![0u8; 4096])).unwrap_err().0.contains("55 AA"));
+    assert!(check_data_image(&t, &image(0x120000, vec![0x55; 100])).is_err(), "too short to hold a boot sector");
+    for (off, why) in [(0x9000, "the settings (nvs: the pairing)"), (0xf000, "phy_init"), (0x10000, "the app partition"), (0x110000, "otadata"), (0x520000, "a non-FAT data partition")] {
+        let e = check_data_image(&t, &image(off, boot_image(4096))).unwrap_err().0;
+        assert!(e.contains("not a FAT data partition"), "{why}: {e}");
+    }
+}
+
+#[test]
+fn a_four_part_manifest_loads_and_a_misplaced_data_image_is_refused_end_to_end() {
+    let manifest = |off: &str| MANIFEST.replace(r#""0x8000":"partition_table/partition-table.bin""#, &format!(r#""0x8000":"partition_table/partition-table.bin","{off}":"ipxe.img""#));
+    let read = |rel: &str| -> Result<Vec<u8>, FlashError> {
+        match rel {
+            "partition_table/partition-table.bin" => Ok(data_table()),
+            "ipxe.img" => Ok(boot_image(4 << 20)),
+            _ => files(rel),
+        }
+    };
+    let im = Image::from_manifest(&manifest("0x110000"), read).unwrap();
+    assert_eq!(im.parts.len(), 4);
+    assert_eq!(im.parts[3].name, "ipxe");
+    assert!(Image::from_manifest(&manifest("0x120000"), read).is_err());
 }
 
 #[test]

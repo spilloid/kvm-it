@@ -88,6 +88,9 @@ bool tud_msc_is_writable_cb(uint8_t lun)
     return false; /* the host sees a write-protected drive */
 }
 
+/* Note: when a read callback returns an error, TinyUSB (0.21) replaces the sense data set here with NOT READY / medium not present, so the host
+ * never sees the finer reasons set below; they remain for the day that changes. A read past the end of the medium is a host bug, not a case
+ * the firmware tries to describe precisely. */
 int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void *buffer, uint32_t bufsize)
 {
     (void)lun;
@@ -111,6 +114,9 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void *buff
     return (int32_t)bufsize;
 }
 
+/* Defence in depth: with tud_msc_is_writable_cb() false TinyUSB refuses WRITE(10) itself (DATA PROTECT / write protected) before any data is
+ * received, so this is not normally reached (on the real adapter, a raw WRITE(10) was refused without reaching it, and the counter below stays 0);
+ * if it ever were, it still refuses and never writes. Nothing in this file calls esp_partition_write or erase. */
 int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_t bufsize)
 {
     (void)lba; (void)offset; (void)buffer; (void)bufsize;

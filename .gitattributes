@@ -2,3 +2,5 @@
 # is checked out byte for byte: no line-ending conversion on any platform, so the hashes agree everywhere.
 firmware/** -text
 scripts/fw.sh -text
+scripts/build-ipxe.sh -text
+scripts/build-ipxe-image.sh -text
