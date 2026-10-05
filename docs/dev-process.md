@@ -501,3 +501,23 @@ firmware checks had all passed. The check searches the executable for the versio
 `windows-future-0.2.1/...` is in the binary. The GUI had never embedded its own version. Fix: the window title is `kvm-it <version>` (a test guards it). Nothing was ever
 attached to the v0.3.0 release, so with the maintainer's agreement the tag and the empty release were deleted and 0.3.0 re-cut on the fixed commit. (The Opus-5.5 review
 did not cover this; it is one format string and a test.)
+
+## 2026-10-05 - 0.4.0 boot drive (`feat/ipxe`): review round 14 (Claude Opus 5.5)
+
+**Deviation from STD-001, recorded:** the usual reviewer (codex `gpt-6-astra`) was out of quota (it resets at 23:55), and the maintainer chose to release 0.4.0 on a Claude Opus 5.5 review ("if opus
+signs off ... before codex"). A Codex round over the same diff is queued and its result will be logged here. The Opus subagent was read-only.
+
+First report (`main...feat/ipxe` at `a54bd50`): **no High; three Medium; six Low.** Adjudication, all by reading and then by test:
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| M1 | Med | The new image script is a hash input but not `-text`: a Windows CRLF checkout breaks `fw-source-hash.py --check` in `verify-release.py` | **Confirmed** (same class as round 9 #9). `.gitattributes` now covers `scripts/build-ipxe*.sh` |
+| M2 | Med | The drive is always on and its default script boots over HTTP unattended, then drops to an iPXE shell forever on failure; legacy BIOS runs empty boot code; real-PC keyboard enumeration unchecked | **Confirmed.** Default script is now inert: waits 5 s for `n`, else `exit` (and `exit` on failure); the boot sector is `INT 18h` and no partition is active; docs state the boot-order effect and the escape hatch (flash the 0.3.0 firmware; pairing kept); a switch to hide the drive is on the roadmap. Tested in a UEFI VM (no key: falls through to the boot menu; `n`: HTTPS demo, then a network Linux). **Not exercised:** a real PC's keyboard enumeration with the composite device |
+| M3 | Med | Licence wording ("additional permissions for UEFI") is unsupported; a link plus "open an issue" is not a GPL source offer; the commit was only partly known | **Confirmed.** Wording corrected (GPL-2.0-or-later, many files also UBDL). The exact commit was resolved (`6262f1081fe1...`, `v2.0.0-375`); the official binary did not reproduce, so iPXE is now **built from that pinned unmodified commit by `scripts/build-ipxe.sh`** (reproducible: SOURCE_DATE_EPOCH pinned), and the source archive is attached to the release |
+| L1 | Low | TinyUSB overrides the read-error sense data | **Confirmed**; documented in the code. Reads past the end are a host bug |
+| L2 | Low | The write-refused counter cannot rise; "writes refused" evidence was the host's own write-protect flag | **Confirmed.** Tested properly on the real adapter with raw SCSI (SG_IO) bypassing the host: WRITE(10) refused as DATA PROTECT, WRITE(6)/(12), FORMAT UNIT, WRITE SAME, UNMAP as invalid commands, disk hash unchanged. Docs reworded |
+| L3 | Low | README said a Windows target "only sees a USB keyboard and mouse" | **Confirmed**, fixed |
+| L4 | Low | `refresh-firmware-release.py` left `../ipxe/ipxe.img` in the per-part manifest blocks | **Confirmed**, fixed |
+| L5 | Low | Nothing ensured `ipxe.img` was rebuilt from current inputs | **Confirmed**; the refresh script now rebuilds it first |
+| L6 | Low | Leftovers from the product-id change | Doc comment fixed; any VM passthrough by vid:pid needs `400a` |
+| tests | - | The "never into the settings/phy_init" tests failed on an earlier check | The data-image rule is now a function tested directly against a table with every partition kind, plus a four-part manifest end to end |
