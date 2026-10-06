@@ -8,7 +8,7 @@ RUNTIME="${CONTAINER_RUNTIME:-podman}"
 COMMIT="$(sed -n 's/^IPXE_COMMIT=\([0-9a-f]\{40\}\).*/\1/p' "$ROOT/scripts/build-ipxe.sh")"
 BASE="$(sed -n 's/^BASE=\([^ ]*\).*/\1/p' "$ROOT/scripts/build-ipxe.sh")"
 [ -n "$COMMIT" ] && [ -n "$BASE" ] || { echo "could not read the pinned commit from scripts/build-ipxe.sh" >&2; exit 1; }
-OUT="${1:-$ROOT/dist-ipxe-source}"; mkdir -p "$OUT"
+OUT="${1:-$ROOT/dist-ipxe-source}"; mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"  # absolute: podman reads a relative -v source as a named volume
 NAME="ipxe-${COMMIT:0:12}-source"
 "$RUNTIME" run --rm -v "$OUT":/o:Z "$BASE" bash -c "set -euo pipefail
   apt-get update -qq >/dev/null && apt-get install -y -qq git ca-certificates >/dev/null
