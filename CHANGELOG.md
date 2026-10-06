@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Changed
-- **Secure Boot: the boot drive now carries the iPXE project's signed shim and iPXE** (release `v2.0.0`: a Microsoft-signed shim as `EFI/BOOT/BOOTX64.EFI`, iPXE-CA-signed
+- **Secure Boot: the boot drive now carries the iPXE project's signed shim and iPXE** (iPXE's fork of the shim, release `ipxe-16.1`, signed by Microsoft, as `EFI/BOOT/BOOTX64.EFI`; iPXE `v2.0.0`, signed by the iPXE project's CA, as
   `EFI/BOOT/IPXE.EFI`), instead of the unsigned iPXE built in 0.4.0. Firmware that trusts Microsoft's third-party UEFI CA (both its 2011 and its 2023 signing are on the shim) should accept it with Secure Boot **on** (verified in an OVMF virtual machine only; many locked-down PCs turn that CA off), and the same image works with Secure Boot off. Our own build
   of iPXE (`scripts/build-ipxe.sh`) is kept for experiments but is no longer what ships. The files are exactly the iPXE project's, pinned and checksummed
   (`firmware/ipxe/signed/pins.env`, `scripts/fetch-ipxe-signed.sh`); the GPL source archive is now the `v2.0.0` tag and the packages' `ipxe-SOURCE.txt` carries the shim's

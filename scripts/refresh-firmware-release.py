@@ -49,8 +49,8 @@ def main() -> None:
     pins = dict(re.findall(r"^([A-Z_0-9]+)=(\S+)", (SIGNED / "pins.env").read_text(), re.M))
     commit, tag = pins["IPXE_COMMIT"], pins["IPXE_TAG"]
     (REL / "ipxe-SOURCE.txt").write_text(
-        "ipxe.img carries two UEFI binaries exactly as published by the iPXE project (https://ipxe.org), so that it boots with UEFI Secure Boot on or off:\n"
-        f"  EFI/BOOT/BOOTX64.EFI  the Secure Boot shim: the iPXE project's fork of rhboot/shim 16.1 ({pins['SHIM_VERSION']}), signed by Microsoft (UEFI CA 2011 and 2023); BSD-2-Clause, OpenSSL and EDK2 notices below\n"
+        "ipxe.img carries two UEFI binaries exactly as published by the iPXE project (https://ipxe.org), so that it boots with UEFI Secure Boot on (on firmware that trusts Microsoft's third-party UEFI CA) or off:\n"
+        f"  EFI/BOOT/BOOTX64.EFI  the Secure Boot shim: the iPXE project's fork of rhboot/shim 16.1 ({pins['SHIM_VERSION']}), signed by Microsoft (UEFI CA 2011 and 2023); BSD-2-Clause, OpenSSL, EDK2 and gnu-efi notices below\n"
         f"  EFI/BOOT/IPXE.EFI     iPXE {tag}, signed with the iPXE project's CA (which that shim trusts); GNU GPL version 2\n"
         f"IPXE.EFI comes from {pins['USB_URL']} (sha256 {pins['USB_SHA256']}), BOOTX64.EFI from {pins['SHIM_URL']} (sha256 {pins['SHIM_SHA256']}); kvm-it adds only its own autoexec.ipxe.\n"
         "\n"

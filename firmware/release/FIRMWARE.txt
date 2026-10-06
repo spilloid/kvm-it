@@ -3,5 +3,5 @@ Built with scripts/fw.sh build (the pinned ESP-IDF container) from the firmware 
 image firmware/ipxe/ipxe.img (scripts/build-ipxe-image.sh). Release builds are not byte-for-byte reproducible (the build time
 is embedded), so these exact files are what ships; verify with SHA256SUMS. Rebuild from source with scripts/fw.sh build and
 scripts/refresh-firmware-release.py. Refreshed 2026-10-06.
-source-sha256: 61f70ec8175cbf4ef06e944dbbda9bb3d49bb4d94c8347830f9cb90545071f68
+source-sha256: 97c90ae9cfdd900f1c636973dea5bd4d8c07aa7ed78483623332e35ed9353d59
 (hash of the firmware build inputs, see scripts/fw-source-hash.py; CI and verify-release.py check it)

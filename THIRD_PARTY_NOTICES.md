@@ -20,10 +20,11 @@ MPL-2.0 is file-level: it applies to serialport's own source files and does not 
 Used for writing firmware and for finding USB devices. Sources: <https://crates.io/crates/espflash/4.6.0>,
 <https://crates.io/crates/nusb>.
 
-## iPXE and the Secure Boot shim: GNU GPL version 2 and BSD-2-Clause
+## iPXE and the Secure Boot shim: GNU GPL version 2, BSD, OpenSSL and EDK2 licences
 
-The adapter's read-only boot drive carries two UEFI binaries **exactly as the iPXE project published them** (release `v2.0.0`, file `ipxe-x86_64-sb.usb`, SHA-256
-`1bba4318a1818ef148a80b32c7cfe3199d4f7cd93b600d74f1d8f64cea64eb46`; pins and checks in `firmware/ipxe/signed/pins.env` and `scripts/fetch-ipxe-signed.sh`):
+The adapter's read-only boot drive carries two UEFI binaries **exactly as the iPXE project published them**: iPXE from its `v2.0.0` release (file `ipxe-x86_64-sb.usb`, SHA-256
+`1bba4318a1818ef148a80b32c7cfe3199d4f7cd93b600d74f1d8f64cea64eb46`) and the shim from the `ipxe/shim` release `ipxe-16.1` (pins and checks in `firmware/ipxe/signed/pins.env` and
+`scripts/fetch-ipxe-signed.sh`):
 
 - **`EFI/BOOT/IPXE.EFI` is iPXE** (<https://ipxe.org/>), signed with the iPXE project's Secure Boot CA and built by the v2.0.0 tag's "UEFI SB" CI job (`bin-x86_64-efi-sb`; its recipe is that tag's `.github/workflows/build.yml`). iPXE is free software; its source files carry their own licence
   declarations (mostly GPL, many also under the project's Unmodified Binary Distribution Licence), and iPXE's own `make ...licence` tool could not determine a single
@@ -38,7 +39,7 @@ The adapter's read-only boot drive carries two UEFI binaries **exactly as the iP
 - **`EFI/BOOT/BOOTX64.EFI` is the Secure Boot shim**: the iPXE project's fork of rhboot/shim 16.1 (<https://github.com/ipxe/shim>, tag `ipxe-16.1`, commit
   `d0367b25d04ec90d332909b99d932571f15e5a06`: upstream 16.1 plus iPXE's changes and certificate), from that repository's `ipxe-16.1` release (`ipxe-shimx64.efi`), signed by
   Microsoft's 2011 and 2023 UEFI CAs. SHA-256 `5eecca2780bd49c900565e124516a1bd666ec5e012825f34991b6ba1ef2fa6cf`. The shim is under the BSD-2-Clause licence and statically
-  includes OpenSSL 1.0.2k (OpenSSL and SSLeay licences), EDK2 cryptographic library code (BSD-2-Clause-Patent) and gnu-efi code (BSD-style). **This product includes
+  includes OpenSSL 1.0.2k (OpenSSL and SSLeay licences), EDK2 cryptographic library code (BSD-2-Clause-Patent) and gnu-efi code (Intel's BSD-style notice). **This product includes
   software developed by the OpenSSL Project for use in the OpenSSL Toolkit (<http://www.openssl.org/>), and cryptographic software written by Eric Young
   (<eay@cryptsoft.com>).** The full notices are `firmware/ipxe/signed/shim-NOTICES.txt` and are reproduced in `firmware/ipxe-SOURCE.txt` in every package.
 

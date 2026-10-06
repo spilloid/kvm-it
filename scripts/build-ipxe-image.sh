@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the adapter's read-only boot drive: a 4 MiB disk image (MBR + one FAT16 partition of type EFI system partition, not active)
 # holding EFI/BOOT/BOOTX64.EFI (a Microsoft-signed shim), EFI/BOOT/IPXE.EFI (iPXE, signed by the iPXE project; the shim loads it) and autoexec.ipxe.
-# The two signed binaries are the iPXE project's own release files (firmware/ipxe/signed, see pins.env), so the drive boots with Secure Boot on or off. Output: firmware/ipxe/ipxe.img, flashed into the `ipxe` partition.
+# The two signed binaries are the iPXE project's own release files (firmware/ipxe/signed, see pins.env), so the drive boots with Secure Boot off, or on firmware that trusts Microsoft's third-party UEFI CA. Output: firmware/ipxe/ipxe.img, flashed into the `ipxe` partition.
 #   scripts/build-ipxe-image.sh
 #   AUTOEXEC=/path/to/my-autoexec.ipxe OUT=/path/to/my-ipxe.img scripts/build-ipxe-image.sh    # a private script/output: nothing is written into the repo
 # Needs dosfstools, mtools and util-linux (sfdisk) on the build machine. The image is deterministic for the same inputs
