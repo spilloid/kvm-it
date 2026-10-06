@@ -50,9 +50,9 @@ def main() -> None:
     commit, tag = pins["IPXE_COMMIT"], pins["IPXE_TAG"]
     (REL / "ipxe-SOURCE.txt").write_text(
         "ipxe.img carries two UEFI binaries exactly as published by the iPXE project (https://ipxe.org), so that it boots with UEFI Secure Boot on or off:\n"
-        f"  EFI/BOOT/BOOTX64.EFI  the Secure Boot shim, rhboot/shim {pins['SHIM_VERSION']}, signed by Microsoft (UEFI CA); BSD-2-Clause licence text below\n"
+        f"  EFI/BOOT/BOOTX64.EFI  the Secure Boot shim: the iPXE project's fork of rhboot/shim 16.1 ({pins['SHIM_VERSION']}), signed by Microsoft (UEFI CA 2011 and 2023); BSD-2-Clause, OpenSSL and EDK2 notices below\n"
         f"  EFI/BOOT/IPXE.EFI     iPXE {tag}, signed with the iPXE project's CA (which that shim trusts); GNU GPL version 2\n"
-        f"They come from {pins['USB_URL']} (sha256 {pins['USB_SHA256']}); kvm-it adds only its own autoexec.ipxe.\n"
+        f"IPXE.EFI comes from {pins['USB_URL']} (sha256 {pins['USB_SHA256']}), BOOTX64.EFI from {pins['SHIM_URL']} (sha256 {pins['SHIM_SHA256']}); kvm-it adds only its own autoexec.ipxe.\n"
         "\n"
         f"iPXE source (corresponding source for IPXE.EFI): https://github.com/ipxe/ipxe at tag {tag}, commit {commit}.\n"
         f"An archive of exactly that source, ipxe-{commit[:12]}-source.tar.gz (with a .sha256), is attached to every kvm-it release that ships this file.\n"
@@ -60,8 +60,8 @@ def main() -> None:
         "source and https://ipxe.org/licensing). The licence text is ipxe-COPYING.GPLv2 next to this file. It is shipped as a separate data image,\n"
         "not linked into kvm-it's MIT-licensed firmware or app. See THIRD_PARTY_NOTICES.md in the kvm-it release.\n"
         "\n"
-        f"Shim source: https://github.com/rhboot/shim at tag {pins['SHIM_VERSION']} (commit {pins['SHIM_COMMIT']}). Its copyright notice:\n"
-        "\n" + (SIGNED / "shim-COPYRIGHT").read_text())
+        f"Shim source: {pins['SHIM_REPO']} at tag {pins['SHIM_VERSION']} (commit {pins['SHIM_COMMIT']}). Its licence notices:\n"
+        "\n" + (SIGNED / "shim-NOTICES.txt").read_text())
     names = ["kvm-it-firmware.bin", "bootloader/bootloader.bin", "partition_table/partition-table.bin", "ipxe.img", "ipxe-COPYING.GPLv2", "ipxe-SOURCE.txt", "flasher_args.json"]
     (REL / "SHA256SUMS").write_text("".join(f"{hashlib.sha256((REL / n).read_bytes()).hexdigest()}  {n}\n" for n in names))
     print("refreshed", REL, "version", version, "source", src_hash[:16])

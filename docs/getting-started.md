@@ -113,10 +113,10 @@ The drive is **read-only by design**: the adapter reports it write-protected and
 If a target's firmware dislikes the extra drive, turn it off (the adapter goes back to presenting just a keyboard and mouse), or flash the previous firmware
 from the 0.3.0 release with `kvmit flash --firmware <its firmware folder>`; your pairing is kept.
 
-Honest limits for now: **UEFI only** (not legacy BIOS); **Secure Boot can stay on**, because the drive carries the iPXE project's signed shim and iPXE, but then iPXE
-only starts signed things (Windows PE through `wimboot` is fine; an unsigned Linux kernel is refused with "Security Policy Violation"). That has been run in a virtual
-machine, not yet on a real PC. And the boot script on the drive is the demo until editing it from the app lands (developers can change it today:
-[developing.md](developing.md)).
+Honest limits for now: **UEFI only** (not legacy BIOS). **Secure Boot can stay on** on firmware that trusts Microsoft's third-party UEFI CA, because the drive carries the iPXE
+project's signed shim and iPXE; but then iPXE only starts signed things (Windows PE through `wimboot` is fine; an unsigned Linux kernel is refused with "Security Policy
+Violation"), and some locked-down PCs turn that CA off and refuse the drive. All of that has been run in a virtual machine, not yet on a real PC. And the boot script on the
+drive is the demo until editing it from the app lands (developers can change it today: [developing.md](developing.md)).
 
 ## When something is off
 

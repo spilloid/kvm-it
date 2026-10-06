@@ -132,7 +132,7 @@ numbers BIOS/UEFI expects). It holds an EFI system partition with the iPXE proje
 - **UEFI only.** Pick the "kvm-it" entry in the target's boot menu. Legacy BIOS is not supported: the disk's boot sector just hands over to the next boot device (INT 18h),
   and no partition is marked active, so a legacy BIOS that tries the drive should move on instead of hanging (untested).
 - **Inert by default:** the script on the drive waits five seconds for a key press and otherwise exits with a failure status, so a target that boots USB first carries on.
-- **Secure Boot can stay on:** the shim and iPXE are signed (run in a virtual machine with the stock Microsoft keys; not yet on a real PC). With it on, iPXE refuses unsigned kernels and images.
+- **Secure Boot can stay on** where the firmware trusts Microsoft's third-party UEFI CA: the shim and iPXE are signed (run in a virtual machine with the stock Microsoft keys; not yet on a real PC, and some locked-down PCs turn that CA off). With it on, iPXE refuses unsigned kernels and images.
 - **Linux host:** with the drive on, it shows up as a write-protected `/dev/sdX`; `sha256sum` of the whole disk equals `firmware/ipxe/ipxe.img`.
 - Serial log lines (`usb_msc`, `usb_hid`) say whether the drive is on, when the target configures the device, and when it first reads the drive.
 - Provenance, licence and how to rebuild the image: [`firmware/ipxe/README.md`](https://github.com/spilloid/kvm-it/blob/main/firmware/ipxe/README.md).

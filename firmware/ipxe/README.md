@@ -5,9 +5,9 @@ target can boot from the network. The drive is the `ipxe` flash partition (`../p
 
 | File | What |
 |---|---|
-| `signed/BOOTX64.EFI` | The **Secure Boot shim** (rhboot/shim 16.1), signed by Microsoft, with the iPXE project's certificate inside. Exactly as published by the iPXE project. |
+| `signed/BOOTX64.EFI` | The **Secure Boot shim**: the iPXE project's fork of rhboot/shim 16.1 (`ipxe/shim` tag `ipxe-16.1`), signed by Microsoft's 2011 and 2023 UEFI CAs, with the iPXE project's certificate inside. Exactly as published. |
 | `signed/IPXE.EFI` | **iPXE v2.0.0** for x86-64 UEFI, signed with the iPXE project's Secure Boot CA. Exactly as published; kvm-it did not build it and cannot rebuild it. |
-| `signed/pins.env`, `signed/shim-COPYRIGHT` | Where the two files come from (release URL, checksums, source commits) and the shim's copyright notice. `scripts/fetch-ipxe-signed.sh` re-downloads and verifies them. |
+| `signed/pins.env`, `signed/shim-NOTICES.txt` | Where the two files come from (release URLs, checksums, source commits) and the shim's licence notices (BSD-2-Clause, OpenSSL, EDK2). `scripts/fetch-ipxe-signed.sh` re-downloads and verifies them. |
 | `autoexec.ipxe` | The script iPXE runs from the drive. **Inert by default:** it waits five seconds for a key and otherwise exits with a failure status, so a target that boots this drive by accident carries on with its normal boot order. A key press does DHCP and chains to the iPXE project's public demo. Replace the URL with your own server's. |
 | `ipxe.img` | Built from the files above by `scripts/build-ipxe-image.sh`: a 4 MiB MBR disk, one FAT16 partition of type EFI system partition (not marked active; the boot sector is `INT 18h` so a legacy BIOS moves on), holding `EFI/BOOT/BOOTX64.EFI` (the shim), `EFI/BOOT/IPXE.EFI` and `autoexec.ipxe`. Deterministic: the same inputs give the same bytes. |
 
@@ -18,7 +18,7 @@ The firmware's UEFI boot path starts the shim, which verifies and starts `IPXE.E
 iPXE is free software; its files carry their own declarations, and iPXE's own `make ...licence` tool cannot determine one licence for the default build. So the binary is
 treated and distributed under the **GNU GPL, version 2** (`COPYING.GPLv2` here; shipped as `ipxe-COPYING.GPLv2` in every package), as a separate data image (not linked
 into kvm-it's MIT-licensed firmware). The corresponding source is upstream iPXE at tag `v2.0.0` (commit `12798ec29aa8a64d8675c4378b99f5fe28447afb`); an archive of it is attached to
-each release that ships the drive (`.github/workflows/ipxe-source.yml`), and every package carries `ipxe-SOURCE.txt`, which also reproduces the shim's BSD-2-Clause notice.
+each release that ships the drive (`.github/workflows/ipxe-source.yml`), and every package carries `ipxe-SOURCE.txt`, which also reproduces the shim's notices.
 See [`../../THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md).
 
 ## Rebuilding
