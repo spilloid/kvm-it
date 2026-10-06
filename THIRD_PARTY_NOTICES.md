@@ -20,21 +20,24 @@ MPL-2.0 is file-level: it applies to serialport's own source files and does not 
 Used for writing firmware and for finding USB devices. Sources: <https://crates.io/crates/espflash/4.6.0>,
 <https://crates.io/crates/nusb>.
 
-## iPXE: GNU GPL version 2
+## iPXE and the Secure Boot shim: GNU GPL version 2 and BSD-2-Clause
 
-The adapter's read-only boot drive carries the **iPXE** UEFI binary, **built from unmodified upstream source** by `scripts/build-ipxe.sh` (a pinned
-commit, default configuration, in a container pinned by digest). iPXE (<https://ipxe.org/>) is free software; its source files carry their own licence
-declarations (mostly GPL, many also under the project's Unmodified Binary Distribution Licence), and its own `make ...licence` tool **cannot determine a single
-licence for this default build** (it reports source files with no declaration, in drivers such as Atheros, Broadcom and Mellanox). We therefore treat
-and distribute the binary as a whole under the **GNU General Public License, version 2** (the licence text is `firmware/ipxe/COPYING.GPLv2`, shipped as
-`firmware/ipxe-COPYING.GPLv2` in every package), and we make no stronger claim. See <https://ipxe.org/licensing>. It is a separate data image written to its own
-flash partition, not linked into kvm-it's MIT-licensed firmware or app.
+The adapter's read-only boot drive carries two UEFI binaries **exactly as the iPXE project published them** (release `v2.0.0`, file `ipxe-x86_64-sb.usb`, SHA-256
+`1bba4318a1818ef148a80b32c7cfe3199d4f7cd93b600d74f1d8f64cea64eb46`; pins and checks in `firmware/ipxe/signed/pins.env` and `scripts/fetch-ipxe-signed.sh`):
 
-**Corresponding source:** upstream <https://github.com/ipxe/ipxe> at commit `6262f1081fe185564e8ec8365a1d23597ec6e6f5` (2026-10-01, `v2.0.0-375`), unmodified,
-plus `scripts/build-ipxe.sh` in this repository (the exact recipe). An archive of that upstream source, `ipxe-6262f1081fe1-source.tar.gz` (with a `.sha256`), is
-attached to every release that ships the drive (built and attached by `.github/workflows/ipxe-source.yml`; `scripts/ipxe-source-archive.sh` makes the same archive
-by hand), and every package carries `firmware/ipxe-SOURCE.txt` saying so. `firmware/ipxe/ipxe.efi` has SHA-256
-`1e3252f2dd6163368e7908bb7ee53642aacc73bdf2bcfa6a41d0764332e9e8d4`.
+- **`EFI/BOOT/IPXE.EFI` is iPXE** (<https://ipxe.org/>), signed with the iPXE project's Secure Boot CA. iPXE is free software; its source files carry their own licence
+  declarations (mostly GPL, many also under the project's Unmodified Binary Distribution Licence), and iPXE's own `make ...licence` tool could not determine a single
+  licence for the default build. We therefore treat and distribute the binary as a whole under the **GNU General Public License, version 2** (the licence text is
+  `firmware/ipxe/COPYING.GPLv2`, shipped as `firmware/ipxe-COPYING.GPLv2` in every package), and we make no stronger claim. See <https://ipxe.org/licensing>. It is a
+  separate data image written to its own flash partition, not linked into kvm-it's MIT-licensed firmware or app.
+  **Corresponding source:** upstream <https://github.com/ipxe/ipxe> at tag `v2.0.0`, commit `12798ec29aa8a64d8675c4378b99f5fe28447afb`, unmodified. An archive of that
+  source, `ipxe-12798ec29aa8-source.tar.gz` (with a `.sha256`), is attached to every release that ships the drive (built and attached by `.github/workflows/ipxe-source.yml`;
+  `scripts/ipxe-source-archive.sh` makes the same archive by hand), and every package carries `firmware/ipxe-SOURCE.txt` saying so. `IPXE.EFI` has SHA-256
+  `6558e37887516b246d6a97122e8d18bedfe4197b7ba7f67bf1bf102a16678d33`. kvm-it cannot rebuild this binary (the signature is the iPXE project's); building iPXE yourself
+  from that source gives an unsigned binary that Secure Boot targets refuse.
+- **`EFI/BOOT/BOOTX64.EFI` is the Secure Boot shim**, <https://github.com/rhboot/shim> `16.1` (commit `dad4f20725731a8b16ce136918c312c29694848a`), signed by Microsoft
+  (UEFI CA) and carrying the iPXE project's certificate. It is under the BSD-2-Clause licence; its copyright notice is `firmware/ipxe/signed/shim-COPYRIGHT` and is
+  reproduced in `firmware/ipxe-SOURCE.txt` in every package. SHA-256 `83ad71c7d4f2cf328b75b653d09bf3bea5f29bee2e67ca058f37d83c07133885`.
 
 ---
 

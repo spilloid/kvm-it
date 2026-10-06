@@ -1,16 +1,3 @@
-ipxe.img carries two UEFI binaries exactly as published by the iPXE project (https://ipxe.org), so that it boots with UEFI Secure Boot on or off:
-  EFI/BOOT/BOOTX64.EFI  the Secure Boot shim, rhboot/shim 16.1, signed by Microsoft (UEFI CA); BSD-2-Clause licence text below
-  EFI/BOOT/IPXE.EFI     iPXE v2.0.0, signed with the iPXE project's CA (which that shim trusts); GNU GPL version 2
-They come from https://github.com/ipxe/ipxe/releases/download/v2.0.0/ipxe-x86_64-sb.usb (sha256 1bba4318a1818ef148a80b32c7cfe3199d4f7cd93b600d74f1d8f64cea64eb46); kvm-it adds only its own autoexec.ipxe.
-
-iPXE source (corresponding source for IPXE.EFI): https://github.com/ipxe/ipxe at tag v2.0.0, commit 12798ec29aa8a64d8675c4378b99f5fe28447afb.
-An archive of exactly that source, ipxe-12798ec29aa8-source.tar.gz (with a .sha256), is attached to every kvm-it release that ships this file.
-iPXE is licensed under the GNU General Public License, version 2 (individual files carry their own declarations; see COPYING in the
-source and https://ipxe.org/licensing). The licence text is ipxe-COPYING.GPLv2 next to this file. It is shipped as a separate data image,
-not linked into kvm-it's MIT-licensed firmware or app. See THIRD_PARTY_NOTICES.md in the kvm-it release.
-
-Shim source: https://github.com/rhboot/shim at tag 16.1 (commit dad4f20725731a8b16ce136918c312c29694848a). Its copyright notice:
-
 Copyright 2012 Red Hat, Inc <mjg@redhat.com>
 
 Redistribution and use in source and binary forms, with or without

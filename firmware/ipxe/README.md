@@ -5,31 +5,37 @@ target can boot from the network. The drive is the `ipxe` flash partition (`../p
 
 | File | What |
 |---|---|
-| `ipxe.efi` | iPXE for x86-64 UEFI, **built from unmodified upstream** (`https://github.com/ipxe/ipxe` at `6262f1081fe185564e8ec8365a1d23597ec6e6f5`, 2026-10-01, `v2.0.0-375`) by `scripts/build-ipxe.sh` in a Debian 12 container with SOURCE_DATE_EPOCH pinned to the commit time: **repeatable** (two builds with the pinned container image are byte-identical; the container's apt toolchain is not pinned). SHA-256 `1e3252f2dd6163368e7908bb7ee53642aacc73bdf2bcfa6a41d0764332e9e8d4`. Unsigned. |
-| `autoexec.ipxe` | The script iPXE runs from the drive. **Inert by default:** it waits five seconds for the key `n` and otherwise exits, so a target that boots this drive by accident carries on with its next boot device; on `n` it does DHCP and chains to the iPXE project's public demo menu over HTTPS (proves the path without a boot server of your own). Replace the URL with yours. |
-| `ipxe.img` | Built from the two files above by `scripts/build-ipxe-image.sh`: a 4 MiB MBR disk, one FAT16 partition of type EFI system partition (not marked active; the boot sector is `INT 18h` so a legacy BIOS moves on), `EFI/BOOT/BOOTX64.EFI` + `autoexec.ipxe`. Deterministic: the same inputs give the same bytes. Committed so the firmware build (which runs in the ESP-IDF container) needs no disk tools. |
+| `signed/BOOTX64.EFI` | The **Secure Boot shim** (rhboot/shim 16.1), signed by Microsoft, with the iPXE project's certificate inside. Exactly as published by the iPXE project. |
+| `signed/IPXE.EFI` | **iPXE v2.0.0** for x86-64 UEFI, signed with the iPXE project's Secure Boot CA. Exactly as published; kvm-it did not build it and cannot rebuild it. |
+| `signed/pins.env`, `signed/shim-COPYRIGHT` | Where the two files come from (release URL, checksums, source commits) and the shim's copyright notice. `scripts/fetch-ipxe-signed.sh` re-downloads and verifies them. |
+| `autoexec.ipxe` | The script iPXE runs from the drive. **Inert by default:** it waits five seconds for a key and otherwise exits with a failure status, so a target that boots this drive by accident carries on with its normal boot order. A key press does DHCP and chains to the iPXE project's public demo. Replace the URL with your own server's. |
+| `ipxe.img` | Built from the files above by `scripts/build-ipxe-image.sh`: a 4 MiB MBR disk, one FAT16 partition of type EFI system partition (not marked active; the boot sector is `INT 18h` so a legacy BIOS moves on), holding `EFI/BOOT/BOOTX64.EFI` (the shim), `EFI/BOOT/IPXE.EFI` and `autoexec.ipxe`. Deterministic: the same inputs give the same bytes. |
+
+The firmware's UEFI boot path starts the shim, which verifies and starts `IPXE.EFI` from the same folder; iPXE then reads `autoexec.ipxe` from the volume.
 
 ## Licence
 
-iPXE is free software; its files carry their own declarations, and iPXE's own `make ...licence` tool cannot determine one licence for this default build (it
-reports source files with no declaration). So the binary is treated and distributed under the **GNU GPL, version 2** (`COPYING.GPLv2` here; shipped as
-`ipxe-COPYING.GPLv2` in every package), as a separate data image (not linked into kvm-it's MIT-licensed firmware). The corresponding source is the pinned upstream
-commit plus `scripts/build-ipxe.sh`; an archive of that source is attached to each release that ships the drive (`.github/workflows/ipxe-source.yml`), and every
-package carries `ipxe-SOURCE.txt`. See [`../../THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md).
+iPXE is free software; its files carry their own declarations, and iPXE's own `make ...licence` tool cannot determine one licence for the default build. So the binary is
+treated and distributed under the **GNU GPL, version 2** (`COPYING.GPLv2` here; shipped as `ipxe-COPYING.GPLv2` in every package), as a separate data image (not linked
+into kvm-it's MIT-licensed firmware). The corresponding source is upstream iPXE at tag `v2.0.0` (commit `12798ec29aa8a64d8675c4378b99f5fe28447afb`); an archive of it is attached to
+each release that ships the drive (`.github/workflows/ipxe-source.yml`), and every package carries `ipxe-SOURCE.txt`, which also reproduces the shim's BSD-2-Clause notice.
+See [`../../THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md).
 
 ## Rebuilding
 
 ```bash
-scripts/build-ipxe.sh              # iPXE from the pinned upstream commit (podman, network)
+scripts/fetch-ipxe-signed.sh       # optional: re-download the signed binaries and check them against the pins
 scripts/build-ipxe-image.sh        # needs dosfstools, mtools and util-linux (sfdisk)
 scripts/fw.sh build                # the firmware build picks up firmware/ipxe/ipxe.img
+scripts/refresh-firmware-release.py
 ```
 
-To use your own iPXE (a build with your certificates or script embedded, or a signed one), change `IPXE_COMMIT`/the recipe in `scripts/build-ipxe.sh` (or replace
-`ipxe.efi`), rebuild the image, and record the new source and checksum here.
+To move to a newer iPXE release, change the pins in `signed/pins.env` (and re-fetch). `scripts/build-ipxe.sh` builds an **unsigned** iPXE from source (for experiments,
+or with your own certificate or embedded script); it is not what ships, and Secure Boot targets refuse an unsigned build unless you enrol your own key.
 
 ## Secure Boot
 
-A stock iPXE is not signed by anything a Secure Boot target trusts, so such a target refuses it ("Access Denied -- rejected probably
-by Secure Boot" in an OVMF virtual machine with the stock keys). Validating and solving that is the 0.4.x work; see
-[`docs/roadmap.md`](../../docs/roadmap.md) and `tools/ipxe-test/boot-vm.sh`, which boots a UEFI VM from the real adapter in either mode.
+With Secure Boot **on** (the OVMF virtual machine with the stock Microsoft keys, `tools/ipxe-test/boot-vm.sh sb`): the shim and iPXE start from this drive, run
+`autoexec.ipxe`, get an address and fetch over HTTPS; an unsigned Linux kernel is refused ("Security Policy Violation", as intended); Windows PE through the signed
+`wimboot` reaches its prompt. With Secure Boot off the same image works. **Not yet run:** any real PC (firmware, the Microsoft 2011 vs 2023 CA question, the
+shim's revocation level over time). See [`docs/roadmap.md`](../../docs/roadmap.md).

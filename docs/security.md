@@ -85,8 +85,11 @@ and does not change when it is on:
   drive). Turn the drive off when you are not using it.
 - **What it adds is trust in the network path.** iPXE boots whatever the boot server offers. The default key-press path is the public iPXE demo (over HTTPS), which
   proves the path and is **not** for anything you care about: use your own server and signed images.
-- **Secure Boot is the target's guard against unsigned boot code, and it will refuse this iPXE today.** Do not disable it on a machine you care about just to try this.
-  Making the drive work with Secure Boot on is planned work, not a promise yet.
+- **Secure Boot stays on.** The drive carries the iPXE project's own signed shim and iPXE (Microsoft-signed shim, iPXE-CA-signed iPXE), so a target with Secure Boot
+  **on** accepts it, and you do not need to disable the guard to use the drive. Secure Boot still does its job afterwards: iPXE will refuse to start an unsigned kernel
+  or image ("Security Policy Violation"), so what you chain to must be signed (Windows boot files and `wimboot` are; most Linux installers need a signed shim and
+  kernel). This was run in a virtual machine with the stock Microsoft keys; a real PC's firmware may differ (see the status table). The shim is revocable: the
+  firmware's revocation list or a newer shim policy can stop an old one from starting, in which case a newer kvm-it release ships a newer shim.
 
 ## Windows controller (0.2.0)
 

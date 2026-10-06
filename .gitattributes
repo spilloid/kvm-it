@@ -4,3 +4,4 @@ firmware/** -text
 scripts/fw.sh -text
 scripts/build-ipxe.sh -text
 scripts/build-ipxe-image.sh -text
+scripts/fetch-ipxe-signed.sh -text

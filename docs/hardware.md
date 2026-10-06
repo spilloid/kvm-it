@@ -123,7 +123,7 @@ If the device node is different (`ls /dev/ttyACM* /dev/ttyUSB*`), pass it as the
 ## The boot drive (firmware 0.2.0)
 
 The USB port can also present a **4 MiB read-only mass-storage drive** (a third USB interface, after the keyboard and mouse, so the two boot-protocol HID interfaces keep the
-numbers BIOS/UEFI expects). It holds an EFI system partition with iPXE (`EFI/BOOT/BOOTX64.EFI`) and an `autoexec.ipxe` script. It lives in its own flash partition (`ipxe`,
+numbers BIOS/UEFI expects). It holds an EFI system partition with the iPXE project's signed Secure Boot pair (a Microsoft-signed shim as `EFI/BOOT/BOOTX64.EFI`, iPXE-CA-signed `EFI/BOOT/IPXE.EFI`) and an `autoexec.ipxe` script. It lives in its own flash partition (`ipxe`,
 4 MiB at 0x110000); the settings partition (and so the pairing) has not moved, so existing adapters upgrade in place.
 
 - **Off by default.** Turn it on in the app (Adapter popup > Boot drive) or with `kvmit boot-drive on`; the adapter stores the setting and restarts, because the USB
@@ -132,7 +132,7 @@ numbers BIOS/UEFI expects). It holds an EFI system partition with iPXE (`EFI/BOO
 - **UEFI only.** Pick the "kvm-it" entry in the target's boot menu. Legacy BIOS is not supported: the disk's boot sector just hands over to the next boot device (INT 18h),
   and no partition is marked active, so a legacy BIOS that tries the drive should move on instead of hanging (untested).
 - **Inert by default:** the script on the drive waits five seconds for a key press and otherwise exits with a failure status, so a target that boots USB first carries on.
-- **Secure Boot must be off** on the target for now: a stock iPXE is unsigned and Secure Boot refuses it.
+- **Secure Boot can stay on:** the shim and iPXE are signed (run in a virtual machine with the stock Microsoft keys; not yet on a real PC). With it on, iPXE refuses unsigned kernels and images.
 - **Linux host:** with the drive on, it shows up as a write-protected `/dev/sdX`; `sha256sum` of the whole disk equals `firmware/ipxe/ipxe.img`.
 - Serial log lines (`usb_msc`, `usb_hid`) say whether the drive is on, when the target configures the device, and when it first reads the drive.
 - Provenance, licence and how to rebuild the image: [`firmware/ipxe/README.md`](https://github.com/spilloid/kvm-it/blob/main/firmware/ipxe/README.md).
