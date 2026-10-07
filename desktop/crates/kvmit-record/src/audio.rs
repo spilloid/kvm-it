@@ -108,6 +108,9 @@ pub fn parse_dshow_audio(text: &str) -> Vec<AudioDevice> {
     out
 }
 
+/// How long a device lookup may take before its tool is killed.
+const LOOKUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn run_text(prog: &str, args: &[&str], stderr: bool) -> Option<String> {
     let mut c = std::process::Command::new(prog);
     c.args(args).stdin(std::process::Stdio::null());
@@ -116,8 +119,31 @@ fn run_text(prog: &str, args: &[&str], stderr: bool) -> Option<String> {
         use std::os::windows::process::CommandExt;
         c.creation_flags(0x0800_0000);
     }
-    let o = c.output().ok()?;
-    Some(String::from_utf8_lossy(if stderr { &o.stderr } else { &o.stdout }).into_owned())
+    c.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = c.spawn().ok()?;
+    // A hung audio server must not hang the lookup: wait a bounded time, then kill and reap the child.
+    fn drain(mut r: impl std::io::Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = r.read_to_end(&mut v);
+            v
+        })
+    }
+    let (to, te) = (drain(child.stdout.take()?), drain(child.stderr.take()?));
+    let deadline = std::time::Instant::now() + LOOKUP_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+        }
+    }
+    let (o, e) = (to.join().ok()?, te.join().ok()?);
+    Some(String::from_utf8_lossy(if stderr { &e } else { &o }).into_owned())
 }
 
 /// Audio inputs on this machine. Empty (not an error) when the tools are absent. Linux: `pactl`, falling back

@@ -126,3 +126,30 @@ fn webm_with_audio_manual() {
     let _ = std::fs::create_dir_all(&dir);
     record(s, &dir, 60, None);
 }
+
+/// Review round 17/18: two recordings started in the same second, directory and format never share a name or delete each
+/// other's file, whether they finish or one is aborted; no `.part` file is left behind.
+#[test]
+fn simultaneous_recordings_own_their_files() {
+    if !have_ffmpeg() {
+        eprintln!("skipped: no ffmpeg on PATH");
+        return;
+    }
+    let dir = out_dir("simultaneous");
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut a = Recorder::start(Settings::gif(), &dir, 160, 90).unwrap();
+    let mut b = Recorder::start(Settings::gif(), &dir, 160, 90).unwrap();
+    assert_ne!(a.path(), b.path());
+    for t in 0..10 {
+        a.push(160, 90, &synth(160, 90, t)).unwrap();
+        b.push(160, 90, &synth(160, 90, t)).unwrap();
+        std::thread::sleep(Duration::from_millis(90));
+    }
+    let a_path = a.path().to_path_buf();
+    b.abort(); // must not touch a's file
+    let done = a.finish().unwrap();
+    assert_eq!(done.path, a_path);
+    assert!(std::fs::metadata(&done.path).unwrap().len() > 100);
+    let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    assert_eq!(left.len(), 1, "only a's file remains (no placeholder, no .part): {left:?}");
+}
