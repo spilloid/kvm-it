@@ -14,6 +14,16 @@
 - **Not exercised:** any real PC with Secure Boot on (including a stock Windows 11 laptop), firmware that trusts only Microsoft's 2023 CA, the shim's revocation level over
   time, the new image on the real adapter (the previous image was verified there; this one has not been flashed yet).
 
+## [0.4.3] - 2026-10-06 (input fidelity)
+
+GUI only; no firmware or protocol change. **Host-tested** only (unit tests, clippy); the real-touchpad and real-key checks are tracked in the "Needs hardware" issues.
+
+### Fixed
+- **Mouse wheel honours egui's scroll unit** (#27): touchpad pixel deltas are accumulated and sent as whole notches (40 points per notch, the remainder carried, dropped on a reversal and on capture start/end) instead of dozens of notches per swipe or nothing for small deltas; line deltas are unchanged.
+
+### Added
+- **Global abort key** (#28): Esc aborts a running script from anywhere in the window and releases every key (the run always ends with release-all); it does nothing while a text field has focus, so editing a variable cannot abort a run, and Ctrl+Alt+Esc remains the capture-release chord. An abort also unblocks a script waiting on a confirm. `docs/ux.md` now says so (it used to promise a chord that did not exist).
+
 ## [0.4.2] - 2026-10-06 (button contract and feedback)
 
 GUI only; no firmware or protocol change. Everything here is **host-tested** (unit tests, clippy) and has not been run on a screen or against hardware; the checks are tracked in the "Needs hardware" issues.
