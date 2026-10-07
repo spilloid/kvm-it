@@ -2,9 +2,6 @@
 
 ## [Unreleased]
 
-### Added
-- **`kvmit-record` crate (recording core, issue #29; no UI yet).** Pipes decoded RGBA frames as rawvideo to an `ffmpeg` subprocess and writes a timestamped, never-overwritten GIF (palettegen/paletteuse, 12 fps, <=960 px wide, 30 s cap) or WebM (VP9; Opus only if an audio input is chosen, off by default). Clear error when ffmpeg is missing; a dead or stalled encoder surfaces as an error and never blocks the caller; a mid-recording size change is rescaled to the first frame's size. Also lists audio input devices (pactl / `ffmpeg -sources pulse` / dshow parsers). Host-tested (pure arg/name/pacing/parser tests, plus end-to-end GIF and WebM through the host's ffmpeg and ffprobe); the Record button is a later change, and nothing is hardware-verified (no capture card was used, only synthetic frames). The audio path was exercised once against the host's PulseAudio/PipeWire input, not a capture card's audio.
-
 ### Changed
 - **Secure Boot: the boot drive now carries the iPXE project's signed shim and iPXE** (iPXE's fork of the shim, release `ipxe-16.1`, signed by Microsoft, as `EFI/BOOT/BOOTX64.EFI`; iPXE `v2.0.0`, signed by the iPXE project's CA, as
   `EFI/BOOT/IPXE.EFI`), instead of the unsigned iPXE built in 0.4.0. Firmware that trusts Microsoft's third-party UEFI CA (both its 2011 and its 2023 signing are on the shim) should accept it with Secure Boot **on** (verified in an OVMF virtual machine only; many locked-down PCs turn that CA off), and the same image works with Secure Boot off. Our own build
@@ -16,6 +13,36 @@
   private Windows PE chain through the signed `wimboot` reached its prompt with Secure Boot on. Secure Boot **off**: the same image fetches and downloads the demo as before.
 - **Not exercised:** any real PC with Secure Boot on (including a stock Windows 11 laptop), firmware that trusts only Microsoft's 2023 CA, the shim's revocation level over
   time, the new image on the real adapter (the previous image was verified there; this one has not been flashed yet).
+
+## [0.4.4] - 2026-10-06 (session recording)
+
+GUI and desktop only; no firmware or protocol change. **Host-tested** only (unit tests, clippy, and the encoder run against a real `ffmpeg` on synthetic frames); never run against a physical capture card, and audio sync is unmeasured (issue #32).
+
+### Added
+- **Record button** (#30): the top bar's **● Record…** opens a popup: GIF (silent, ~12 fps, at most 960 px wide, 30 s cap) or WebM (VP9, up to 30 fps, optional sound). Sound is **off** unless you pick an input; its list is separate from the video devices. The popup warns that a recording cannot be redacted. While recording the bar shows a red **● REC mm:ss — click to stop** chip that stays live even while input is captured; recordings go to `~/Videos/kvm-it/` with timestamped names and never overwrite. A recording that ends by itself (duration cap, ffmpeg died) says why, and quitting finalises the file. Record is disabled with a reason when there is no picture or the picture is blank (no signal). Needs `ffmpeg` on PATH; without it you get a clear message.
+- **`kvmit-record` crate (recording core, #29).** Pipes decoded RGBA frames as rawvideo to an `ffmpeg` subprocess and writes a timestamped, never-overwritten GIF (palettegen/paletteuse, 12 fps, <=960 px wide, 30 s cap) or WebM (VP9; Opus only if an audio input is chosen, off by default). Clear error when ffmpeg is missing; a dead or stalled encoder surfaces as an error and never blocks the caller; a mid-recording size change is rescaled to the first frame's size. Also lists audio input devices (pactl / `ffmpeg -sources pulse` / dshow parsers). Host-tested (pure arg/name/pacing/parser tests, plus end-to-end GIF and WebM through the host's ffmpeg and ffprobe); the Record button is a later change, and nothing is hardware-verified (no capture card was used, only synthetic frames). The audio path was exercised once against the host's PulseAudio/PipeWire input, not a capture card's audio.
+
+## [0.4.3] - 2026-10-06 (input fidelity)
+
+GUI only; no firmware or protocol change. **Host-tested** only (unit tests, clippy); the real-touchpad and real-key checks are tracked in the "Needs hardware" issues.
+
+### Fixed
+- **Mouse wheel honours egui's scroll unit** (#27): touchpad pixel deltas are accumulated and sent as whole notches (40 points per notch, the remainder carried, dropped on a reversal and on capture start/end) instead of dozens of notches per swipe or nothing for small deltas; line deltas are unchanged.
+
+### Added
+- **Global abort key** (#28): Esc aborts a running script from anywhere in the window and releases every key (the run always ends with release-all); it does nothing while a text field has focus, so editing a variable cannot abort a run, and Ctrl+Alt+Esc remains the capture-release chord. An abort also unblocks a script waiting on a confirm. `docs/ux.md` now says so (it used to promise a chord that did not exist).
+
+## [0.4.2] - 2026-10-06 (button contract and feedback)
+
+GUI only; no firmware or protocol change. Everything here is **host-tested** (unit tests, clippy) and has not been run on a screen or against hardware; the checks are tracked in the "Needs hardware" issues.
+
+### Fixed
+- **Type no longer loses your text** (#21): it is cleared only once the run has actually started, and characters the US layout cannot type are flagged (never named for a secret) before the click.
+- **No silent no-ops** (#22): starting capture with no adapter or while a script runs (Input chip, picture click, Video popup button) now says why; the Input chip and the Video popup's capture button are greyed out with the reason on hover.
+- **Run-log header tells the truth** (#23): *Finished*, *Dry run finished*, *Aborted: reason* or *Failed: reason*, colour-coded, instead of "Script finished" for everything.
+- **Notices** (#24) can be dismissed, clear when their cause resolves (e.g. video is showing again) or after 15 s, and the adapter-link error keeps its own line instead of being hidden by a notice.
+- **Contract gaps** (#25): a dry run works without an adapter (it sends nothing); the Target USB chip is a coloured label, not a button, and keeps its "Target USB: ..." accessible name; disabled Input, Type, Run, Dry run, Abort and Keys controls say why on hover. A Scripts-popup Abort or the confirm dialog's Abort now also releases a script blocked on a confirm.
+- **Hygiene** (#26): Scripts > Reload folder resets the stale error, preview and variables; the preview is compiled only when the script or a variable changes, not every frame; new tests pin every Keys chord to its keys and the chip/button state table (pure functions in `uistate.rs`).
 
 ## [0.4.1] - 2026-10-06 (honest video state)
 

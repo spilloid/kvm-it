@@ -5,6 +5,7 @@ pub mod gui;
 pub mod host;
 pub mod keymap;
 pub mod library;
+pub mod rec_ui;
 pub mod session;
 pub mod video_state;
 pub mod syskeys;

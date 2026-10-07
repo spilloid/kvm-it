@@ -32,6 +32,7 @@ The picture is the window. A single top bar holds everything else:
   if secret; the script library, variables, preview, run and dry run). Popups stay open until you click outside.
 - While input is captured only the *Input* chip is live: every key belongs to the target. The mouse wheel is forwarded in
   notches: pixel deltas (touchpads) are accumulated and sent as whole notches, line deltas as they are.
+- **Record…** opens the recording popup (GIF, or WebM with optional sound; off by default, with a no-redaction warning). While recording it becomes a red **REC** chip, always live, one click to stop.
 - A running script's log is a strip along the bottom, with Abort, and outlives any popup. Its header reports the outcome,
   colour-coded: *Finished*, *Dry run finished*, *Aborted: reason* or *Failed: reason*. A dry run sends nothing, so it works
   without an adapter.
