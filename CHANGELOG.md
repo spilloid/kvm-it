@@ -2,9 +2,18 @@
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-10-07 (macOS preview)
+
+Desktop and CI only; no firmware or protocol change. The macOS port is **built and CI-tested** on a cloud Apple-silicon Mac (it compiles, its tests pass, it packages and its CLI starts); **it has never been run with an adapter, a capture card or a person at the keyboard.** Treat the macOS download as a preview. Windows and Linux behaviour is unchanged apart from the GUI polling noted below.
+
 ### Added
-- **CI parity for Linux and macOS.** An `AppImage` workflow builds, smoke-tests and attaches the Linux AppImage when a release is published (or on demand for an existing release). A `macOS (preview)` workflow runs the tests on Apple silicon and packages an unsigned preview `.dmg` as a build artifact only: macOS has no capture backend yet, so it is never attached to a release. `scripts/build-dmg.sh` builds the `.dmg` on a Mac.
+- **CI parity for Linux and macOS.** An `AppImage` workflow builds, smoke-tests and attaches the Linux AppImage when a release is published (or on demand for an existing release). A `macOS (preview)` workflow runs the tests on Apple silicon, packages the app into a `.dmg` (ad-hoc signed, not notarized) and attaches it to a published release as `kvm-it-X.Y.Z-macos-arm64-preview.dmg`. `scripts/build-dmg.sh` builds the `.dmg` on a Mac.
+- **macOS support (built and CI-tested on Apple silicon; not hardware-verified).** Capture cards through AVFoundation (the first open asks for camera permission; macOS decodes the card's format); the adapter over CoreBluetooth, with ids that are macOS's own (it never reveals Bluetooth addresses, so a saved adapter is per Mac) and pairing done by macOS on first encrypted use (it may show its own prompt); a keyboard grab through a Quartz event tap, so Cmd+Tab, Cmd+Space and Cmd+Q go to the target (needs the Accessibility permission; without it the app says so once and falls back), with the same heartbeat safety valve as Windows and Ctrl+Option+Esc to release; the flasher lists each board once (the `cu.` device); recording can take sound from an AVFoundation input. `scripts/rs.sh macos` type-checks and lints the macOS build from Linux.
 - **`scripts/bootstrap.sh`**: checks a new machine (tools, `gh` login, container runtime, ffmpeg, disk, board access) and builds the build container; `CLAUDE.md` tells a session to run it first on a machine it has not used.
+
+### Fixed (adversarial review, rounds 21-22, macOS)
+- Eleven findings in the new macOS code before it shipped: the exact frame duration of a 59.94 fps format (a rounded one crashes AVFoundation), no GUI blocking on the camera prompt or session start/stop, a keyboard grab that gives up safely if the window stalls and knows keys held before capture, pairing confirmed by an encrypted write, AVFoundation audio chosen by index, capture start and stop kept in order, and a slow start no longer mistaken for a dead card. Details in `docs/dev-process.md`.
+- All platforms: while a capture is open but has not shown a frame yet, the window keeps checking, so the first picture (or the reason it failed) appears without having to move the mouse.
 
 ## [0.4.5] - 2026-10-06 (light and dark theme)
 

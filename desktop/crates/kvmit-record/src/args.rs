@@ -24,6 +24,8 @@ pub enum AudioBackend {
     Pulse,
     Alsa,
     Dshow,
+    /// macOS: ffmpeg's AVFoundation input, by its index in ffmpeg's listing.
+    AvFoundation,
 }
 
 /// A named audio input to mux as Opus (WebM only). Audio is OFF unless the caller sets one.
@@ -101,6 +103,7 @@ fn audio_input_args(a: &AudioInput) -> Vec<String> {
         AudioBackend::Pulse => ("pulse", a.device.clone()),
         AudioBackend::Alsa => ("alsa", a.device.clone()),
         AudioBackend::Dshow => ("dshow", format!("audio={}", a.device)),
+        AudioBackend::AvFoundation => ("avfoundation", format!(":{}", a.device)), // ":<index>" = that audio input, no video
     };
     ["-thread_queue_size", "512", "-f", fmt, "-i", &dev]
         .iter()

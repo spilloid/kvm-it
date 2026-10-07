@@ -15,7 +15,7 @@ use std::time::Duration;
 #[derive(Parser)]
 #[command(name = "kvmit", version, about = "kvm-it controller: drive a target computer through the ESP32-S3 USB-HID adapter")]
 struct Cli {
-    /// Adapter address (default: the last one used, else the strongest in range)
+    /// Adapter id: its Bluetooth address (on macOS, the id macOS gave it) (default: the last one used, else the strongest in range)
     #[arg(long, global = true)]
     device: Option<String>,
     #[command(subcommand)]

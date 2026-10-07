@@ -130,6 +130,8 @@ pub struct App {
     /// Capture was released earlier in this frame: nothing in the same frame may start it again (a click on the
     /// picture that arrived with the release chord would otherwise re-capture immediately).
     released_this_frame: bool,
+    /// The "no OS-level keyboard grab" advice was shown this run (macOS without the Accessibility permission).
+    grab_hint_shown: bool,
     video_devices: Vec<DeviceInfo>,
     video_sel: usize,
     /// The newest frame is a flat fill (no signal); see `video_state`.
@@ -179,6 +181,7 @@ impl App {
             prev_mods: Vec::new(),
             grab: None,
             released_this_frame: false,
+            grab_hint_shown: false,
             video_sel: remembered_video.unwrap_or(0),
             video_devices,
             capture: Arc::default(),
@@ -506,6 +509,12 @@ impl App {
             let ctx = ctx.clone();
             move || ctx.request_repaint() // keyboard events arrive off-thread: wake the GUI to forward (and release) promptly
         });
+        if self.grab.is_none() && !self.grab_hint_shown {
+            if let Some(h) = crate::syskeys::unavailable_hint() {
+                self.grab_hint_shown = true; // once per run: it is advice, not an error
+                self.set_notice(h);
+            }
+        }
         debug_log(&format!("capture begins (OS keyboard grab: {})", if self.grab.is_some() { "on" } else { "off" }));
         // Captured keys must reach the target only: a focused local widget would otherwise take Enter/Space.
         ctx.memory_mut(|m| {
@@ -777,6 +786,10 @@ impl eframe::App for App {
                 }
             }
             ctx.request_repaint_after(Duration::from_millis(16));
+        } else if self.capture.lock().unwrap().is_some() {
+            // opened but no frame yet (a backend may still be starting): keep polling so the first frame, or a failed
+            // start, shows without waiting for some other event
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
 
         let link = self.link.lock().unwrap().clone();
@@ -1007,7 +1020,8 @@ impl eframe::App for App {
                     let can_capture = self.device().is_some();
                     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
                     let msg = crate::video_state::picture_message(vstate).unwrap_or("");
-                    let hint = if self.capturing { "Input captured — Ctrl+Alt+Esc to release" } else if can_capture { "Click here to capture keyboard and mouse without video" } else { "Connect an adapter to send input" };
+                    let captured_hint = format!("Input captured — {} to release", crate::syskeys::RELEASE_CHORD);
+                    let hint = if self.capturing { captured_hint.as_str() } else if can_capture { "Click here to capture keyboard and mouse without video" } else { "Connect an adapter to send input" };
                     ui.painter().text(rect.center() - egui::vec2(0.0, 10.0), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(16.0), ui.visuals().text_color());
                     ui.painter().text(rect.center() + egui::vec2(0.0, 14.0), egui::Align2::CENTER_CENTER, hint, egui::FontId::proportional(13.0), ui.visuals().weak_text_color());
                     if self.capturing {
@@ -1171,7 +1185,7 @@ impl App {
                 self.switch_video(i);
             }
             if let Some(c) = self.capture.lock().unwrap().as_ref() {
-                let kind = if c.info.path.starts_with("demo:") { "still picture" } else if c.mode.mjpeg { "MJPEG" } else { "YUYV" };
+                let kind = if c.info.path.starts_with("demo:") { "still picture" } else if cfg!(target_os = "macos") { "decoded by macOS" } else if c.mode.mjpeg { "MJPEG" } else { "YUYV" };
                 ui.label(format!("{}×{} @ {} fps {}", c.mode.width, c.mode.height, c.mode.fps, kind));
             }
         }

@@ -525,8 +525,18 @@ pub fn list_ports() -> Vec<PortInfo> {
             _ => None,
         })
         .collect();
+    if cfg!(target_os = "macos") {
+        v = prefer_callout_ports(v);
+    }
     v.sort_by_key(|p| p.kind != PortKind::Uart);
     v
+}
+
+/// macOS lists every serial device twice: `/dev/cu.X` (call-out) and `/dev/tty.X` (dial-in, which blocks opening until the
+/// line's carrier is up). Keep the `cu.` one, so one board is one port and flashing never hangs on open.
+pub fn prefer_callout_ports(ports: Vec<PortInfo>) -> Vec<PortInfo> {
+    let has_cu: Vec<String> = ports.iter().filter_map(|p| p.name.strip_prefix("/dev/cu.").map(str::to_string)).collect();
+    ports.into_iter().filter(|p| p.name.strip_prefix("/dev/tty.").is_none_or(|rest| !has_cu.iter().any(|c| c == rest))).collect()
 }
 
 /// A USB device on the bus, whatever it is.

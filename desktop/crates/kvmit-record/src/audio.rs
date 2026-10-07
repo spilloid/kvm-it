@@ -68,6 +68,35 @@ pub fn parse_ffmpeg_sources_pulse(text: &str) -> Vec<AudioDevice> {
 /// `ffmpeg -list_devices true -f dshow -i dummy` (stderr). Handles both the newer format (each device line ends
 /// in `(audio)` / `(video)`) and the older one (a `DirectShow audio devices` section header). `Alternative name`
 /// lines are skipped.
+/// ffmpeg's macOS listing (`-f avfoundation -list_devices true -i ""`, on stderr): the entries after the "AVFoundation audio
+/// devices:" header, e.g. `[AVFoundation indev @ 0x7f8] [1] USB3.0 Capture`. The id is the index, which is what ffmpeg is
+/// given: names are not unique (two identical cards) and a name starting with digits would be read as an index.
+pub fn parse_avfoundation_audio(text: &str) -> Vec<AudioDevice> {
+    let mut out = Vec::new();
+    let mut in_audio = false;
+    for line in text.lines() {
+        if line.contains("AVFoundation audio devices:") {
+            in_audio = true;
+            continue;
+        }
+        if line.contains("AVFoundation video devices:") {
+            in_audio = false;
+            continue;
+        }
+        if !in_audio {
+            continue;
+        }
+        // "...] [N] name": the entry is whatever follows the last "] [N] "
+        let Some(pos) = line.rfind("] [") else { continue };
+        let rest = &line[pos + 3..];
+        let Some((idx, name)) = rest.split_once("] ") else { continue };
+        if idx.chars().all(|c| c.is_ascii_digit()) && !name.trim().is_empty() {
+            out.push(AudioDevice { id: idx.to_string(), description: name.trim().to_string(), monitor: false, backend: AudioBackend::AvFoundation });
+        }
+    }
+    out
+}
+
 pub fn parse_dshow_audio(text: &str) -> Vec<AudioDevice> {
     let mut out = Vec::new();
     let mut section_audio = false;
@@ -178,6 +207,10 @@ pub fn list_audio_devices(ffmpeg: Option<&std::path::Path>) -> Vec<AudioDevice> 
         )
         .map(|t| parse_dshow_audio(&t))
         .unwrap_or_default()
+    } else if cfg!(target_os = "macos") {
+        run_text(&ff, &["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""], true)
+            .map(|t| parse_avfoundation_audio(&t))
+            .unwrap_or_default()
     } else if cfg!(target_os = "linux") {
         if let Some(t) = run_text("pactl", &["list", "short", "sources"], false) {
             let d = parse_pactl_sources(&t);
@@ -243,5 +276,24 @@ dummy: Immediate exit requested\n";
         let d = parse_dshow_audio(t);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].id, "Mic");
+    }
+
+    #[test]
+    fn avfoundation_listing_yields_only_the_audio_section() {
+        let t = "[AVFoundation indev @ 0x7f8c] AVFoundation video devices:\n\
+[AVFoundation indev @ 0x7f8c] [0] FaceTime HD Camera\n\
+[AVFoundation indev @ 0x7f8c] [1] Capture screen 0\n\
+[AVFoundation indev @ 0x7f8c] AVFoundation audio devices:\n\
+[AVFoundation indev @ 0x7f8c] [0] MacBook Pro Microphone\n\
+[AVFoundation indev @ 0x7f8c] [1] USB3.0 Capture [Audio]\n\
+[in#0 @ 0x600] Error opening input: Input/output error\n";
+        let d = parse_avfoundation_audio(t);
+        let names: Vec<_> = d.iter().map(|x| (x.id.as_str(), x.description.as_str())).collect();
+        assert_eq!(names, [("0", "MacBook Pro Microphone"), ("1", "USB3.0 Capture [Audio]")]);
+        assert!(d.iter().all(|x| x.backend == AudioBackend::AvFoundation && !x.monitor));
+        let args = crate::args::build_args(
+            &crate::Settings { audio: Some(d[1].as_input()), ..crate::Settings::webm() }, 640, 360, std::path::Path::new("o.webm"));
+        let a: Vec<String> = args.iter().map(|s| s.to_string_lossy().into_owned()).collect();
+        assert!(a.windows(4).any(|w| w == ["-f", "avfoundation", "-i", ":1"]), "{a:?}");
     }
 }

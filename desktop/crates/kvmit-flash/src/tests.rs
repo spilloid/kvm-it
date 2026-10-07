@@ -528,3 +528,13 @@ fn more_than_one_data_image_or_a_fifth_part_is_refused() {
     im.parts.push(Part { name: "extra".into(), offset: 0x510000, data: boot_image(4096) });
     assert!(im.validate().unwrap_err().0.contains("3 or 4 parts"));
 }
+
+#[test]
+fn macos_twin_ports_collapse_to_the_callout_device() {
+    let port = |name: &str| PortInfo { kind: PortKind::Uart, description: String::new(), name: name.into(), vid: 0x1a86, pid: 0x55d3, serial: None };
+    let got = prefer_callout_ports(vec![port("/dev/tty.usbmodem1101"), port("/dev/cu.usbmodem1101"), port("/dev/tty.other")]);
+    let names: Vec<_> = got.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["/dev/cu.usbmodem1101", "/dev/tty.other"], "a tty. without a cu. twin stays");
+    let linux = vec![port("/dev/ttyACM0")];
+    assert_eq!(prefer_callout_ports(linux.clone()).len(), 1);
+}
