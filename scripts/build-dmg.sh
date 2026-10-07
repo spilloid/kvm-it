@@ -51,6 +51,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSBluetoothAlwaysUsageDescription</key><string>kvm-it talks to its USB adapter over Bluetooth Low Energy.</string>
   <key>NSCameraUsageDescription</key><string>kvm-it shows the target's screen from a USB HDMI capture card.</string>
+  <key>NSMicrophoneUsageDescription</key><string>kvm-it records the target's sound from the capture card, only when you choose a sound input for a recording.</string>
 </dict></plist>
 PLIST
 

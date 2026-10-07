@@ -245,7 +245,11 @@ mod imp {
 #[path = "mf.rs"]
 mod imp;
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
+#[path = "avf.rs"]
+mod imp;
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 mod imp {
     use super::*;
     use crate::SharedFrame;
@@ -258,7 +262,7 @@ mod imp {
     }
     impl Capture {
         pub fn open(_path: &str) -> Result<Capture, CaptureError> {
-            Err(CaptureError("video capture is not implemented on this platform yet (Linux/V4L2 only)".into()))
+            Err(CaptureError("video capture is not implemented on this platform yet (Linux, Windows and macOS only)".into()))
         }
         pub fn latest(&self) -> Option<SharedFrame> {
             None

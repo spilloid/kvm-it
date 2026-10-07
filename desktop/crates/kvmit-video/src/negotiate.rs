@@ -5,6 +5,17 @@ use crate::Mode;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
+/// Index of the best `(width, height, max fps)` by the shared preference (`mode_score`; these are decoded by the OS, so
+/// never counted as MJPEG). `None` for an empty list or one without any real size.
+pub(crate) fn best_mode(modes: &[(u32, u32, u32)]) -> Option<usize> {
+    modes
+        .iter()
+        .enumerate()
+        .filter(|(_, (w, h, _))| *w > 0 && *h > 0)
+        .min_by_key(|(_, (w, h, fps))| crate::device::mode_score(*w, *h, *fps, false))
+        .map(|(i, _)| i)
+}
+
 /// After this much error weight in a row the card is treated as gone (about a second of failed reads).
 pub(crate) const MAX_CONSECUTIVE_ERRORS: u32 = 20;
 
@@ -196,5 +207,13 @@ mod tests {
             let _d = DoneOnDrop(tx);
         });
         assert!(join_bounded(t, &rx, Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn best_mode_prefers_1080p_at_a_real_rate_and_skips_empty_sizes() {
+        let m = [(640, 480, 30), (1920, 1080, 5), (1920, 1080, 60), (0, 0, 60), (3840, 2160, 30)];
+        assert_eq!(best_mode(&m), Some(2));
+        assert_eq!(best_mode(&[(0, 0, 30)]), None);
+        assert_eq!(best_mode(&[]), None);
     }
 }

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run cargo for the desktop workspace in a container (the host has no Rust toolchain).
-# Usage: scripts/rs.sh {image|test|clippy|fmt|build|windows|run <args>|shell|cargo <args>}
+# Usage: scripts/rs.sh {image|test|clippy|fmt|build|windows|macos|run <args>|shell|cargo <args>}
 #   windows  cross-compiles kvmit.exe (x86_64-pc-windows-gnu); compile-checked only, not run on Windows here.
+#   macos    type-checks the workspace (and clippy) for Apple silicon (aarch64-apple-darwin); no linking: the macOS CI job links and tests.
 set -euo pipefail
 IMAGE="${RS_IMAGE:-localhost/kvmit-rs:1.99}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,6 +23,7 @@ clippy)  run cargo clippy --workspace --all-targets -- -D warnings ;;
 fmt)     run cargo fmt --all ;;
 build)   run cargo build --release -p kvmit ;;
 windows) run cargo build --release -p kvmit --target x86_64-pc-windows-gnu ;;
+macos)   run bash -c 'rustup target add aarch64-apple-darwin >/dev/null 2>&1; cargo clippy --workspace --all-targets --target aarch64-apple-darwin -- -D warnings' ;;
 run)     shift; run cargo run --release -p kvmit -- "$@" ;;
 shell)   run bash ;;
 cargo)   shift; run cargo "$@" ;;

@@ -29,7 +29,8 @@ controlled over BLE from a Rust desktop app. Read `README.md`, then `docs/archit
 | `desktop/` | Rust workspace (`kvmit` app + crates); `scripts/rs.sh test\|clippy\|build\|windows` (container) |
 | `scripts/fw.sh` | test/build/flash via the ESP-IDF container |
 | `desktop/crates/kvmit-flash/` , `kvmit/src/{flashcmd,flashwiz}.rs` | flash the adapter over its COM port (`kvmit flash`, GUI wizard): image/port/identity safety rules are in the crate and tested; never loosen them in the UI |
-| `desktop/crates/kvmit/src/syskeys.rs` | Windows keyboard grab: pure logic (tested) + helper process; never log which keys |
+| `desktop/crates/kvmit/src/syskeys.rs` | keyboard grab: pure logic (tested), Windows helper process, macOS Quartz event tap; never log which keys |
+| `desktop/crates/kvmit-video/src/avf.rs` | macOS capture (AVFoundation); `scripts/rs.sh macos` type-checks/lints the macOS build from Linux, the `macOS (preview)` CI job links and tests it |
 | `desktop/crates/kvmit-video/src/demo.rs` | synthetic video source (`KVMIT_DEMO_VIDEO=<png>`): use it for any screenshot or demo, never a real machine's screen |
 | `scripts/build-release.ps1`, `sign.ps1`, `verify-release.py`, `installer/`, `docs/RELEASING.md` | Windows release packaging (run on the release machine) |
 | `docs/` | architecture, hardware, security, protocol draft, roadmap, dev-process log |
@@ -53,6 +54,7 @@ self-test types into the machine it is plugged into.
 
 ## Things to re-verify before trusting them (dated, STD-003 rule 4)
 
+- 2026-10-07: the whole macOS port (AVFoundation capture, CoreBluetooth ids and pairing-on-first-use, the Quartz keyboard grab and its Accessibility fallback, `cu.` port de-duplication, AVFoundation audio) is built and CI-tested only; nobody has run it with an adapter, a capture card or a keyboard. Known gap: ISO Apple keyboards swap the codes of the key left of 1 and the key left of Z (the table follows ANSI).
 - 2026-10-06: 0.4.1-0.4.5 (video honesty, button contract, wheel/Esc abort, recording, light/dark theme) are host-tested only. Nothing ran on a capture card, a real target, the Linux GUI or Windows; see the "Needs hardware" issues #31-#34. Neither theme has been looked at on a real screen (contrast is unit-tested, not eyeballed).
 - 2026-10-03: "COM = CH343 UART, USB = native" port labelling is vendor-documented and consistent with
   `lsusb 1a86:55d3` on COM, but not checked against this board's silkscreen.

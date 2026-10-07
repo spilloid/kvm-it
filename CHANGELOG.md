@@ -4,6 +4,7 @@
 
 ### Added
 - **CI parity for Linux and macOS.** An `AppImage` workflow builds, smoke-tests and attaches the Linux AppImage when a release is published (or on demand for an existing release). A `macOS (preview)` workflow runs the tests on Apple silicon and packages an unsigned preview `.dmg` as a build artifact only: macOS has no capture backend yet, so it is never attached to a release. `scripts/build-dmg.sh` builds the `.dmg` on a Mac.
+- **macOS support (built and CI-tested on Apple silicon; not hardware-verified).** Capture cards through AVFoundation (the first open asks for camera permission; macOS decodes the card's format); the adapter over CoreBluetooth, with ids that are macOS's own (it never reveals Bluetooth addresses, so a saved adapter is per Mac) and pairing done by macOS on first encrypted use (it may show its own prompt); a keyboard grab through a Quartz event tap, so Cmd+Tab, Cmd+Space and Cmd+Q go to the target (needs the Accessibility permission; without it the app says so once and falls back), with the same heartbeat safety valve as Windows and Ctrl+Option+Esc to release; the flasher lists each board once (the `cu.` device); recording can take sound from an AVFoundation input. `scripts/rs.sh macos` type-checks and lints the macOS build from Linux.
 - **`scripts/bootstrap.sh`**: checks a new machine (tools, `gh` login, container runtime, ffmpeg, disk, board access) and builds the build container; `CLAUDE.md` tells a session to run it first on a machine it has not used.
 
 ## [0.4.5] - 2026-10-06 (light and dark theme)

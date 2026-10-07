@@ -79,9 +79,12 @@ pub struct InputChip {
     pub disabled_reason: Option<&'static str>,
 }
 
+/// The captured-input chip, naming this platform's release chord.
+const CAPTURED_TEXT: &str = if cfg!(target_os = "macos") { "INPUT CAPTURED — Ctrl+Option+Esc to release" } else { "INPUT CAPTURED — Ctrl+Alt+Esc to release" };
+
 pub fn input_chip(capturing: bool, block: Option<&'static str>) -> InputChip {
     if capturing {
-        InputChip { health: Health::Bad, text: "INPUT CAPTURED — Ctrl+Alt+Esc to release", enabled: true, disabled_reason: None }
+        InputChip { health: Health::Bad, text: CAPTURED_TEXT, enabled: true, disabled_reason: None }
     } else {
         InputChip { health: Health::Idle, text: "Input: click to capture", enabled: block.is_none(), disabled_reason: block }
     }
@@ -320,7 +323,7 @@ mod tests {
         assert_eq!(blocked.text, ready.text, "same name whether or not it is clickable");
         let cap = input_chip(true, Some(WHY_NO_ADAPTER));
         assert_eq!((cap.health, cap.disabled_reason), (Health::Bad, None));
-        assert!(cap.text.contains("Ctrl+Alt+Esc"));
+        assert!(cap.text.contains(crate::syskeys::RELEASE_CHORD));
     }
 
     #[test]
