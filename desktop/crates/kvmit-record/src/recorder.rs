@@ -63,18 +63,24 @@ fn ffmpeg_program(s: &Settings) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("ffmpeg"))
 }
 
-/// Create `dir/kvmit-<stamp>[-N].<ext>` empty, atomically (`create_new`), so two recordings (threads or processes) can never
-/// hold the same name. It stays an empty placeholder until the finished file is renamed over it.
+/// Pick `dir/kvmit-<stamp>[-N].<ext>` and reserve it with a hidden marker (`.<name>.reserved`, made with `create_new`, so two
+/// recordings can never take the same name). Nothing appears under the final name until the finished file is published, and a
+/// crash leaves only hidden files behind.
 fn reserve_path(dir: &Path, format: Format) -> Result<PathBuf, RecordError> {
     for _ in 0..1000 {
-        let p = unique_path(dir, &stamp_now(), format, |p| p.exists());
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
+        let p = unique_path(dir, &stamp_now(), format, |p| p.exists() || reservation_path(p).exists());
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(reservation_path(&p)) {
             Ok(_) => return Ok(p),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(RecordError::Io(format!("{}: {e}", p.display()))),
         }
     }
     Err(RecordError::Io("could not reserve a free file name".into()))
+}
+
+fn reservation_path(final_path: &Path) -> PathBuf {
+    let name = final_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    final_path.with_file_name(format!(".{name}.reserved"))
 }
 
 /// `dir/.<pid>-<final name>.part`.
@@ -199,7 +205,7 @@ impl Recorder {
         {
             Ok(c) => c,
             Err(e) => {
-                let _ = std::fs::remove_file(&path); // our own placeholder
+                let _ = std::fs::remove_file(reservation_path(&path));
                 return Err(not_found_or_io(e, &prog));
             }
         };
@@ -261,6 +267,12 @@ impl Recorder {
     /// A flag that, once set, makes `finish` kill the encoder and remove the files instead of waiting for it.
     pub fn canceller(&self) -> Arc<AtomicBool> {
         self.cancel.clone()
+    }
+
+    /// Use a cancel flag created before this recording existed (so a cancel requested early is never lost).
+    pub fn with_cancel(mut self, flag: Arc<AtomicBool>) -> Recorder {
+        self.cancel = flag;
+        self
     }
 
     pub fn path(&self) -> &Path {
@@ -385,8 +397,8 @@ impl Recorder {
     /// Repay slots still owed (a stall near the end must not shorten the clip), waiting a bounded time for queue room.
     fn flush_owed(&mut self) {
         let (Some(tx), Some(last)) = (self.tx.as_ref(), self.last.clone()) else { return };
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while self.owed > 0 && Instant::now() < deadline {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.owed > 0 && Instant::now() < deadline && !self.cancel.load(Ordering::SeqCst) {
             match tx.try_send(last.clone()) {
                 Ok(()) => {
                     self.owed -= 1;
@@ -433,6 +445,7 @@ impl Recorder {
                 };
                 Err(self.fail_cleanup(RecordError::EncoderFailed(msg)))
             }
+            Some(_) if self.cancel.load(Ordering::SeqCst) => Err(self.fail_cleanup(RecordError::Io("cancelled while quitting".into()))),
             Some(_) => {
                 self.publish()?;
                 Ok(Finished {
@@ -445,10 +458,30 @@ impl Recorder {
         }
     }
 
-    /// Give the finished part file its final name. The name was reserved (created, empty) by this recording at start, so the
-    /// rename replaces only our own placeholder: it is atomic, never touches anyone else's file, and needs no hard links.
+    /// Give the finished part file its final name, then drop the reservation. If something else has appeared under the
+    /// name meanwhile it is never replaced: the next free name is used.
     fn publish(&mut self) -> Result<(), RecordError> {
-        std::fs::rename(&self.part, &self.path).map_err(|e| self.fail_cleanup(RecordError::Io(e.to_string())))
+        let dir = self.part.parent().map(Path::to_path_buf).unwrap_or_default();
+        for _ in 0..100 {
+            if !self.path.exists() {
+                return match std::fs::rename(&self.part, &self.path) {
+                    Ok(()) => {
+                        let _ = std::fs::remove_file(reservation_path(&self.path));
+                        Ok(())
+                    }
+                    Err(e) => Err(self.fail_cleanup(RecordError::Io(e.to_string()))),
+                };
+            }
+            let old = reservation_path(&self.path);
+            match reserve_path(&dir, self.settings.format) {
+                Ok(p) => {
+                    let _ = std::fs::remove_file(old);
+                    self.path = p;
+                }
+                Err(e) => return Err(self.fail_cleanup(e)),
+            }
+        }
+        Err(self.fail_cleanup(RecordError::Io("could not find a free file name".into())))
     }
 
     /// Remove only this recording's own part file.
@@ -457,10 +490,11 @@ impl Recorder {
         e
     }
 
-    /// The part file and the reserved (still empty) final name: both are this recording's alone.
+    /// The part file and the hidden reservation: both are this recording's alone. The final name is never deleted here: until
+    /// publication it is not ours, and afterwards it is the user's.
     fn remove_own_files(&self) {
         let _ = std::fs::remove_file(&self.part);
-        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(reservation_path(&self.path));
     }
 
     /// Stop immediately and delete the partial file.
@@ -488,15 +522,13 @@ impl Drop for Recorder {
 #[derive(Clone)]
 pub struct Canceller {
     stop: Arc<AtomicBool>,
-    slot: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    cancel: Arc<AtomicBool>,
 }
 
 impl Canceller {
     pub fn cancel(&self) {
         self.stop.store(true, Ordering::SeqCst);
-        if let Some(c) = self.slot.lock().unwrap().as_ref() {
-            c.store(true, Ordering::SeqCst);
-        }
+        self.cancel.store(true, Ordering::SeqCst); // a flag made before the recording existed: never lost
     }
 }
 
@@ -505,7 +537,7 @@ pub struct PollHandle {
     stop: Arc<AtomicBool>,
     /// Set by the worker once it has begun finalising the file (after stop, the cap, or the picture going away).
     finalising: Arc<AtomicBool>,
-    cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+    cancel: Arc<AtomicBool>,
     thread: Option<JoinHandle<Result<Finished, RecordError>>>,
 }
 
@@ -522,7 +554,7 @@ impl PollHandle {
 
     /// A handle that can give up a finalisation in progress (for quitting), usable after `stop` has taken this one.
     pub fn canceller(&self) -> Canceller {
-        Canceller { stop: self.stop.clone(), slot: self.cancel.clone() }
+        Canceller { stop: self.stop.clone(), cancel: self.cancel.clone() }
     }
 
     /// Stop recording, finalise the file and return the outcome.
@@ -562,8 +594,8 @@ where
     let flag = stop.clone();
     let finalising = Arc::new(AtomicBool::new(false));
     let fin = finalising.clone();
-    let cancel_slot: Arc<Mutex<Option<Arc<AtomicBool>>>> = Arc::default();
-    let slot = cancel_slot.clone();
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let cancel_in = cancel_flag.clone();
     let dir = dir.to_path_buf();
     let thread = std::thread::spawn(move || {
         let mut rec: Option<Recorder> = None;
@@ -579,8 +611,7 @@ where
                 if rec.is_none() {
                     match Recorder::start(settings.clone(), &dir, f.width, f.height) {
                         Ok(r) => {
-                            *slot.lock().unwrap() = Some(r.canceller());
-                            rec = Some(r)
+                            rec = Some(r.with_cancel(cancel_in.clone()))
                         }
                         Err(e) => return Err(e),
                     }
@@ -629,7 +660,7 @@ where
     Ok(PollHandle {
         stop,
         finalising,
-        cancel: cancel_slot,
+        cancel: cancel_flag,
         thread: Some(thread),
     })
 }
