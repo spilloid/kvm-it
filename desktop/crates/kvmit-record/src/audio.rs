@@ -142,7 +142,17 @@ fn run_text(prog: &str, args: &[&str], stderr: bool) -> Option<String> {
             }
         }
     }
-    let (o, e) = (to.join().ok()?, te.join().ok()?);
+    // The tool is gone, but a descendant could still hold its pipes: give the readers a moment, then abandon them.
+    let grace = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let (mut o, mut e) = (Vec::new(), Vec::new());
+    for (h, out) in [(to, &mut o), (te, &mut e)] {
+        while !h.is_finished() && std::time::Instant::now() < grace {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if h.is_finished() {
+            *out = h.join().unwrap_or_default();
+        }
+    }
     Some(String::from_utf8_lossy(if stderr { &e } else { &o }).into_owned())
 }
 

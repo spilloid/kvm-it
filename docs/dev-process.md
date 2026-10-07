@@ -578,4 +578,14 @@ Fixes verified: `scripts/rs.sh test` and `clippy` clean; the ffmpeg end-to-end t
 | 7 | Med | A hung `pactl`/ffmpeg lookup was never killed | Lookups are killed after 5 s |
 | 8 | Low | An automatic stop kept showing the REC timer during encoding | The worker flags finalising; the bar shows "Finishing the recording…" |
 
-A third re-review of the round-18 fixes is the next step; no sign-off is claimed before it.
+**Round 19** (re-review of the round-18 fixes): **NO SIGN-OFF**, five findings; four fixed, one accepted:
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| 1 | High | A cancel requested before the recorder was registered was lost (a fresh flag replaced it) | **Fixed.** The flag is made before the worker starts and handed to the recorder; a cancel can no longer be lost |
+| 2 | Med | The audio lookup's 5 s did not bound the pipe readers if a descendant held them | **Fixed.** Readers get 1 s after the tool is killed, then are abandoned. Not changed: the recorder's own reader joins (ffmpeg spawns no descendants) |
+| 3 | Med | Owed-frame flush gave up after 2 s and ignored cancel | **Fixed.** 10 s, cancel-aware. Residual debt after that is tolerated and shows in the dropped count |
+| 4 | Med | An empty file under the final name appeared immediately and survived a crash | **Fixed.** The name is reserved by a hidden `.<name>.reserved` marker; nothing is visible under the final name until publication; a crash leaves only hidden files. A cancel now also wins over a clean exit |
+| 5 | High (plausible) | A user deleting the placeholder, then another program creating that name, got overwritten | **Fixed by the same change:** cleanup never deletes the final name, and publication checks it is free (next free name otherwise; the check-then-rename gap against a non-cooperating writer remains, accepted) |
+
+Verification after the fixes: `rs.sh test`/`clippy` clean; ffmpeg end-to-end (4 tests) pass. **No sign-off is claimed.** Each round has found issues in the previous round's fixes, with the severity of the remaining ones falling toward exotic races; a fourth round is the gate before release.

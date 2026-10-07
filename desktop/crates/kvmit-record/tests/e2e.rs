@@ -151,5 +151,5 @@ fn simultaneous_recordings_own_their_files() {
     assert_eq!(done.path, a_path);
     assert!(std::fs::metadata(&done.path).unwrap().len() > 100);
     let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-    assert_eq!(left.len(), 1, "only a's file remains (no placeholder, no .part): {left:?}");
+    assert_eq!(left.len(), 1, "only a's file remains (no reservation, no .part): {left:?}");
 }
