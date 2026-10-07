@@ -224,6 +224,57 @@ pub fn notice_resolved(notice: &str, f: Facts) -> bool {
             && f.adapter_connected
 }
 
+// ---------- mouse wheel ----------
+
+/// egui points that make one wheel notch for touchpad/pixel deltas (egui's own scroll uses 40 per line).
+pub const POINTS_PER_NOTCH: f32 = 40.0;
+const PAGE_NOTCHES: f32 = 10.0;
+
+/// Turns egui wheel deltas into whole notches, carrying the fractional rest of pixel deltas to the next event.
+#[derive(Default)]
+pub struct WheelAccum {
+    rest: f32,
+}
+
+impl WheelAccum {
+    pub fn reset(&mut self) {
+        self.rest = 0.0;
+    }
+
+    /// Notches (positive = as egui's delta) to send for this event, or 0.
+    pub fn add(&mut self, unit: egui::MouseWheelUnit, delta: f32) -> i8 {
+        let notches = match unit {
+            // Line deltas are already notches: unchanged behaviour (rounded, no carry).
+            egui::MouseWheelUnit::Line => return clamp(delta.round()),
+            egui::MouseWheelUnit::Page => delta * PAGE_NOTCHES,
+            egui::MouseWheelUnit::Point => delta / POINTS_PER_NOTCH,
+        };
+        if (self.rest > 0.0) != (notches > 0.0) && self.rest != 0.0 {
+            self.rest = 0.0; // direction changed: drop the leftover of the other way
+        }
+        let total = self.rest + notches;
+        let whole = total.trunc();
+        self.rest = total - whole;
+        clamp(whole)
+    }
+}
+
+fn clamp(v: f32) -> i8 {
+    v.clamp(-127.0, 127.0) as i8
+}
+
+// ---------- global abort key ----------
+
+/// The key that aborts a running script: plain Esc, no modifiers (Ctrl+Alt+Esc stays the capture release chord).
+pub fn is_abort_press(ev: &egui::Event) -> bool {
+    matches!(ev, egui::Event::Key { key: egui::Key::Escape, pressed: true, repeat: false, modifiers, .. } if modifiers.is_none())
+}
+
+/// Abort fires only while a script runs and no text field has keyboard focus (Esc there leaves the field).
+pub fn abort_fires(running: bool, text_field_focused: bool, events: &[egui::Event]) -> bool {
+    running && !text_field_focused && events.iter().any(is_abort_press)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,5 +408,42 @@ mod tests {
         assert!(notice_resolved("Pairing failed: x", on));
         assert!(!notice_resolved("Pairing failed: x", Facts { video_live: true, adapter_connected: false }));
         assert!(!notice_resolved("Input is busy", on), "unrelated notices wait for their timeout");
+    }
+
+    #[test]
+    fn wheel_points_accumulate_into_notches() {
+        use egui::MouseWheelUnit::{Line, Point};
+        let mut w = WheelAccum::default();
+        // a touchpad: many small pixel deltas; nothing for the first, a notch once 40 points have built up
+        assert_eq!(w.add(Point, 15.0), 0);
+        assert_eq!(w.add(Point, 15.0), 0);
+        assert_eq!(w.add(Point, 15.0), 1);
+        assert_eq!(w.add(Point, 35.0), 1, "5 carried + 35");
+        assert_eq!(w.add(Point, -10.0), 0, "a reversal first cancels nothing: the leftover is dropped");
+        assert_eq!(w.add(Point, -30.0), -1);
+        assert_eq!(w.add(Point, 4000.0), 100, "a fling is many notches, not dozens of 127s");
+        assert_eq!(w.add(Point, 1.0e9), 127, "clamped");
+        // lines unchanged
+        w.reset();
+        assert_eq!(w.add(Line, 1.0), 1);
+        assert_eq!(w.add(Line, -3.0), -3);
+        assert_eq!(w.add(Line, 0.2), 0);
+        assert_eq!(w.add(egui::MouseWheelUnit::Page, 1.0), 10);
+    }
+
+    fn key(k: egui::Key, mods: egui::Modifiers, pressed: bool, repeat: bool) -> egui::Event {
+        egui::Event::Key { key: k, physical_key: Some(k), pressed, repeat, modifiers: mods }
+    }
+
+    #[test]
+    fn abort_key_only_when_running_and_no_text_field_is_focused() {
+        let esc = key(egui::Key::Escape, egui::Modifiers::NONE, true, false);
+        assert!(abort_fires(true, false, std::slice::from_ref(&esc)));
+        assert!(!abort_fires(false, false, std::slice::from_ref(&esc)), "nothing to abort");
+        assert!(!abort_fires(true, true, std::slice::from_ref(&esc)), "Esc while editing text leaves the field");
+        assert!(!abort_fires(true, false, &[key(egui::Key::Escape, egui::Modifiers::NONE, false, false)]), "release");
+        assert!(!abort_fires(true, false, &[key(egui::Key::Escape, egui::Modifiers::NONE, true, true)]), "repeat");
+        assert!(!abort_fires(true, false, &[key(egui::Key::Escape, egui::Modifiers::CTRL | egui::Modifiers::ALT, true, false)]), "the release chord");
+        assert!(!abort_fires(true, false, &[key(egui::Key::A, egui::Modifiers::NONE, true, false)]));
     }
 }
