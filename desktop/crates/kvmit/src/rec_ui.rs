@@ -142,7 +142,7 @@ impl RecordUi {
         } else {
             ui.small("GIF: about 12 frames per second, at most 960 px wide, stops after 30 s. Use WebM for longer clips or sound.");
         }
-        ui.colored_label(egui::Color32::from_rgb(230, 170, 40), "⚠ A recording cannot be redacted: everything on the target's screen (passwords typed into it, private windows) is in the file.");
+        ui.colored_label(crate::theme::palette(ui.visuals().dark_mode).warn_text, "⚠ A recording cannot be redacted: everything on the target's screen (passwords typed into it, private windows) is in the file.");
         ui.small(format!("Saved to {}", output_dir().display()));
         if let Some(p) = &self.last_saved {
             ui.small(format!("Last: {}", p.display()));
