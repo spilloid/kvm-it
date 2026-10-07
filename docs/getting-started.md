@@ -8,18 +8,22 @@ Three things to do: **get the parts, install the app, plug in.** No toolchains, 
 |---|---|
 | **The hands** | An ESP32-S3 dev board with **two** USB-C ports, labelled **COM** and **USB**. About ten bucks. We test on the YD-ESP32-23; details in the [hardware guide](hardware.md). |
 | **The eyes** | A USB HDMI capture card, the cheap generic kind (it just has to be a normal USB video device). No drivers. Optional: without one you get no picture, but you can still type and click. |
-| **The brain** | Your PC, on **Windows 11** or **Linux**, with Bluetooth LE. The *target* can be anything with a USB port and an HDMI output, running anything or nothing. |
+| **The brain** | Your computer, on **Windows 11**, **Linux** or **macOS** (Apple silicon, preview), with Bluetooth LE. The *target* can be anything with a USB port and an HDMI output, running anything or nothing. |
 
 ## 2. The app
 
-**Windows 11:** download `kvmit-vX.Y.Z-windows-x64.msi` from the [Releases page](https://github.com/spilloid/kvm-it/releases) and
+**Windows 11:** download `kvmit-vX.Y.Z-windows-x64.msi` from the [download page](index.html#download) (or the [Releases page](https://github.com/spilloid/kvm-it/releases)) and
 double-click it. That adds **kvm-it** to your Start menu. Prefer no installer? Grab the `.zip`, unzip it anywhere, and run
 `kvmit-gui.exe`. It is one self-contained program that uses only what Windows already has.
 
 **Linux:** download `kvm-it-X.Y.Z-x86_64.AppImage`, `chmod +x` it, run it. It wants BlueZ and the desktop libraries any
 normal distro (Debian 12 / Ubuntu 22.04 or newer) already has.
 
-**macOS:** not yet.
+**macOS (preview, Apple silicon):** download `kvm-it-X.Y.Z-macos-arm64-preview.dmg`, open it and drag **kvm-it** to
+Applications. It is not notarized yet, so the first time macOS blocks it: open *System Settings > Privacy & Security* and
+click **Open Anyway**. It asks for Bluetooth and Camera access when it first needs them; to send Cmd+Tab and friends to
+the target, add kvm-it under *Privacy & Security > Accessibility* (Ctrl+Option+Esc releases capture). The Mac build is
+tested automatically but has not yet been used with an adapter and a capture card: tell us how it goes.
 
 > **No Rust. No Docker. No DLL scavenger hunt.** If you can double-click an installer, you are done with this step. (Building
 > from source is for tinkerers: [developing.md](developing.md).)
