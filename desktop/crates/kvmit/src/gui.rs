@@ -131,6 +131,8 @@ pub struct App {
     released_this_frame: bool,
     video_devices: Vec<DeviceInfo>,
     video_sel: usize,
+    /// The newest frame is a flat fill (no signal); see `video_state`.
+    video_blank: bool,
     capture: Arc<Mutex<Option<Capture>>>,
     texture: Option<egui::TextureHandle>,
     last_seq: u64,
@@ -158,6 +160,8 @@ impl App {
         let cfg = Config::load();
         let library = library::load_all(&cfg.script_dir());
         let video_devices = kvmit_video::list_devices();
+        // only a device chosen before (or the demo source) opens by itself: index 0 is often a webcam
+        let remembered_video = crate::video_state::initial_video(&video_devices, cfg.last_video_key.as_deref(), cfg.last_video.as_deref());
         let mut app = App {
             rt,
             link: Arc::new(Mutex::new(Link::Disconnected)),
@@ -172,10 +176,11 @@ impl App {
             prev_mods: Vec::new(),
             grab: None,
             released_this_frame: false,
-            video_sel: cfg.last_video.as_ref().and_then(|p| video_devices.iter().position(|d| &d.path == p)).unwrap_or(0),
+            video_sel: remembered_video.unwrap_or(0),
             video_devices,
             capture: Arc::default(),
             texture: None,
+            video_blank: false,
             last_seq: 0,
             library,
             selected: None,
@@ -198,7 +203,7 @@ impl App {
         if let Some(id) = app.cfg.last_device.clone() {
             app.start_link(id, cc.egui_ctx.clone(), false);
         }
-        if !app.video_devices.is_empty() {
+        if remembered_video.is_some() {
             app.open_video();
         }
         app
@@ -435,6 +440,7 @@ impl App {
         let old = self.capture.lock().unwrap().take();
         drop(old);
         self.texture = None;
+        self.video_blank = false;
         self.last_seq = 0; // a still source always reports the same sequence number
         self.open_video();
     }
@@ -454,6 +460,7 @@ impl App {
                 if !d.path.starts_with(kvmit_video::DEMO_PREFIX) {
                     // the synthetic demo source is never the remembered card
                     self.cfg.last_video = Some(d.path.clone());
+                    self.cfg.last_video_key = Some(d.key.clone());
                     self.cfg.save();
                 }
                 *self.capture.lock().unwrap() = Some(c);
@@ -749,6 +756,7 @@ impl eframe::App for App {
         if self.capture.lock().unwrap().as_ref().is_some_and(|c| c.failed()) {
             *self.capture.lock().unwrap() = None;
             self.texture = None;
+            self.video_blank = false;
             self.set_notice("Video stopped: the capture card was unplugged, reset or is in use by another app. Open it again from the Video button.");
         }
 
@@ -757,6 +765,7 @@ impl eframe::App for App {
         if let Some(f) = frame {
             if f.seq != self.last_seq {
                 self.last_seq = f.seq;
+                self.video_blank = f.is_blank();
                 let img = egui::ColorImage::from_rgba_unmultiplied([f.width, f.height], &f.rgba);
                 match &mut self.texture {
                     Some(t) => t.set(img, egui::TextureOptions::LINEAR),
@@ -769,6 +778,8 @@ impl eframe::App for App {
         let link = self.link.lock().unwrap().clone();
         let status = self.status.lock().unwrap().clone();
         let has_video = self.capture.lock().unwrap().is_some() && self.texture.is_some();
+        let vmode = self.capture.lock().unwrap().as_ref().map(|c| c.mode);
+        let vstate = crate::video_state::video_state(!self.video_devices.is_empty(), vmode, has_video, self.video_blank);
 
         // notices clear when their cause resolves, or after a timeout; the link error line is separate and always shown
         {
@@ -816,12 +827,12 @@ impl eframe::App for App {
                     let (h, t) = uistate::target_usb_chip(matches!(link, Link::Connected { .. }), status.as_ref().map(|s| s.hid_mounted));
                     indicator(ui, h, t);
 
-                    let mode = self.capture.lock().unwrap().as_ref().map(|c| c.mode);
-                    let (h, t) = match mode {
-                        Some(m) if has_video => (Health::Good, format!("Video: {}×{} @ {} fps", m.width, m.height, m.fps)),
-                        Some(_) => (Health::Working, "Video: waiting for a frame…".into()),
-                        None if self.video_devices.is_empty() => (Health::Bad, "Video: no capture card found".into()),
-                        None => (Health::Idle, "Video: not opened — click to open".into()),
+                    let (level, t) = crate::video_state::chip(vstate);
+                    let h = match level {
+                        crate::video_state::Level::Good => Health::Good,
+                        crate::video_state::Level::Working => Health::Working,
+                        crate::video_state::Level::Bad => Health::Bad,
+                        crate::video_state::Level::Idle => Health::Idle,
                     };
                     let r = chip(ui, h, t);
                     popup(&r, 420.0, |ui| self.video_ui(ui, ctx));
@@ -937,6 +948,9 @@ impl eframe::App for App {
                     let ratio = tex.size()[0] as f32 / tex.size()[1] as f32;
                     let size = if avail.x / avail.y > ratio { egui::vec2(avail.y * ratio, avail.y) } else { egui::vec2(avail.x, avail.x / ratio) };
                     let resp = ui.centered_and_justified(|ui| ui.add(egui::Image::new((tex.id(), size)).sense(egui::Sense::click()))).inner;
+                    if let Some(msg) = crate::video_state::picture_message(vstate).filter(|_| self.video_blank) {
+                        ui.painter().text(resp.rect.center(), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(18.0), egui::Color32::from_rgb(235, 190, 70));
+                    }
                     if self.capturing {
                         ui.painter().rect_stroke(resp.rect, 0.0, egui::Stroke::new(4.0_f32, egui::Color32::from_rgb(220, 70, 60)), egui::StrokeKind::Inside);
                     } else if resp.clicked() {
@@ -949,7 +963,7 @@ impl eframe::App for App {
                     // No picture, but input can still be driven (e.g. watching the target's own screen).
                     let can_capture = self.device().is_some();
                     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
-                    let msg = if self.video_devices.is_empty() { "No capture device found. Plug in an HDMI capture card." } else { "Open the capture card from the Video button above." };
+                    let msg = crate::video_state::picture_message(vstate).unwrap_or("");
                     let hint = if self.capturing { "Input captured — Ctrl+Alt+Esc to release" } else if can_capture { "Click here to capture keyboard and mouse without video" } else { "Connect an adapter to send input" };
                     ui.painter().text(rect.center() - egui::vec2(0.0, 10.0), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(16.0), ui.visuals().text_color());
                     ui.painter().text(rect.center() + egui::vec2(0.0, 14.0), egui::Align2::CENTER_CENTER, hint, egui::FontId::proportional(13.0), ui.visuals().weak_text_color());
@@ -1394,7 +1408,7 @@ mod tests {
 
     #[test]
     fn a_rescan_keeps_the_selection_on_the_same_device() {
-        let dev = |path: &str| DeviceInfo { path: path.into(), name: path.into() };
+        let dev = |path: &str| DeviceInfo::new(path, path);
         let after = vec![dev("/dev/video4"), dev("/dev/video0"), dev("/dev/video2")];
         assert_eq!(selection_after_rescan(Some("/dev/video0"), &after), 1, "same device, new position");
         assert_eq!(selection_after_rescan(Some("/dev/video9"), &after), 0, "gone: back to the first");

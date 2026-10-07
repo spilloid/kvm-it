@@ -331,9 +331,14 @@ fn real_main(cli: Cli) -> R<()> {
                 Ok(())
             }
             VideoCmd::Snap { output, path, timeout } => {
-                let path = match path.or(cfg.last_video) {
+                let path = match path {
                     Some(p) => p,
-                    None => kvmit_video::list_devices().first().map(|d| d.path.clone()).ok_or("no capture device")?,
+                    None => {
+                        let devices = kvmit_video::list_devices();
+                        // the remembered device by its stable key, else the first one (an explicit command, not a startup guess)
+                        let i = kvmit::video_state::initial_video(&devices, cfg.last_video_key.as_deref(), cfg.last_video.as_deref()).unwrap_or(0);
+                        devices.get(i).map(|d| d.path.clone()).ok_or("no capture device")?
+                    }
                 };
                 let cap = kvmit_video::Capture::open(&path)?;
                 let deadline = std::time::Instant::now() + timeout;
