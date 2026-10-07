@@ -17,27 +17,25 @@
 - **Not exercised:** any real PC with Secure Boot on (including a stock Windows 11 laptop), firmware that trusts only Microsoft's 2023 CA, the shim's revocation level over
   time, the new image on the real adapter (the previous image was verified there; this one has not been flashed yet).
 
-## [0.4.3] - 2026-10-06 (input fidelity)
+## [0.4.1] - 2026-10-06 (honest video state)
 
-GUI only; no firmware or protocol change. **Host-tested** only (unit tests, clippy); the real-touchpad and real-key checks are tracked in the "Needs hardware" issues.
-
-### Fixed
-- **Mouse wheel honours egui's scroll unit** (#27): touchpad pixel deltas are accumulated and sent as whole notches (40 points per notch, the remainder carried, dropped on a reversal and on capture start/end) instead of dozens of notches per swipe or nothing for small deltas; line deltas are unchanged.
-
-### Added
-- **Global abort key** (#28): Esc aborts a running script from anywhere in the window and releases every key (the run always ends with release-all); it does nothing while a text field has focus, so editing a variable cannot abort a run, and Ctrl+Alt+Esc remains the capture-release chord. An abort also unblocks a script waiting on a confirm. `docs/ux.md` now says so (it used to promise a chord that did not exist).
-
-## [0.4.2] - 2026-10-06 (button contract and feedback)
-
-GUI only; no firmware or protocol change. Everything here is **host-tested** (unit tests, clippy) and has not been run on a screen or against hardware; the checks are tracked in the "Needs hardware" issues.
+Everything below is **host-tested** (unit tests in the container); none of it has been run against a physical capture card, and nothing here is hardware-verified. The
+hardware checks are tracked in the "Needs hardware" milestone (issues #31-#34).
 
 ### Fixed
-- **Type no longer loses your text** (#21): it is cleared only once the run has actually started, and characters the US layout cannot type are flagged (never named for a secret) before the click.
-- **No silent no-ops** (#22): starting capture with no adapter or while a script runs (Input chip, picture click, Video popup button) now says why; the Input chip and the Video popup's capture button are greyed out with the reason on hover.
-- **Run-log header tells the truth** (#23): *Finished*, *Dry run finished*, *Aborted: reason* or *Failed: reason*, colour-coded, instead of "Script finished" for everything.
-- **Notices** (#24) can be dismissed, clear when their cause resolves (e.g. video is showing again) or after 15 s, and the adapter-link error keeps its own line instead of being hidden by a notice.
-- **Contract gaps** (#25): a dry run works without an adapter (it sends nothing); the Target USB chip is a coloured label, not a button, and keeps its "Target USB: ..." accessible name; disabled Input, Type, Run, Dry run, Abort and Keys controls say why on hover. A Scripts-popup Abort or the confirm dialog's Abort now also releases a script blocked on a confirm.
-- **Hygiene** (#26): Scripts > Reload folder resets the stale error, preview and variables; the preview is compiled only when the script or a variable changes, not every frame; new tests pin every Keys chord to its keys and the chip/button state table (pure functions in `uistate.rs`).
+- **Linux capture detects a dead card or a failed start (#16).** Consecutive stream errors (or about five seconds without a frame) now mark the capture failed, so the
+  GUI shows "Video stopped" instead of a green chip on a frozen frame; a failure to start streaming is returned by `open` instead of waiting for a frame forever. A
+  capture thread that dies for any other reason (including a panic) is also marked failed. Mirrors the Windows backend.
+- **Closing a Linux capture can no longer hang the window (#17).** The frame wait now times out, and dropping a capture waits at most 1.5 s for its thread and then
+  detaches it (as on Windows).
+- **The Video chip shows what the card was really set to (#18).** Linux now requests the frame rate (it used to leave the card at its default), reads back the applied
+  pixel format, size and rate, and reports those; a driver that substitutes the other supported format (YUYV for MJPEG or the reverse) is decoded as what it is, an
+  undecodable format is an error, and YUYV rows are read with the driver's stride instead of assuming no padding.
+- **A blank picture is no longer shown as healthy (#19).** When the card sends a flat fill (no signal, or still locking) the chip turns amber "Video: no signal" and the
+  picture area says so. The chip and picture-area wording is derived by one tested function.
+- **A fresh install no longer opens the first video device (#20).** Only a remembered device (or the `KVMIT_DEMO_VIDEO` demo source) opens by itself; index 0 is often a
+  webcam. The remembered device is stored by a stable key (card name + bus location) in addition to the old path, so it survives `/dev/videoN` renumbering; configs
+  written by 0.4.0 (path only) still load and still match. `kvmit video snap` uses the same lookup.
 
 ## [0.4.0] - 2026-10-05 (network boot through the adapter)
 
