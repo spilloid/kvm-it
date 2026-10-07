@@ -17,6 +17,18 @@
 - **Not exercised:** any real PC with Secure Boot on (including a stock Windows 11 laptop), firmware that trusts only Microsoft's 2023 CA, the shim's revocation level over
   time, the new image on the real adapter (the previous image was verified there; this one has not been flashed yet).
 
+## [0.4.2] - 2026-10-06 (button contract and feedback)
+
+GUI only; no firmware or protocol change. Everything here is **host-tested** (unit tests, clippy) and has not been run on a screen or against hardware; the checks are tracked in the "Needs hardware" issues.
+
+### Fixed
+- **Type no longer loses your text** (#21): it is cleared only once the run has actually started, and characters the US layout cannot type are flagged (never named for a secret) before the click.
+- **No silent no-ops** (#22): starting capture with no adapter or while a script runs (Input chip, picture click, Video popup button) now says why; the Input chip and the Video popup's capture button are greyed out with the reason on hover.
+- **Run-log header tells the truth** (#23): *Finished*, *Dry run finished*, *Aborted: reason* or *Failed: reason*, colour-coded, instead of "Script finished" for everything.
+- **Notices** (#24) can be dismissed, clear when their cause resolves (e.g. video is showing again) or after 15 s, and the adapter-link error keeps its own line instead of being hidden by a notice.
+- **Contract gaps** (#25): a dry run works without an adapter (it sends nothing); the Target USB chip is a coloured label, not a button, and keeps its "Target USB: ..." accessible name; disabled Input, Type, Run, Dry run, Abort and Keys controls say why on hover. A Scripts-popup Abort or the confirm dialog's Abort now also releases a script blocked on a confirm.
+- **Hygiene** (#26): Scripts > Reload folder resets the stale error, preview and variables; the preview is compiled only when the script or a variable changes, not every frame; new tests pin every Keys chord to its keys and the chip/button state table (pure functions in `uistate.rs`).
+
 ## [0.4.0] - 2026-10-05 (network boot through the adapter)
 
 Firmware 0.2.0 and wire protocol 1.1 (backward compatible: one new message, one appended `STATUS` byte, one capability bit). **The boot drive is OFF until you turn it on**, with a
