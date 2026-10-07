@@ -573,3 +573,20 @@ Fixes verified: `scripts/rs.sh test` and `clippy` clean; the ffmpeg end-to-end t
 Verification after the fixes: `rs.sh test`/`clippy` clean; ffmpeg end-to-end (4 tests) pass. **No sign-off is claimed.** Each round has found issues in the previous round's fixes, with the severity of the remaining ones falling toward exotic races; a fourth round is the gate before release.
 
 **Round 20** (final gate on the round-19 fixes): one Medium, no other finding: publication was check-then-rename, which a program that is not us could race. **Fixed:** publication tries a hard link first (atomic, never replaces; a taken name moves on to the next free one) and uses check-then-rename only on filesystems without hard links. The reviewer's verdict on round 20 was NO SIGN-OFF on that single finding; the fix has had **no further review round**, so **no sign-off is claimed**. The maintainer decides whether a fifth round is worth it before release.
+
+## 2026-10-07 - macOS controller port (`feat/macos`, PR #38): review round 21 (Codex `gpt-6-astra`)
+
+Static review (no Mac hardware exists for this project); every finding traced against the code and Apple's API contracts before accepting. **NO SIGN-OFF**, eight findings, all fixed:
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | High | A 59.94/29.97 fps format rounded to 60/30 and `1/60` was set as the minimum frame duration: outside the range, AVFoundation throws (crash) | The chosen format's fastest `AVFrameRateRange` object is kept and its exact `minFrameDuration` applied; rounding only for scoring/display |
+| 2 | High | The first camera-permission prompt blocked the GUI up to 120 s; startRunning/stopRunning ran on the GUI thread | Permission never waits (starts macOS's prompt and says "answer it, then open again"); the session starts and stops on worker threads |
+| 3 | High | Event-tap start/stop could hang: a stop sent before the run loop ran was lost, and a slow start was joined without cancelling | The tap thread runs its run loop in 0.1 s slices checking a shutdown flag; a failed or slow start sets it before joining |
+| 4 | High | A GUI stall let a modifier release pass to macOS unseen, then swallowing resumed with the key held on the target | A stall or macOS disabling the tap now gives up for good: everything passes, and a release is queued so capture ends with release-all when the GUI resumes |
+| 5 | Med | Keys held before capture were not known (Ctrl held + Option+Esc did not release; a held key's release could be swallowed) | The tracker starts with the keys macOS's HID state reports as down (`CGEventSourceKeyState`), as on Windows |
+| 6 | Med | The device was unlocked before the session started, so macOS could switch to its own format while the chip showed ours | Apple's macOS pattern: lock, set format and duration, startRunning, unlock (on the worker) |
+| 7 | High (plausible) | `pair` subscribed to TX, which is notify-only (not encrypted), so it could report success before bonding | `pair` writes a harmless PING *with response* to RX (`WRITE_ENC`), which only succeeds once macOS has paired; 60 s bound |
+| 8 | Med | AVFoundation audio was selected by name: duplicate names collide and a name starting with digits is read as an index | The index from ffmpeg's listing is the id; the name is only for display |
+
+Verification after the fixes: `scripts/rs.sh test`, `clippy`, and `scripts/rs.sh macos` (clippy for aarch64-apple-darwin) clean. A re-review of the fixes is the next step.

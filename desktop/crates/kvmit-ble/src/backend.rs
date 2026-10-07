@@ -396,9 +396,10 @@ pub async fn pair(id: &str) -> Result<()> {
     }
 }
 
-/// macOS: there is no pairing API. CoreBluetooth pairs by itself the first time an encrypted characteristic is used,
-/// so pairing is connect, subscribe to the adapter's notify characteristic (which needs encryption) and disconnect.
-/// macOS may show its own "Bluetooth Pairing Request" to accept. The adapter must be in its pairing window.
+/// macOS: there is no pairing API. CoreBluetooth pairs by itself when an encrypted characteristic is used, so pairing is:
+/// connect, then a write *with response* of a harmless PING to the adapter's receive characteristic, which requires an
+/// encrypted link. The write only succeeds once macOS has paired (it may show its own prompt), so success here means the
+/// bond exists. The adapter must be in its pairing window.
 #[cfg(target_os = "macos")]
 pub async fn pair(id: &str) -> Result<()> {
     let ad = adapter().await?;
@@ -406,15 +407,16 @@ pub async fn pair(id: &str) -> Result<()> {
     p.connect().await?;
     let outcome = async {
         p.discover_services().await?;
-        let tx = p.characteristics().into_iter().find(|c| c.uuid == TX_UUID);
-        let Some(tx) = tx else { return err("device does not expose the kvm-it characteristics") };
-        p.subscribe(&tx).await.map_err(|e| {
-            BackendError(format!(
+        let rx = p.characteristics().into_iter().find(|c| c.uuid == RX_UUID);
+        let Some(rx) = rx else { return err("device does not expose the kvm-it characteristics") };
+        let ping = kvmit_protocol::message::Request::Ping(Vec::new()).encode(0);
+        match tokio::time::timeout(Duration::from_secs(60), p.write(&rx, &ping, WriteType::WithResponse)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => err(format!(
                 "{e}. macOS pairs on first use: open the adapter's pairing window (re-plug it, or a short BOOT press), accept macOS's pairing prompt if one appears, and try again"
-            ))
-        })?;
-        let _ = p.unsubscribe(&tx).await;
-        Ok(())
+            )),
+            Err(_) => err("pairing did not complete within 60 s (was macOS's pairing prompt accepted? is the adapter's pairing window open?)"),
+        }
     }
     .await;
     let _ = p.disconnect().await;

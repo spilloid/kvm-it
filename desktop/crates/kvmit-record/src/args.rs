@@ -24,7 +24,7 @@ pub enum AudioBackend {
     Pulse,
     Alsa,
     Dshow,
-    /// macOS: ffmpeg's AVFoundation input, by device name.
+    /// macOS: ffmpeg's AVFoundation input, by its index in ffmpeg's listing.
     AvFoundation,
 }
 
@@ -103,7 +103,7 @@ fn audio_input_args(a: &AudioInput) -> Vec<String> {
         AudioBackend::Pulse => ("pulse", a.device.clone()),
         AudioBackend::Alsa => ("alsa", a.device.clone()),
         AudioBackend::Dshow => ("dshow", format!("audio={}", a.device)),
-        AudioBackend::AvFoundation => ("avfoundation", format!(":{}", a.device)), // ":name" = audio only, no video
+        AudioBackend::AvFoundation => ("avfoundation", format!(":{}", a.device)), // ":<index>" = that audio input, no video
     };
     ["-thread_queue_size", "512", "-f", fmt, "-i", &dev]
         .iter()

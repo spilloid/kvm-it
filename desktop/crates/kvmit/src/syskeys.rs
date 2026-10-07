@@ -621,14 +621,17 @@ mod imp {
 #[cfg(target_os = "macos")]
 mod imp {
     //! A Quartz event tap on a private run-loop thread. It swallows keyboard events while capture is on and hands them
-    //! to the GUI. Safety valve, as on Windows: if the GUI stops draining (hung) for `HEARTBEAT_TIMEOUT`, the tap stops
-    //! swallowing so a stuck app can never trap the Mac's keyboard; after the release chord everything passes through.
+    //! to the GUI. Safety valve, as on Windows: if the GUI stops draining (hung) for `HEARTBEAT_TIMEOUT`, or macOS turns
+    //! the tap off, the grab gives up for good: it passes everything to macOS from then on and queues a release, so the GUI
+    //! ends capture and releases every key on the target as soon as it runs again (no modifier is left held there).
+    //! After the release chord everything passes through too.
     use super::{mac_modifier_down, mac_usage, Action, Event, Tracker};
     use kvmit_hid::Key;
-    use objc2_core_foundation::{kCFRunLoopCommonModes, CFMachPort, CFRetained, CFRunLoop};
+    use objc2_core_foundation::{kCFRunLoopCommonModes, CFMachPort, CFRunLoop};
+    use objc2_core_foundation::kCFRunLoopDefaultMode;
     use objc2_core_graphics::{
-        CGEvent, CGEventField, CGEventMask, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy,
-        CGEventType, CGPreflightPostEventAccess, CGRequestPostEventAccess,
+        CGEvent, CGEventField, CGEventMask, CGEventSource, CGEventSourceStateID, CGEventTapLocation, CGEventTapOptions,
+        CGEventTapPlacement, CGEventTapProxy, CGEventType, CGPreflightPostEventAccess, CGRequestPostEventAccess,
     };
     use std::ffi::c_void;
     use std::ptr::NonNull;
@@ -646,12 +649,7 @@ mod imp {
         epoch: Instant,
         last_beat_ms: AtomicU64,
         released: AtomicBool,
-        port: Mutex<Option<PortRef>>,
     }
-
-    /// The tap's port. Only used on the tap thread itself (the callback runs there), so it never actually crosses threads.
-    struct PortRef(CFRetained<CFMachPort>);
-    unsafe impl Send for PortRef {}
 
     impl State {
         fn stale(&self) -> bool {
@@ -662,6 +660,22 @@ mod imp {
             let _ = self.tx.lock().unwrap().send(ev);
             (self.wake)();
         }
+        /// Give the keyboard back for good: pass everything from now on, and tell the GUI to end capture (which releases
+        /// every key on the target). Only the first call queues the release.
+        fn give_up(&self) {
+            if !self.released.swap(true, Ordering::SeqCst) {
+                self.send(Event::Release);
+            }
+        }
+    }
+
+    /// Keys physically down right now (as macOS's HID state sees them), so a key held when capture began is treated like
+    /// on Windows: its repeats and release go to macOS, and a held Ctrl still counts for the release chord.
+    fn held_keys() -> Vec<Key> {
+        (0u16..0x80)
+            .filter(|c| CGEventSource::key_state(CGEventSourceStateID::HIDSystemState, *c))
+            .filter_map(mac_usage)
+            .collect()
     }
 
     /// The tap callback. Returns the event to let macOS have it, null to swallow it.
@@ -670,12 +684,16 @@ mod imp {
         // SAFETY: `user` is the `State` the tap thread keeps alive for as long as the tap exists.
         let st = unsafe { &*(user as *const State) };
         if ty == CGEventType::TapDisabledByTimeout || ty == CGEventType::TapDisabledByUserInput {
-            if let Some(port) = st.port.lock().unwrap().as_ref() {
-                CGEvent::tap_enable(&port.0, true); // macOS turns a tap off if a callback was slow; turn it back on
-            }
+            // macOS turned the tap off, so keys may already have reached macOS unseen: the tracked state is no longer
+            // trustworthy. Give up rather than re-enable on top of it.
+            st.give_up();
             return pass;
         }
-        if st.released.load(Ordering::SeqCst) || st.stale() {
+        if st.released.load(Ordering::SeqCst) {
+            return pass;
+        }
+        if st.stale() {
+            st.give_up(); // the GUI hung: never trap the Mac's keyboard, and have the target released when it resumes
             return pass;
         }
         let ev = unsafe { event.as_ref() };
@@ -711,16 +729,16 @@ mod imp {
         }
     }
 
-    /// The run loop is only touched through CFRunLoopStop, which Core Foundation documents as callable from any thread.
-    struct LoopRef(CFRetained<CFRunLoop>);
-    unsafe impl Send for LoopRef {}
-
     pub struct Grab {
         rx: Receiver<Event>,
         state: Arc<State>,
-        run_loop: Option<LoopRef>,
+        /// Tells the tap thread to leave its run loop (it checks every `LOOP_SLICE`; no cross-thread CFRunLoopStop, which a
+        /// stop arriving before the loop runs would lose).
+        shutdown: Arc<AtomicBool>,
         thread: Option<std::thread::JoinHandle<()>>,
     }
+
+    const LOOP_SLICE: f64 = 0.1;
 
     impl Grab {
         /// Start the tap. `None` without the Accessibility permission (macOS is then asked to show its prompt once; the
@@ -728,16 +746,17 @@ mod imp {
         pub fn start(wake: impl Fn() + Send + Sync + 'static) -> Option<Grab> {
             let (tx, rx) = channel();
             let state = Arc::new(State {
-                tracker: Mutex::new(Tracker::default()),
+                tracker: Mutex::new(Tracker::with_pre_held(held_keys())),
                 tx: Mutex::new(tx),
                 wake: Box::new(wake),
                 epoch: Instant::now(),
                 last_beat_ms: AtomicU64::new(0),
                 released: AtomicBool::new(false),
-                port: Mutex::new(None),
             });
-            let (ready_tx, ready_rx) = channel::<Option<LoopRef>>();
+            let (ready_tx, ready_rx) = channel::<bool>();
             let st = state.clone();
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let stop = shutdown.clone();
             let thread = std::thread::Builder::new()
                 .name("kvmit-keyboard-grab".into())
                 .spawn(move || {
@@ -755,28 +774,34 @@ mod imp {
                         )
                     };
                     let (Some(port), Some(run_loop)) = (port, CFRunLoop::current()) else {
-                        let _ = ready_tx.send(None);
+                        let _ = ready_tx.send(false);
                         return;
                     };
                     let Some(source) = CFMachPort::new_run_loop_source(None, Some(&port), 0) else {
-                        let _ = ready_tx.send(None);
+                        let _ = ready_tx.send(false);
                         return;
                     };
                     run_loop.add_source(Some(&source), unsafe { kCFRunLoopCommonModes });
                     CGEvent::tap_enable(&port, true);
-                    *st.port.lock().unwrap() = Some(PortRef(port.clone()));
-                    let _ = ready_tx.send(Some(LoopRef(run_loop.clone())));
-                    CFRunLoop::run(); // until Grab::drop stops it
+                    let _ = ready_tx.send(true);
+                    // Short slices, so a shutdown request (also one made before the loop first ran) is always seen.
+                    while !stop.load(Ordering::SeqCst) {
+                        CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, LOOP_SLICE, false);
+                    }
                     CGEvent::tap_enable(&port, false);
-                    st.port.lock().unwrap().take();
+                    port.invalidate(); // no callback can run after this; `st` outlives it
                 })
                 .ok()?;
             match ready_rx.recv_timeout(Duration::from_secs(3)) {
-                Ok(Some(run_loop)) => {
+                Ok(true) => {
                     state.last_beat_ms.store(state.epoch.elapsed().as_millis() as u64, Ordering::SeqCst);
-                    Some(Grab { rx, state, run_loop: Some(run_loop), thread: Some(thread) })
+                    Some(Grab { rx, state, shutdown, thread: Some(thread) })
                 }
                 _ => {
+                    // Failed, or slow to start: make sure a late start leaves at once (and never swallows), then wait for
+                    // the thread, which is bounded by one loop slice once it sees the flag.
+                    state.released.store(true, Ordering::SeqCst);
+                    shutdown.store(true, Ordering::SeqCst);
                     let _ = thread.join();
                     if !CGPreflightPostEventAccess() {
                         CGRequestPostEventAccess(); // macOS shows its Accessibility prompt (once)
@@ -796,9 +821,7 @@ mod imp {
     impl Drop for Grab {
         fn drop(&mut self) {
             self.state.released.store(true, Ordering::SeqCst); // pass everything from this instant
-            if let Some(l) = self.run_loop.take() {
-                l.0.stop();
-            }
+            self.shutdown.store(true, Ordering::SeqCst);
             if let Some(t) = self.thread.take() {
                 let _ = t.join();
             }

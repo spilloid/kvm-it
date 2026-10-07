@@ -2,8 +2,9 @@
 //! card sends (MJPEG or YUV) and there is no decoder here; frames are converted to RGBA honouring the buffer's stride.
 //! A capture card is a "camera" to macOS: the first open asks for camera permission (Info.plist carries the reason).
 //!
-//! Threading: AVFoundation objects used here are documented as safe to drive from any thread (startRunning/stopRunning
-//! must not run on the main thread, and do not here); frames arrive on a private serial dispatch queue.
+//! Threading: nothing slow runs on the caller's (GUI) thread. Asking for camera permission does not wait for the answer;
+//! the session is started and stopped on a worker thread (startRunning/stopRunning block and must stay off the main
+//! thread); frames arrive on a private serial dispatch queue.
 use super::*;
 use crate::negotiate::best_mode;
 use crate::{SharedFrame, VideoFrame};
@@ -12,10 +13,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass};
 use objc2_av_foundation::{
-    AVAuthorizationStatus, AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession,
+    AVAuthorizationStatus, AVCaptureDeviceFormat, AVFrameRateRange, AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession,
     AVCaptureVideoDataOutput, AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo,
 };
-use objc2_core_media::{CMSampleBuffer, CMTime, CMVideoFormatDescriptionGetDimensions};
+use objc2_core_media::{CMSampleBuffer, CMVideoFormatDescriptionGetDimensions};
 use objc2_core_video::{
     kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow,
     CVPixelBufferGetHeight, CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
@@ -50,32 +51,22 @@ pub fn list_devices() -> Vec<DeviceInfo> {
         .collect()
 }
 
-/// Ask for camera permission if it was never asked, and wait (bounded) for the answer.
+/// Camera permission. Never waits: if macOS has not asked yet, start its prompt and report that, so the GUI stays live while
+/// the person answers; opening the card again after allowing it works.
 fn ensure_permission() -> Result<(), CaptureError> {
     let Some(video) = video_type() else { return Err(CaptureError("AVFoundation is unavailable".into())) };
-    let denied = || {
-        CaptureError(
-            "macOS denied camera access, which a capture card needs: allow kvm-it in System Settings > Privacy & Security > Camera, then open the card again".into(),
-        )
-    };
     match unsafe { AVCaptureDevice::authorizationStatusForMediaType(video) } {
         AVAuthorizationStatus::Authorized => Ok(()),
         AVAuthorizationStatus::NotDetermined => {
-            let (tx, rx) = std::sync::mpsc::channel::<bool>();
-            let tx = Mutex::new(Some(tx));
-            let block = block2::RcBlock::new(move |granted: Bool| {
-                if let Some(tx) = tx.lock().unwrap().take() {
-                    let _ = tx.send(granted.as_bool());
-                }
-            });
+            let block = block2::RcBlock::new(|_granted: Bool| {});
             unsafe { AVCaptureDevice::requestAccessForMediaType_completionHandler(video, &block) };
-            match rx.recv_timeout(Duration::from_secs(120)) {
-                Ok(true) => Ok(()),
-                Ok(false) => Err(denied()),
-                Err(_) => Err(CaptureError("no answer to the camera-permission prompt: open the card again to retry".into())),
-            }
+            Err(CaptureError(
+                "macOS is asking whether kvm-it may use the camera (a capture card counts as one): answer its prompt, then open the card again".into(),
+            ))
         }
-        _ => Err(denied()),
+        _ => Err(CaptureError(
+            "macOS denied camera access, which a capture card needs: allow kvm-it in System Settings > Privacy & Security > Camera, then open the card again".into(),
+        )),
     }
 }
 
@@ -84,6 +75,8 @@ struct Shared {
     latest: Mutex<Option<SharedFrame>>,
     seq: AtomicU64,
     last_frame: Mutex<Instant>,
+    /// The worker could not configure or start the session.
+    start_failed: AtomicBool,
 }
 
 /// BGRA rows (with padding) -> tightly packed RGBA.
@@ -163,12 +156,22 @@ struct Session {
     _delegate: Retained<Delegate>,
     _queue: DispatchRetained<DispatchQueue>,
 }
+
+/// The chosen format and the frame-rate range it is used at, handed to the worker that applies them.
+struct Chosen {
+    format: Retained<AVCaptureDeviceFormat>,
+    range: Option<Retained<AVFrameRateRange>>,
+}
+// SAFETY: immutable description objects, only read.
+unsafe impl Send for Chosen {}
 // SAFETY: see the struct comment.
 unsafe impl Send for Session {}
+unsafe impl Sync for Session {}
 
 pub struct Capture {
     shared: Arc<Shared>,
-    session: Session,
+    /// `None` only while dropping (it moves to the thread that stops it).
+    session: Option<Arc<Session>>,
     stopped: AtomicBool,
     pub mode: Mode,
     pub info: DeviceInfo,
@@ -181,36 +184,35 @@ impl Capture {
             .ok_or_else(|| CaptureError(format!("capture device {path} is not connected")))?;
         let name = unsafe { device.localizedName() }.to_string();
 
-        // Pick the format closest to 1080p at a usable rate (the same preference as the other backends).
+        // Pick the format closest to 1080p at a usable rate (the same preference as the other backends). Each format's
+        // fastest frame-rate range is kept as an object: its exact minimum duration is what gets applied (a rounded rate
+        // such as 1/60 for a 59.94 fps range is outside it, and AVFoundation throws on an unsupported duration).
         let formats = unsafe { device.formats() };
-        let candidates: Vec<(u32, u32, u32)> = formats
-            .iter()
-            .map(|f| {
-                let dims = unsafe { CMVideoFormatDescriptionGetDimensions(&f.formatDescription()) };
-                let fps = unsafe { f.videoSupportedFrameRateRanges() }.iter().map(|r| unsafe { r.maxFrameRate() }).fold(0.0, f64::max);
-                (dims.width.max(0) as u32, dims.height.max(0) as u32, fps.round() as u32)
-            })
-            .collect();
+        let mut candidates: Vec<(u32, u32, u32)> = Vec::new();
+        let mut ranges: Vec<Option<Retained<AVFrameRateRange>>> = Vec::new();
+        for f in formats.iter() {
+            let dims = unsafe { CMVideoFormatDescriptionGetDimensions(&f.formatDescription()) };
+            let best = unsafe { f.videoSupportedFrameRateRanges() }
+                .iter()
+                .max_by(|a, b| unsafe { a.maxFrameRate().total_cmp(&b.maxFrameRate()) });
+            let fps = best.as_ref().map_or(0.0, |r| unsafe { r.maxFrameRate() });
+            candidates.push((dims.width.max(0) as u32, dims.height.max(0) as u32, fps.round() as u32));
+            ranges.push(best);
+        }
         let i = best_mode(&candidates).ok_or_else(|| CaptureError(format!("{name}: no usable video format")))?;
         let (width, height, fps) = candidates[i];
-        let format = formats.objectAtIndex(i);
-        unsafe {
-            device
-                .lockForConfiguration()
-                .map_err(|e| CaptureError(format!("{name}: could not configure it ({})", e.localizedDescription())))?;
-            device.setActiveFormat(&format);
-            if fps > 0 {
-                let frame = CMTime::new(1, fps as i32);
-                device.setActiveVideoMinFrameDuration(frame);
-            }
-            device.unlockForConfiguration();
-        }
+        let chosen = Chosen { format: formats.objectAtIndex(i), range: ranges.swap_remove(i) };
 
         let input = unsafe { AVCaptureDeviceInput::deviceInputWithDevice_error(&device) }
             .map_err(|e| CaptureError(format!("{name}: {} (in use by another app?)", e.localizedDescription())))?;
         let session = unsafe { AVCaptureSession::new() };
         let output = unsafe { AVCaptureVideoDataOutput::new() };
-        let shared = Arc::new(Shared { latest: Mutex::new(None), seq: AtomicU64::new(0), last_frame: Mutex::new(Instant::now()) });
+        let shared = Arc::new(Shared {
+            latest: Mutex::new(None),
+            seq: AtomicU64::new(0),
+            last_frame: Mutex::new(Instant::now()),
+            start_failed: AtomicBool::new(false),
+        });
         let delegate = Delegate::new(shared.clone());
         let queue = DispatchQueue::new("kvmit-capture", DispatchQueueAttr::SERIAL);
         unsafe {
@@ -229,20 +231,42 @@ impl Capture {
             session.addInput(&input);
             session.addOutput(&output);
             session.commitConfiguration();
-            session.startRunning(); // blocks until running; this is never the main thread's event loop
         }
-        if !unsafe { session.isRunning() } {
-            return Err(CaptureError(format!("{name}: the capture session did not start")));
-        }
-        *shared.last_frame.lock().unwrap() = Instant::now();
+        let sess = Arc::new(Session { session, device, output, _delegate: delegate, _queue: queue });
+
+        // Start on a worker. On macOS a session picks its own format when it starts unless the device stays locked with
+        // the chosen one until it is running (Apple's documented pattern: lock, set, start, unlock).
+        let (worker_sess, worker_shared, worker_name) = (sess.clone(), shared.clone(), name.clone());
+        std::thread::Builder::new()
+            .name("kvmit-capture-start".into())
+            .spawn(move || {
+                let chosen = chosen; // move the whole (Send) value, not its fields one by one
+                let s = &worker_sess;
+                let ok = unsafe {
+                    match s.device.lockForConfiguration() {
+                        Ok(()) => {
+                            s.device.setActiveFormat(&chosen.format);
+                            if let Some(r) = &chosen.range {
+                                s.device.setActiveVideoMinFrameDuration(r.minFrameDuration());
+                            }
+                            s.session.startRunning();
+                            s.device.unlockForConfiguration();
+                            s.session.isRunning()
+                        }
+                        Err(e) => {
+                            eprintln!("kvm-it: {worker_name}: could not configure the capture device ({})", e.localizedDescription());
+                            false
+                        }
+                    }
+                };
+                if !ok {
+                    worker_shared.start_failed.store(true, Ordering::SeqCst);
+                }
+                *worker_shared.last_frame.lock().unwrap() = Instant::now(); // the stall clock starts once it runs
+            })
+            .map_err(|e| CaptureError(e.to_string()))?;
         let mode = Mode { width, height, fps, mjpeg: false };
-        Ok(Capture {
-            shared,
-            session: Session { session, device, output, _delegate: delegate, _queue: queue },
-            stopped: AtomicBool::new(false),
-            mode,
-            info: DeviceInfo::new(path, name),
-        })
+        Ok(Capture { shared, session: Some(sess), stopped: AtomicBool::new(false), mode, info: DeviceInfo::new(path, name) })
     }
 
     pub fn latest(&self) -> Option<SharedFrame> {
@@ -254,7 +278,9 @@ impl Capture {
         if self.stopped.load(Ordering::SeqCst) {
             return true;
         }
-        let gone = !unsafe { self.session.device.isConnected() } || !unsafe { self.session.session.isRunning() };
+        let Some(s) = &self.session else { return true };
+        // `isRunning` is not checked: it is false until the worker has started the session; a failed start is flagged.
+        let gone = self.shared.start_failed.load(Ordering::SeqCst) || !unsafe { s.device.isConnected() };
         let stalled = self.shared.last_frame.lock().unwrap().elapsed() > STALL_LIMIT;
         if gone || stalled {
             self.stopped.store(true, Ordering::SeqCst);
@@ -265,10 +291,10 @@ impl Capture {
 
 impl Drop for Capture {
     fn drop(&mut self) {
-        unsafe {
-            self.session.output.setSampleBufferDelegate_queue(None, None);
-            self.session.session.stopRunning(); // synchronous; AVFoundation returns promptly even for a vanished device
-        }
+        // Stop on a worker: stopRunning blocks, and this may be the GUI thread. The delegate stops publishing at once.
+        let Some(s) = self.session.take() else { return };
+        unsafe { s.output.setSampleBufferDelegate_queue(None, None) };
+        let _ = std::thread::Builder::new().name("kvmit-capture-stop".into()).spawn(move || unsafe { s.session.stopRunning() });
     }
 }
 

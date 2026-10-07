@@ -69,7 +69,8 @@ pub fn parse_ffmpeg_sources_pulse(text: &str) -> Vec<AudioDevice> {
 /// in `(audio)` / `(video)`) and the older one (a `DirectShow audio devices` section header). `Alternative name`
 /// lines are skipped.
 /// ffmpeg's macOS listing (`-f avfoundation -list_devices true -i ""`, on stderr): the entries after the "AVFoundation audio
-/// devices:" header, e.g. `[AVFoundation indev @ 0x7f8] [1] USB3.0 Capture`.
+/// devices:" header, e.g. `[AVFoundation indev @ 0x7f8] [1] USB3.0 Capture`. The id is the index, which is what ffmpeg is
+/// given: names are not unique (two identical cards) and a name starting with digits would be read as an index.
 pub fn parse_avfoundation_audio(text: &str) -> Vec<AudioDevice> {
     let mut out = Vec::new();
     let mut in_audio = false;
@@ -90,8 +91,7 @@ pub fn parse_avfoundation_audio(text: &str) -> Vec<AudioDevice> {
         let rest = &line[pos + 3..];
         let Some((idx, name)) = rest.split_once("] ") else { continue };
         if idx.chars().all(|c| c.is_ascii_digit()) && !name.trim().is_empty() {
-            let name = name.trim().to_string();
-            out.push(AudioDevice { id: name.clone(), description: name, monitor: false, backend: AudioBackend::AvFoundation });
+            out.push(AudioDevice { id: idx.to_string(), description: name.trim().to_string(), monitor: false, backend: AudioBackend::AvFoundation });
         }
     }
     out
@@ -288,12 +288,12 @@ dummy: Immediate exit requested\n";
 [AVFoundation indev @ 0x7f8c] [1] USB3.0 Capture [Audio]\n\
 [in#0 @ 0x600] Error opening input: Input/output error\n";
         let d = parse_avfoundation_audio(t);
-        let names: Vec<_> = d.iter().map(|x| x.id.as_str()).collect();
-        assert_eq!(names, ["MacBook Pro Microphone", "USB3.0 Capture [Audio]"]);
+        let names: Vec<_> = d.iter().map(|x| (x.id.as_str(), x.description.as_str())).collect();
+        assert_eq!(names, [("0", "MacBook Pro Microphone"), ("1", "USB3.0 Capture [Audio]")]);
         assert!(d.iter().all(|x| x.backend == AudioBackend::AvFoundation && !x.monitor));
         let args = crate::args::build_args(
             &crate::Settings { audio: Some(d[1].as_input()), ..crate::Settings::webm() }, 640, 360, std::path::Path::new("o.webm"));
         let a: Vec<String> = args.iter().map(|s| s.to_string_lossy().into_owned()).collect();
-        assert!(a.windows(4).any(|w| w == ["-f", "avfoundation", "-i", ":USB3.0 Capture [Audio]"]), "{a:?}");
+        assert!(a.windows(4).any(|w| w == ["-f", "avfoundation", "-i", ":1"]), "{a:?}");
     }
 }
