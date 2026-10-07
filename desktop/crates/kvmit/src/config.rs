@@ -15,6 +15,9 @@ pub struct Config {
     pub last_video_key: Option<String>,
     #[serde(default)]
     pub script_dir: Option<PathBuf>,
+    /// Light, dark, or follow the system (the default).
+    #[serde(default)]
+    pub theme: crate::theme::ThemeChoice,
 }
 
 pub fn config_path() -> PathBuf {
@@ -45,7 +48,7 @@ mod tests {
 
     #[test]
     fn round_trips_and_ignores_unknown_fields() {
-        let c = Config { last_device: Some("AA:BB".into()), last_video: None, last_video_key: Some("Cam @ usb-1".into()), script_dir: None };
+        let c = Config { last_device: Some("AA:BB".into()), last_video: None, last_video_key: Some("Cam @ usb-1".into()), script_dir: None, theme: crate::theme::ThemeChoice::Dark };
         let s = serde_json::to_string(&c).unwrap();
         assert_eq!(serde_json::from_str::<Config>(&s).unwrap(), c);
         assert!(serde_json::from_str::<Config>("{\"last_device\":\"x\",\"future\":1}").is_ok());

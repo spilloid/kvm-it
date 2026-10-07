@@ -14,6 +14,16 @@
 - **Not exercised:** any real PC with Secure Boot on (including a stock Windows 11 laptop), firmware that trusts only Microsoft's 2023 CA, the shim's revocation level over
   time, the new image on the real adapter (the previous image was verified there; this one has not been flashed yet).
 
+## [0.4.5] - 2026-10-06 (light and dark theme)
+
+GUI only. **Host-tested** only: the palette is held to WCAG AA contrast by unit tests, but nobody has looked at either mode on a real screen yet.
+
+### Added
+- **Light / dark theme.** The top bar's **Theme** button cycles auto (follow the operating system, the default), light and dark, and the choice is saved in the config.
+
+### Changed
+- **Status colours are per mode and readable in both.** Chip fills are darker (white text was 2.6-3.6:1 on the old amber and green, now at least 5:1), and coloured text (notices, errors, warnings, the flasher's results) uses a light-mode and a dark-mode shade. Tests fail if any falls below 4.5:1 on the panel it is drawn on.
+
 ## [0.4.4] - 2026-10-06 (session recording)
 
 GUI and desktop only; no firmware or protocol change. **Host-tested** only (unit tests, clippy, and the encoder run against a real `ffmpeg` on synthetic frames); never run against a physical capture card, and audio sync is unmeasured (issue #32).

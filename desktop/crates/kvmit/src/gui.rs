@@ -5,6 +5,7 @@ use crate::host::ScriptHost;
 use crate::keymap;
 use crate::library::{self, Entry};
 use crate::session;
+use crate::theme;
 use crate::uistate::{self, Health, LinkKind, NoticeAction, NoticeClock, RunOutcome, WheelAccum};
 use kvmit_ble::backend::{self, Found};
 use kvmit_ble::Device;
@@ -159,6 +160,7 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
         let rt = Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(2).build().expect("tokio runtime"));
         let cfg = Config::load();
+        cc.egui_ctx.set_theme(cfg.theme.preference());
         let library = library::load_all(&cfg.script_dir());
         let video_devices = kvmit_video::list_devices();
         // only a device chosen before (or the demo source) opens by itself: index 0 is often a webcam
@@ -892,19 +894,24 @@ impl eframe::App for App {
                     popup(&r, 340.0, |ui| self.text_ui(ui, ctx));
                     let r = ui.button(if running { "Scripts…  (running)" } else { "Scripts…" });
                     popup(&r, 460.0, |ui| self.scripts_ui(ui, ctx));
+                    if ui.button(self.cfg.theme.label()).on_hover_text("Click to cycle: follow the system, light, dark").clicked() {
+                        self.cfg.theme = self.cfg.theme.next();
+                        ctx.set_theme(self.cfg.theme.preference());
+                        self.cfg.save();
+                    }
                 });
             });
             let n = self.notice.lock().unwrap().clone();
             if !n.is_empty() {
                 ui.horizontal(|ui| {
-                    ui.colored_label(AMBER, &n);
+                    ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, &n);
                     if ui.small_button("✕").on_hover_text("Dismiss").clicked() {
                         self.notice.lock().unwrap().clear();
                     }
                 });
             }
             if let Link::Failed(e) = &link {
-                ui.colored_label(AMBER, format!("Adapter link: {e}"));
+                ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, format!("Adapter link: {e}"));
             }
             ui.add_space(2.0);
         });
@@ -1076,7 +1083,7 @@ impl App {
                         }
                     }
                     Scan::Error(e) => {
-                        ui.colored_label(egui::Color32::from_rgb(220, 70, 60), e);
+                        ui.colored_label(theme::palette(ui.visuals().dark_mode).bad_text, e);
                     }
                     _ => {}
                 }
@@ -1201,7 +1208,7 @@ impl App {
         ui.checkbox(&mut self.type_secret, "Secret (masked, never logged)");
         let warning = uistate::untypable_warning(&self.type_text, self.type_secret);
         if let Some(w) = &warning {
-            ui.colored_label(RED, w);
+            ui.colored_label(theme::palette(ui.visuals().dark_mode).bad_text, w);
         }
         let block = if self.type_text.is_empty() {
             Some("Type some text first.")
@@ -1247,7 +1254,7 @@ impl App {
         }
         ui.small(format!("Folder: {}", self.cfg.script_dir().display()));
         if let Some(e) = &self.script_err {
-            ui.colored_label(egui::Color32::from_rgb(220, 70, 60), e);
+            ui.colored_label(theme::palette(ui.visuals().dark_mode).bad_text, e);
         }
         if let (Some(script), Some(sel)) = (self.script.clone(), self.selected) {
             ui.separator();
@@ -1280,7 +1287,7 @@ impl App {
                         if p.has_confirm { " · has prompts" } else { "" }
                     ));
                     for s in &p.suspicious {
-                        ui.colored_label(egui::Color32::from_rgb(230, 170, 40), format!("⚠ looks like a command: {s}"));
+                        ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, format!("⚠ looks like a command: {s}"));
                     }
                 }
                 Some(Err(e)) => {
@@ -1334,17 +1341,14 @@ impl App {
     }
 }
 
-const GREEN: egui::Color32 = egui::Color32::from_rgb(46, 160, 67);
-const AMBER: egui::Color32 = egui::Color32::from_rgb(214, 150, 30);
-const RED: egui::Color32 = egui::Color32::from_rgb(200, 60, 50);
-
 /// A status chip: a button filled with its health colour (grey/neutral when idle), so state reads at a glance.
 fn chip(ui: &mut egui::Ui, h: Health, text: impl Into<String>) -> egui::Response {
     let text: String = text.into();
+    let pal = theme::palette(ui.visuals().dark_mode);
     let fill = match h {
-        Health::Good => Some(GREEN),
-        Health::Working => Some(AMBER),
-        Health::Bad => Some(RED),
+        Health::Good => Some(pal.good_fill),
+        Health::Working => Some(pal.warn_fill),
+        Health::Bad => Some(pal.bad_fill),
         Health::Idle => None,
     };
     let btn = match fill {
@@ -1355,10 +1359,11 @@ fn chip(ui: &mut egui::Ui, h: Health, text: impl Into<String>) -> egui::Response
 }
 
 fn health_color(h: Health, ui: &egui::Ui) -> egui::Color32 {
+    let pal = theme::palette(ui.visuals().dark_mode);
     match h {
-        Health::Good => GREEN,
-        Health::Working => AMBER,
-        Health::Bad => RED,
+        Health::Good => pal.good_text,
+        Health::Working => pal.warn_text,
+        Health::Bad => pal.bad_text,
         Health::Idle => ui.visuals().text_color(),
     }
 }
@@ -1367,10 +1372,11 @@ fn health_color(h: Health, ui: &egui::Ui) -> egui::Color32 {
 /// is neither clickable nor exposed as a button. It does not sense clicks or focus.
 fn indicator(ui: &mut egui::Ui, h: Health, text: impl Into<String>) -> egui::Response {
     let text: String = text.into();
+    let pal = theme::palette(ui.visuals().dark_mode);
     let (fill, rich) = match h {
-        Health::Good => (GREEN, egui::RichText::new(text).color(egui::Color32::WHITE).strong()),
-        Health::Working => (AMBER, egui::RichText::new(text).color(egui::Color32::WHITE).strong()),
-        Health::Bad => (RED, egui::RichText::new(text).color(egui::Color32::WHITE).strong()),
+        Health::Good => (pal.good_fill, egui::RichText::new(text).color(egui::Color32::WHITE).strong()),
+        Health::Working => (pal.warn_fill, egui::RichText::new(text).color(egui::Color32::WHITE).strong()),
+        Health::Bad => (pal.bad_fill, egui::RichText::new(text).color(egui::Color32::WHITE).strong()),
         Health::Idle => (ui.visuals().widgets.inactive.weak_bg_fill, egui::RichText::new(text)),
     };
     egui::Frame::new()
