@@ -590,3 +590,13 @@ Static review (no Mac hardware exists for this project); every finding traced ag
 | 8 | Med | AVFoundation audio was selected by name: duplicate names collide and a name starting with digits is read as an index | The index from ffmpeg's listing is the id; the name is only for display |
 
 Verification after the fixes: `scripts/rs.sh test`, `clippy`, and `scripts/rs.sh macos` (clippy for aarch64-apple-darwin) clean. A re-review of the fixes is the next step.
+
+**Round 22** (re-review of the round-21 fixes): **NO SIGN-OFF**, three Medium, all confirmed and fixed:
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | Med | Start and stop workers were unordered: a capture dropped while starting could be stopped before its start ran, leaving it running | The stop worker joins the start worker first |
+| 2 | Med | The 5 s stall clock ran during startup, and `failed()` latches, so a slow start discarded the capture for good | The stall clock runs only once the start has finished; startup has its own 20 s limit |
+| 3 | Med | Nothing repainted the GUI when an async start finished, so the first frame or a start error could stay invisible while the app was idle | The GUI polls every 100 ms while a capture is open with no frame yet (all backends) |
+
+Verification: `rs.sh test`, `clippy`, `rs.sh macos` clean.

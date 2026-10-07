@@ -786,6 +786,10 @@ impl eframe::App for App {
                 }
             }
             ctx.request_repaint_after(Duration::from_millis(16));
+        } else if self.capture.lock().unwrap().is_some() {
+            // opened but no frame yet (a backend may still be starting): keep polling so the first frame, or a failed
+            // start, shows without waiting for some other event
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
 
         let link = self.link.lock().unwrap().clone();

@@ -29,6 +29,9 @@ use std::time::{Duration, Instant};
 
 /// No frame for this long while the device says it is connected: the stream is treated as dead.
 const STALL_LIMIT: Duration = Duration::from_secs(5);
+/// Configuring and starting a session can be slow (the device may be waking); it has this long before it counts as failed.
+/// The stall clock only runs once the start has finished.
+const START_LIMIT: Duration = Duration::from_secs(20);
 
 fn video_type() -> Option<&'static objc2_av_foundation::AVMediaType> {
     unsafe { AVMediaTypeVideo }
@@ -77,6 +80,8 @@ struct Shared {
     last_frame: Mutex<Instant>,
     /// The worker could not configure or start the session.
     start_failed: AtomicBool,
+    /// The start worker has finished (whether or not it succeeded).
+    started: AtomicBool,
 }
 
 /// BGRA rows (with padding) -> tightly packed RGBA.
@@ -172,6 +177,9 @@ pub struct Capture {
     shared: Arc<Shared>,
     /// `None` only while dropping (it moves to the thread that stops it).
     session: Option<Arc<Session>>,
+    /// The start worker; the stop waits for it, so a session is never started after (or while) it is stopped.
+    starter: Option<std::thread::JoinHandle<()>>,
+    opened: Instant,
     stopped: AtomicBool,
     pub mode: Mode,
     pub info: DeviceInfo,
@@ -212,6 +220,7 @@ impl Capture {
             seq: AtomicU64::new(0),
             last_frame: Mutex::new(Instant::now()),
             start_failed: AtomicBool::new(false),
+            started: AtomicBool::new(false),
         });
         let delegate = Delegate::new(shared.clone());
         let queue = DispatchQueue::new("kvmit-capture", DispatchQueueAttr::SERIAL);
@@ -237,7 +246,7 @@ impl Capture {
         // Start on a worker. On macOS a session picks its own format when it starts unless the device stays locked with
         // the chosen one until it is running (Apple's documented pattern: lock, set, start, unlock).
         let (worker_sess, worker_shared, worker_name) = (sess.clone(), shared.clone(), name.clone());
-        std::thread::Builder::new()
+        let starter = std::thread::Builder::new()
             .name("kvmit-capture-start".into())
             .spawn(move || {
                 let chosen = chosen; // move the whole (Send) value, not its fields one by one
@@ -263,10 +272,19 @@ impl Capture {
                     worker_shared.start_failed.store(true, Ordering::SeqCst);
                 }
                 *worker_shared.last_frame.lock().unwrap() = Instant::now(); // the stall clock starts once it runs
+                worker_shared.started.store(true, Ordering::SeqCst);
             })
             .map_err(|e| CaptureError(e.to_string()))?;
         let mode = Mode { width, height, fps, mjpeg: false };
-        Ok(Capture { shared, session: Some(sess), stopped: AtomicBool::new(false), mode, info: DeviceInfo::new(path, name) })
+        Ok(Capture {
+            shared,
+            session: Some(sess),
+            starter: Some(starter),
+            opened: Instant::now(),
+            stopped: AtomicBool::new(false),
+            mode,
+            info: DeviceInfo::new(path, name),
+        })
     }
 
     pub fn latest(&self) -> Option<SharedFrame> {
@@ -281,7 +299,11 @@ impl Capture {
         let Some(s) = &self.session else { return true };
         // `isRunning` is not checked: it is false until the worker has started the session; a failed start is flagged.
         let gone = self.shared.start_failed.load(Ordering::SeqCst) || !unsafe { s.device.isConnected() };
-        let stalled = self.shared.last_frame.lock().unwrap().elapsed() > STALL_LIMIT;
+        let stalled = if self.shared.started.load(Ordering::SeqCst) {
+            self.shared.last_frame.lock().unwrap().elapsed() > STALL_LIMIT
+        } else {
+            self.opened.elapsed() > START_LIMIT
+        };
         if gone || stalled {
             self.stopped.store(true, Ordering::SeqCst);
         }
@@ -294,7 +316,13 @@ impl Drop for Capture {
         // Stop on a worker: stopRunning blocks, and this may be the GUI thread. The delegate stops publishing at once.
         let Some(s) = self.session.take() else { return };
         unsafe { s.output.setSampleBufferDelegate_queue(None, None) };
-        let _ = std::thread::Builder::new().name("kvmit-capture-stop".into()).spawn(move || unsafe { s.session.stopRunning() });
+        let starter = self.starter.take();
+        let _ = std::thread::Builder::new().name("kvmit-capture-stop".into()).spawn(move || {
+            if let Some(h) = starter {
+                let _ = h.join(); // never stop before the start has run, or the start would win and leave it running
+            }
+            unsafe { s.session.stopRunning() }
+        });
     }
 }
 
