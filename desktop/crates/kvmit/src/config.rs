@@ -7,8 +7,12 @@ pub struct Config {
     /// Bluetooth address of the last adapter used; reconnects automatically.
     #[serde(default)]
     pub last_device: Option<String>,
+    /// Last capture device's path (`/dev/videoN`): kept for older configs and as a fallback; not stable across replugs.
     #[serde(default)]
     pub last_video: Option<String>,
+    /// Stable identity of the last capture device (card name + bus info); preferred over `last_video`.
+    #[serde(default)]
+    pub last_video_key: Option<String>,
     #[serde(default)]
     pub script_dir: Option<PathBuf>,
 }
@@ -41,10 +45,17 @@ mod tests {
 
     #[test]
     fn round_trips_and_ignores_unknown_fields() {
-        let c = Config { last_device: Some("AA:BB".into()), last_video: None, script_dir: None };
+        let c = Config { last_device: Some("AA:BB".into()), last_video: None, last_video_key: Some("Cam @ usb-1".into()), script_dir: None };
         let s = serde_json::to_string(&c).unwrap();
         assert_eq!(serde_json::from_str::<Config>(&s).unwrap(), c);
         assert!(serde_json::from_str::<Config>("{\"last_device\":\"x\",\"future\":1}").is_ok());
         assert!(!s.to_lowercase().contains("password"));
+    }
+
+    #[test]
+    fn a_config_written_before_device_keys_still_loads() {
+        let c: Config = serde_json::from_str("{\"last_device\":\"AA:BB\",\"last_video\":\"/dev/video2\"}").unwrap();
+        assert_eq!(c.last_video.as_deref(), Some("/dev/video2"));
+        assert_eq!(c.last_video_key, None);
     }
 }
