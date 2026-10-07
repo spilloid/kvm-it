@@ -63,6 +63,12 @@ fn ffmpeg_program(s: &Settings) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("ffmpeg"))
 }
 
+/// `dir/.<pid>-<final name>.part`.
+fn part_path(final_path: &Path) -> PathBuf {
+    let name = final_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    final_path.with_file_name(format!(".{}-{name}.part", std::process::id()))
+}
+
 fn command(prog: &Path) -> Command {
     let c = Command::new(prog);
     #[cfg(windows)]
@@ -130,7 +136,11 @@ struct Shared {
 
 pub struct Recorder {
     settings: Settings,
+    /// The name the finished file is published under.
     path: PathBuf,
+    /// What ffmpeg actually writes (`.<pid>-<name>.part` beside it): only this recording ever owns it, so cleanup can never
+    /// delete another recording, and a half-written file never carries the final name.
+    part: PathBuf,
     size: (usize, usize),
     child: Child,
     tx: Option<SyncSender<Arc<Vec<u8>>>>,
@@ -140,6 +150,10 @@ pub struct Recorder {
     pacer: Pacer,
     start: Instant,
     dropped: u64,
+    /// Frame slots lost to a full queue, repaid (as repeats) when there is room again, so playback stays real-time.
+    owed: u64,
+    /// Frames actually handed to the encoder.
+    written: u64,
 }
 
 impl Recorder {
@@ -156,9 +170,10 @@ impl Recorder {
         }
         std::fs::create_dir_all(dir).map_err(|e| RecordError::Io(e.to_string()))?;
         let path = unique_path(dir, &stamp_now(), settings.format, |p| p.exists());
+        let part = part_path(&path);
         let prog = ffmpeg_program(&settings);
         let mut child = command(&prog)
-            .args(build_args(&settings, width as u32, height as u32, &path))
+            .args(build_args(&settings, width as u32, height as u32, &part))
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
@@ -203,6 +218,7 @@ impl Recorder {
             pacer: Pacer::new(settings.fps),
             settings,
             path,
+            part,
             size: (width, height),
             child,
             tx: Some(tx),
@@ -211,6 +227,8 @@ impl Recorder {
             shared,
             start: Instant::now(),
             dropped: 0,
+            owed: 0,
+            written: 0,
         })
     }
 
@@ -281,10 +299,16 @@ impl Recorder {
         };
         let data = Arc::new(data);
         let tx = self.tx.as_ref().expect("not finished");
-        for _ in 0..n {
+        // Slots lost earlier are repaid now (bounded: a long stall must not become a burst), so the clip keeps real time.
+        let repay = self.owed.min(u64::from(self.settings.fps.max(1)) * 2);
+        self.owed -= repay;
+        for _ in 0..(u64::from(n) + repay) {
             match tx.try_send(data.clone()) {
-                Ok(()) => {}
-                Err(TrySendError::Full(_)) => self.dropped += 1,
+                Ok(()) => self.written += 1,
+                Err(TrySendError::Full(_)) => {
+                    self.dropped += 1;
+                    self.owed += 1;
+                }
                 Err(TrySendError::Disconnected(_)) => {
                     return Err(self
                         .failure()
@@ -293,6 +317,19 @@ impl Recorder {
             }
         }
         Ok(PushOutcome::Queued(n))
+    }
+
+    /// Housekeeping that must not depend on frames arriving (the capture may be gone): is the encoder still alive,
+    /// and has the duration cap run out by the wall clock?
+    pub fn check(&mut self) -> Result<PushOutcome, RecordError> {
+        if let Some(e) = self.failure() {
+            return Err(e);
+        }
+        let capped = self
+            .settings
+            .max_duration
+            .is_some_and(|d| self.start.elapsed() >= d);
+        Ok(if capped { PushOutcome::CapReached } else { PushOutcome::Queued(0) })
     }
 
     /// True once the duration cap has been used up.
@@ -313,7 +350,7 @@ impl Recorder {
 
     /// Close the input and wait for ffmpeg to finalise the file. On any failure the partial file is removed.
     pub fn finish(mut self) -> Result<Finished, RecordError> {
-        let frames = self.pacer.emitted();
+        let frames = self.written;
         self.tx.take(); // writer drains the queue, then closes ffmpeg's stdin
         let deadline = Instant::now() + FINISH_TIMEOUT;
         let status = loop {
@@ -344,17 +381,43 @@ impl Recorder {
                 };
                 Err(self.fail_cleanup(RecordError::EncoderFailed(msg)))
             }
-            Some(_) => Ok(Finished {
+            Some(_) => {
+                self.publish()?;
+                Ok(Finished {
                 path: self.path.clone(),
                 frames,
                 dropped: self.dropped,
                 duration: Duration::from_secs_f64(frames as f64 / self.settings.fps.max(1) as f64),
-            }),
+                })
+            }
         }
     }
 
+    /// Give the finished part file its final name without ever replacing an existing file: a hard link fails if the name is
+    /// taken (then the next free name is used); filesystems without hard links fall back to a rename when the name is free.
+    fn publish(&mut self) -> Result<(), RecordError> {
+        let dir = self.part.parent().map(Path::to_path_buf).unwrap_or_default();
+        for _ in 0..100 {
+            match std::fs::hard_link(&self.part, &self.path) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&self.part);
+                    return Ok(());
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) if !self.path.exists() => match std::fs::rename(&self.part, &self.path) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => return Err(self.fail_cleanup(RecordError::Io(e.to_string()))),
+                },
+                Err(_) => {}
+            }
+            self.path = unique_path(&dir, &stamp_now(), self.settings.format, |p| p.exists());
+        }
+        Err(self.fail_cleanup(RecordError::Io("could not find a free file name".into())))
+    }
+
+    /// Remove only this recording's own part file.
     fn fail_cleanup(&self, e: RecordError) -> RecordError {
-        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(&self.part);
         e
     }
 
@@ -364,7 +427,7 @@ impl Recorder {
         let _ = self.child.kill();
         let _ = self.child.wait();
         self.shutdown_threads();
-        let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_file(&self.part);
     }
 }
 
@@ -374,6 +437,7 @@ impl Drop for Recorder {
         if self.tx.take().is_some() {
             let _ = self.child.kill();
             let _ = self.child.wait();
+            let _ = std::fs::remove_file(&self.part);
         }
     }
 }
@@ -411,6 +475,9 @@ impl Drop for PollHandle {
 /// into a new file under `dir`. ffmpeg's presence is checked up front so a missing install fails here, not on
 /// the thread. The thread waits for the first frame (the output size comes from it), then ticks until stopped,
 /// capped, or the encoder dies.
+/// A recording whose source has delivered no frame for this long is finished with what it has.
+const NO_FRAME_LIMIT: Duration = Duration::from_secs(10);
+
 pub fn poll_record<F>(
     settings: Settings,
     dir: &Path,
@@ -427,11 +494,13 @@ where
         let mut rec: Option<Recorder> = None;
         let interval = Pacer::new(settings.fps).interval();
         let mut next = Instant::now();
+        let mut last_frame = Instant::now();
         let outcome = loop {
             if flag.load(Ordering::SeqCst) {
                 break Ok(());
             }
             if let Some(f) = source() {
+                last_frame = Instant::now();
                 if rec.is_none() {
                     match Recorder::start(settings.clone(), &dir, f.width, f.height) {
                         Ok(r) => rec = Some(r),
@@ -443,6 +512,17 @@ where
                     Ok(PushOutcome::CapReached) => break Ok(()),
                     Ok(PushOutcome::Queued(_)) => {}
                     Err(e) => break Err(e),
+                }
+            } else if let Some(r) = rec.as_mut() {
+                // No picture (the capture went away): the cap and the encoder's health still count, and a source
+                // that stays gone ends the clip with what exists rather than recording on forever.
+                match r.check() {
+                    Ok(PushOutcome::CapReached) => break Ok(()),
+                    Ok(_) => {}
+                    Err(e) => break Err(e),
+                }
+                if last_frame.elapsed() >= NO_FRAME_LIMIT {
+                    break Ok(());
                 }
             }
             next += interval;
@@ -472,6 +552,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_part_file_is_hidden_owned_by_this_process_and_never_the_final_name() {
+        let part = part_path(Path::new("/v/kvmit-20261006-120000.gif"));
+        let name = part.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(part.parent().unwrap(), Path::new("/v"));
+        assert!(name.starts_with('.') && name.ends_with(".part") && name.contains(&std::process::id().to_string()), "{name}");
+    }
 
     #[test]
     fn missing_ffmpeg_is_a_clear_error() {

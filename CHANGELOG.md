@@ -21,6 +21,10 @@ GUI only. **Host-tested** only: the palette is held to WCAG AA contrast by unit 
 ### Added
 - **Light / dark theme.** The top bar's **Theme** button cycles auto (follow the operating system, the default), light and dark, and the choice is saved in the config.
 
+### Fixed (adversarial review, round 17)
+- Recording: a failed recording can no longer delete another one (it writes a private `.part` file and publishes it without ever replacing a file); stopping no longer freezes the window (the file is finished in the background, with a "Finishing the recording…" chip); dropped frames no longer make the clip shorter and faster; the duration cap and an encoder's death are noticed even when the picture is gone, and a picture gone for 10 s ends the clip; the audio lookup no longer runs on the window's thread; a black or blank picture can still be recorded.
+- Video: if the remembered capture card is missing, nothing is opened (it no longer falls back to an old `/dev/videoN` that may be the webcam).
+
 ### Changed
 - **Status colours are per mode and readable in both.** Chip fills are darker (white text was 2.6-3.6:1 on the old amber and green, now at least 5:1), and coloured text (notices, errors, warnings, the flasher's results) uses a light-mode and a dark-mode shade. Tests fail if any falls below 4.5:1 on the panel it is drawn on.
 

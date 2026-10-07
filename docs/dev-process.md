@@ -548,3 +548,19 @@ Same STD-001 deviation as round 14 (Opus in place of the usual cross-model revie
 PR #14 (the source-archive workflow's relative-path bug found at the 0.4.0 release) was a prerequisite and was merged first.
 
 **Round 16** (`160688e..4fcd07e`): the pins, dual signature, notice texts (byte-compared with upstream), the generated `ipxe-SOURCE.txt`, image determinism, source hash and checksums all verified; the remaining blocker was the **gnu-efi** notice (Intel's BSD-style licence requires reproducing it in binary distributions) plus three Low wording items. All fixed (the text is `README.efilib` at the shim's pinned gnu-efi submodule commit `dc7fd96f`, which I confirmed against the shim tag). Verified in the VM with the exact final image: Secure Boot on (key press and no key), Secure Boot off, and the private Windows PE chain with Secure Boot on. **Not run:** this image on the real adapter, any real PC.
+
+## 2026-10-06 - 0.4.1-0.4.5 video honesty, button contract, recording, themes (`dev/0.4.x`, PR #35): review round 17 (Codex `gpt-6-astra`)
+
+The usual cross-model reviewer, read-only, high effort, over `feat/secure-boot...dev/0.4.x` (desktop only). Seven findings, each marked CONFIRMED by the reviewer and re-checked here against the source before accepting. Not run by the reviewer: Rust tests, Windows hardware.
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | High | A failed recording's cleanup deleted the final filename, which another instance (same second) could own | **Confirmed** (cleanup was `remove_file(final)`). ffmpeg now writes `.<pid>-<name>.part`; cleanup removes only that; the finished file is published by hard link (never replaces; next free name on a clash; rename fallback on filesystems without links) |
+| 2 | High | Stopping a recording joined the encoder on the GUI thread (up to 120 s), including with input captured | **Confirmed.** Stop now runs on a worker; the bar shows "Finishing the recording…"; quitting waits at most 20 s |
+| 3 | Med | A full queue dropped frames but the clock kept going: shorter, faster clip, and a wrong reported duration | **Confirmed.** Lost slots are owed and repaid as repeats (bounded to 2 s); `Finished.frames`/`duration` count frames actually written |
+| 4 | Med | With the capture gone, nothing called `push`, so the duration cap and an encoder's death went unnoticed | **Confirmed.** `Recorder::check` runs when no frame arrives; a source gone for 10 s ends the clip with what exists |
+| 5 | Med | A stored device key that matched nothing fell back to the old `/dev/videoN`, which may now be a webcam | **Confirmed.** The path is used only when no key was ever stored; regression test added |
+| 6 | Med | Audio lookup (`pactl` / `ffmpeg`) ran on the GUI thread | **Confirmed.** Runs on a worker with a "looking for audio inputs…" state. Not done: `ffmpeg -version` at Start is still synchronous (a local binary; left, noted) |
+| 7 | Med | "No signal" (flat fill) blocked recording, but a black boot screen is valid video | **Confirmed** (also a known gap from our own notes). Blank no longer blocks; the popup says it looks blank |
+
+Fixes verified: `scripts/rs.sh test` and `clippy` clean; the ffmpeg end-to-end tests pass against the host's ffmpeg. A re-review of the fix diff is the next step (RELEASING step 0); no sign-off is claimed before it.
