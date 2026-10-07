@@ -2,18 +2,6 @@
 
 ## [Unreleased]
 
-### Changed
-- **Secure Boot: the boot drive now carries the iPXE project's signed shim and iPXE** (iPXE's fork of the shim, release `ipxe-16.1`, signed by Microsoft, as `EFI/BOOT/BOOTX64.EFI`; iPXE `v2.0.0`, signed by the iPXE project's CA, as
-  `EFI/BOOT/IPXE.EFI`), instead of the unsigned iPXE built in 0.4.0. Firmware that trusts Microsoft's third-party UEFI CA (both its 2011 and its 2023 signing are on the shim) should accept it with Secure Boot **on** (verified in an OVMF virtual machine only; many locked-down PCs turn that CA off), and the same image works with Secure Boot off. Our own build
-  of iPXE (`scripts/build-ipxe.sh`) is kept for experiments but is no longer what ships. The files are exactly the iPXE project's, pinned and checksummed
-  (`firmware/ipxe/signed/pins.env`, `scripts/fetch-ipxe-signed.sh`); the GPL source archive is now the `v2.0.0` tag and the packages' `ipxe-SOURCE.txt` carries the shim's
-  shim's notices (BSD-2-Clause, OpenSSL, EDK2). Note the signed iPXE is v2.0.0, older than the commit 0.4.0 shipped. Needs a reflash of the adapter (the boot-drive image changed; pairing is kept).
-- **Verified (virtual machine only, OVMF with the stock Microsoft keys, the exact shipped image):** Secure Boot **on**: with no key press iPXE exits and the firmware carries on; with
-  a key it runs our `autoexec.ipxe`, gets an address, fetches over HTTPS, and an unsigned Linux kernel is refused ("Security Policy Violation", the intended behaviour); the
-  private Windows PE chain through the signed `wimboot` reached its prompt with Secure Boot on. Secure Boot **off**: the same image fetches and downloads the demo as before.
-- **Not exercised:** any real PC with Secure Boot on (including a stock Windows 11 laptop), firmware that trusts only Microsoft's 2023 CA, the shim's revocation level over
-  time, the new image on the real adapter (the previous image was verified there; this one has not been flashed yet).
-
 ## [0.4.5] - 2026-10-06 (light and dark theme)
 
 GUI only. **Host-tested** only: the palette is held to WCAG AA contrast by unit tests, but nobody has looked at either mode on a real screen yet.
