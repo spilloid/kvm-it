@@ -30,7 +30,8 @@ The picture is the window. A single top bar holds everything else:
   hover (no adapter, a script running, text the layout cannot type).
 - **Keys**, **Type**, **Scripts**: buttons that open popups (chords the OS would swallow; typing a string, masked
   if secret; the script library, variables, preview, run and dry run). Popups stay open until you click outside.
-- While input is captured only the *Input* chip is live: every key belongs to the target.
+- While input is captured only the *Input* chip is live: every key belongs to the target. The mouse wheel is forwarded in
+  notches: pixel deltas (touchpads) are accumulated and sent as whole notches, line deltas as they are.
 - A running script's log is a strip along the bottom, with Abort, and outlives any popup. Its header reports the outcome,
   colour-coded: *Finished*, *Dry run finished*, *Aborted: reason* or *Failed: reason*. A dry run sends nothing, so it works
   without an adapter.
@@ -111,8 +112,11 @@ selected keyboard layout abstraction, not the payload's assumptions.
 - **Preview before run:** shows step count, total typed characters (secrets counted, not shown), and any
   `text` that looks like a command. Scripts from files you did not write get an explicit "this will type
   commands into the target" confirmation — a script is remote code execution on the target by design.
-- **Controls:** run / pause / step / abort. Abort (and any error) sends release-all. A global abort chord works
-  even when the target is mid-typing.
+- **Controls:** run / pause / step / abort (the GUI today has run, dry run and abort). Abort (and any error) sends
+  release-all. **Esc aborts a running script** from anywhere in the window, even mid-typing on the target, except while a
+  text field has focus (there Esc just leaves the field, so editing a variable can never abort a run by accident; use the
+  Abort button). Plain Esc only: Ctrl+Alt+Esc stays the capture-release chord. While input is captured no script can be
+  running, so Esc then belongs to the target.
 - **Run log:** step names, timings, outcomes; never typed text or secret values.
 - **Dry-run** against the live preview without sending anything (highlights what would be typed).
 - **Library:** scripts are plain files in a folder (and a built-in set), so they can be versioned in git and
