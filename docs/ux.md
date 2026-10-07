@@ -25,11 +25,18 @@ The picture is the window. A single top bar holds everything else:
 
 - **Adapter**, **Target USB**, **Video**, **Input**: status chips filled with their health colour. *Adapter*, *Video*
   and *Input* open the controls they describe (scan/pair/connect, device and mode, capture), and the *Input* chip
-  starts capture when clicked. *Target USB* is an indicator only.
+  starts capture when clicked. *Target USB* is an indicator only: a coloured label, not a button (screen readers and UI
+  Automation still read it by name, "Target USB: ..."). A control that cannot be used right now is greyed out and says why on
+  hover (no adapter, a script running, text the layout cannot type).
 - **Keys**, **Type**, **Scripts**: buttons that open popups (chords the OS would swallow; typing a string, masked
   if secret; the script library, variables, preview, run and dry run). Popups stay open until you click outside.
 - While input is captured only the *Input* chip is live: every key belongs to the target.
-- A running script's log is a strip along the bottom, with Abort, and outlives any popup.
+- A running script's log is a strip along the bottom, with Abort, and outlives any popup. Its header reports the outcome,
+  colour-coded: *Finished*, *Dry run finished*, *Aborted: reason* or *Failed: reason*. A dry run sends nothing, so it works
+  without an adapter.
+- Notices (amber line under the bar) can be dismissed, clear themselves when their cause goes away (e.g. video is showing
+  again) or after 15 s, and never hide the adapter-link error, which has its own line. *Type* keeps your text until the run
+  has actually started, and flags characters the US layout cannot type before you click.
 - The chips and buttons are exposed to screen readers and UI Automation by name.
 
 <img src="assets/screenshots/01-overview.png" alt="The window: chips and buttons along the top, the picture filling the rest" style="max-width:100%">
