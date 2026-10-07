@@ -463,6 +463,26 @@ impl Recorder {
     fn publish(&mut self) -> Result<(), RecordError> {
         let dir = self.part.parent().map(Path::to_path_buf).unwrap_or_default();
         for _ in 0..100 {
+            // A hard link never replaces: it fails if the name is taken, atomically, even against a program that is not us.
+            match std::fs::hard_link(&self.part, &self.path) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&self.part);
+                    let _ = std::fs::remove_file(reservation_path(&self.path));
+                    return Ok(());
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let old = reservation_path(&self.path);
+                    match reserve_path(&dir, self.settings.format) {
+                        Ok(p) => {
+                            let _ = std::fs::remove_file(old);
+                            self.path = p;
+                            continue;
+                        }
+                        Err(e) => return Err(self.fail_cleanup(e)),
+                    }
+                }
+                Err(_) => {} // no hard links here (some network and FAT-family filesystems): the check-then-rename below
+            }
             if !self.path.exists() {
                 return match std::fs::rename(&self.part, &self.path) {
                     Ok(()) => {
