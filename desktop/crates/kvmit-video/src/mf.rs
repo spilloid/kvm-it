@@ -78,7 +78,7 @@ pub fn list_devices() -> Vec<DeviceInfo> {
         for act in std::slice::from_raw_parts(list, count as usize).iter().flatten() {
             let name = string_attr(act, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME).unwrap_or_default();
             if let Some(path) = string_attr(act, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK) {
-                out.push(DeviceInfo { path, name });
+                out.push(DeviceInfo::new(path, name));
             }
         }
         // We own the array and the activate objects in it.
@@ -229,7 +229,7 @@ impl Capture {
             .map_err(|e| CaptureError(e.to_string()))?;
         let mode = rx.recv().map_err(|_| CaptureError("capture thread exited".into()))??;
         let name = list_devices().into_iter().find(|d| d.path.eq_ignore_ascii_case(path)).map(|d| d.name).unwrap_or_default();
-        Ok(Capture { latest, stop, failed, done, mode, info: DeviceInfo { path: path.into(), name }, thread: Some(thread) })
+        Ok(Capture { latest, stop, failed, done, mode, info: DeviceInfo::new(path, name), thread: Some(thread) })
     }
 
     /// True once the capture thread has given up (card unplugged, reset, or the stream ended): the last frame is

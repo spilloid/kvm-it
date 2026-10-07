@@ -4,9 +4,10 @@
 pub mod convert;
 mod demo;
 mod device;
+mod negotiate;
 
 pub use demo::PREFIX as DEMO_PREFIX;
-pub use device::{list_devices, Capture, CaptureError, DeviceInfo, Mode};
+pub use device::{device_key, list_devices, Capture, CaptureError, DeviceInfo, Mode};
 
 use std::sync::Arc;
 

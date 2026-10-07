@@ -10,7 +10,7 @@ pub const PREFIX: &str = "demo:";
 /// The demo device, if `KVMIT_DEMO_VIDEO` names a picture.
 pub fn devices() -> Vec<DeviceInfo> {
     match enabled_path() {
-        Some(p) => vec![DeviceInfo { path: format!("{PREFIX}{p}"), name: "Demo target (synthetic picture)".into() }],
+        Some(p) => vec![DeviceInfo::new(format!("{PREFIX}{p}"), "Demo target (synthetic picture)")],
         None => Vec::new(),
     }
 }
