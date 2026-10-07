@@ -563,4 +563,19 @@ The usual cross-model reviewer, read-only, high effort, over `feat/secure-boot..
 | 6 | Med | Audio lookup (`pactl` / `ffmpeg`) ran on the GUI thread | **Confirmed.** Runs on a worker with a "looking for audio inputs…" state. Not done: `ffmpeg -version` at Start is still synchronous (a local binary; left, noted) |
 | 7 | Med | "No signal" (flat fill) blocked recording, but a black boot screen is valid video | **Confirmed** (also a known gap from our own notes). Blank no longer blocks; the popup says it looks blank |
 
-Fixes verified: `scripts/rs.sh test` and `clippy` clean; the ffmpeg end-to-end tests pass against the host's ffmpeg. A re-review of the fix diff is the next step (RELEASING step 0); no sign-off is claimed before it.
+Fixes verified: `scripts/rs.sh test` and `clippy` clean; the ffmpeg end-to-end tests pass against the host's ffmpeg.
+
+**Round 18** (re-review of the round-17 fixes, same reviewer): **NO SIGN-OFF**, eight findings, each confirmed from the control flow and fixed:
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | High | Two recorders in one process/second/format chose the same final name, hence the same `.part`; one's abort deleted the other's file | The final name is reserved atomically at start (`create_new`, an empty placeholder only this recording owns); the part file derives from it; cleanup removes only those two |
+| 2 | High | The rename fallback (no hard links) could replace another process's recording | Publishing is now a rename over our own reserved placeholder; the hard-link path is gone; a test starts and aborts two recorders in one second |
+| 3 | High | Quitting after a 20 s wait abandoned finalisation (orphan ffmpeg, stuck `.part`) | A `Canceller` makes `finish` kill the encoder and remove the files; exit waits 20 s, cancels, waits 5 s more |
+| 4 | Med | Owed frames were discarded at stop or cap; repeated failed repayments inflated `dropped` | `finish` repays what is owed (bounded 2 s) before closing; only newly lost slots count as dropped |
+| 5 | Med | The no-frame deadline did not cover a recording still awaiting its first frame | Applies from the start; ends with `NoFrames` |
+| 6 | Med | Rescan could leave a stale index selecting a different audio device | The list is read-only while a lookup runs, and the selection resets to "none" when a new list arrives |
+| 7 | Med | A hung `pactl`/ffmpeg lookup was never killed | Lookups are killed after 5 s |
+| 8 | Low | An automatic stop kept showing the REC timer during encoding | The worker flags finalising; the bar shows "Finishing the recording…" |
+
+A third re-review of the round-18 fixes is the next step; no sign-off is claimed before it.

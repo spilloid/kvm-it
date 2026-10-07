@@ -1,7 +1,7 @@
 //! The subprocess glue. Frames go to a bounded queue drained by a writer thread that owns ffmpeg's stdin, so a
 //! slow or dead encoder can never block the caller (frames are dropped and counted instead), and `finish` kills
 //! a stuck ffmpeg after a timeout so it cannot hang either.
-use crate::args::{build_args, Settings};
+use crate::args::{build_args, Format, Settings};
 use crate::naming::{stamp_now, unique_path};
 use crate::pacer::Pacer;
 use crate::resize_rgba_nearest;
@@ -61,6 +61,20 @@ fn ffmpeg_program(s: &Settings) -> PathBuf {
     s.ffmpeg_path
         .clone()
         .unwrap_or_else(|| PathBuf::from("ffmpeg"))
+}
+
+/// Create `dir/kvmit-<stamp>[-N].<ext>` empty, atomically (`create_new`), so two recordings (threads or processes) can never
+/// hold the same name. It stays an empty placeholder until the finished file is renamed over it.
+fn reserve_path(dir: &Path, format: Format) -> Result<PathBuf, RecordError> {
+    for _ in 0..1000 {
+        let p = unique_path(dir, &stamp_now(), format, |p| p.exists());
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
+            Ok(_) => return Ok(p),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(RecordError::Io(format!("{}: {e}", p.display()))),
+        }
+    }
+    Err(RecordError::Io("could not reserve a free file name".into()))
 }
 
 /// `dir/.<pid>-<final name>.part`.
@@ -152,6 +166,10 @@ pub struct Recorder {
     dropped: u64,
     /// Frame slots lost to a full queue, repaid (as repeats) when there is room again, so playback stays real-time.
     owed: u64,
+    /// The picture most recently queued, kept to repay owed slots when finishing.
+    last: Option<Arc<Vec<u8>>>,
+    /// Set from outside (quitting) to make `finish` kill the encoder and clean up instead of waiting.
+    cancel: Arc<AtomicBool>,
     /// Frames actually handed to the encoder.
     written: u64,
 }
@@ -169,16 +187,22 @@ impl Recorder {
             return Err(RecordError::BadFrame);
         }
         std::fs::create_dir_all(dir).map_err(|e| RecordError::Io(e.to_string()))?;
-        let path = unique_path(dir, &stamp_now(), settings.format, |p| p.exists());
+        let path = reserve_path(dir, settings.format)?;
         let part = part_path(&path);
         let prog = ffmpeg_program(&settings);
-        let mut child = command(&prog)
+        let mut child = match command(&prog)
             .args(build_args(&settings, width as u32, height as u32, &part))
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| not_found_or_io(e, &prog))?;
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = std::fs::remove_file(&path); // our own placeholder
+                return Err(not_found_or_io(e, &prog));
+            }
+        };
         let shared = Arc::new(Shared::default());
 
         let mut stderr = child.stderr.take().expect("piped");
@@ -228,8 +252,15 @@ impl Recorder {
             start: Instant::now(),
             dropped: 0,
             owed: 0,
+            last: None,
+            cancel: Arc::new(AtomicBool::new(false)),
             written: 0,
         })
+    }
+
+    /// A flag that, once set, makes `finish` kill the encoder and remove the files instead of waiting for it.
+    pub fn canceller(&self) -> Arc<AtomicBool> {
+        self.cancel.clone()
     }
 
     pub fn path(&self) -> &Path {
@@ -302,11 +333,14 @@ impl Recorder {
         // Slots lost earlier are repaid now (bounded: a long stall must not become a burst), so the clip keeps real time.
         let repay = self.owed.min(u64::from(self.settings.fps.max(1)) * 2);
         self.owed -= repay;
-        for _ in 0..(u64::from(n) + repay) {
+        self.last = Some(data.clone());
+        for i in 0..(u64::from(n) + repay) {
             match tx.try_send(data.clone()) {
                 Ok(()) => self.written += 1,
                 Err(TrySendError::Full(_)) => {
-                    self.dropped += 1;
+                    if i < u64::from(n) {
+                        self.dropped += 1; // a new slot lost; a failed repayment is the same loss, not a new one
+                    }
                     self.owed += 1;
                 }
                 Err(TrySendError::Disconnected(_)) => {
@@ -348,21 +382,38 @@ impl Recorder {
         }
     }
 
+    /// Repay slots still owed (a stall near the end must not shorten the clip), waiting a bounded time for queue room.
+    fn flush_owed(&mut self) {
+        let (Some(tx), Some(last)) = (self.tx.as_ref(), self.last.clone()) else { return };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.owed > 0 && Instant::now() < deadline {
+            match tx.try_send(last.clone()) {
+                Ok(()) => {
+                    self.owed -= 1;
+                    self.written += 1;
+                }
+                Err(TrySendError::Full(_)) => std::thread::sleep(Duration::from_millis(10)),
+                Err(TrySendError::Disconnected(_)) => break,
+            }
+        }
+    }
+
     /// Close the input and wait for ffmpeg to finalise the file. On any failure the partial file is removed.
     pub fn finish(mut self) -> Result<Finished, RecordError> {
+        self.flush_owed();
         let frames = self.written;
         self.tx.take(); // writer drains the queue, then closes ffmpeg's stdin
         let deadline = Instant::now() + FINISH_TIMEOUT;
         let status = loop {
             match self.child.try_wait() {
                 Ok(Some(st)) => break Some(st),
-                Ok(None) if Instant::now() < deadline => {
+                Ok(None) if Instant::now() < deadline && !self.cancel.load(Ordering::SeqCst) => {
                     std::thread::sleep(Duration::from_millis(20))
                 }
                 Ok(None) => {
                     let _ = self.child.kill();
                     let _ = self.child.wait();
-                    break None; // killing also unblocks a writer stuck on a full pipe
+                    break None; // killing also unblocks a writer stuck on a full pipe (timeout or cancel)
                 }
                 Err(e) => return Err(self.fail_cleanup(RecordError::Io(e.to_string()))),
             }
@@ -371,6 +422,7 @@ impl Recorder {
         let tail = self.shared.stderr_tail.lock().unwrap().trim().to_string();
         let write_err = self.shared.failed.lock().unwrap().clone();
         match status {
+            None if self.cancel.load(Ordering::SeqCst) => Err(self.fail_cleanup(RecordError::Io("cancelled while quitting".into()))),
             None => Err(self.fail_cleanup(RecordError::EncoderTimeout)),
             Some(st) if !st.success() || write_err.is_some() => {
                 let head = write_err.unwrap_or_else(|| format!("exited with {st}"));
@@ -393,32 +445,22 @@ impl Recorder {
         }
     }
 
-    /// Give the finished part file its final name without ever replacing an existing file: a hard link fails if the name is
-    /// taken (then the next free name is used); filesystems without hard links fall back to a rename when the name is free.
+    /// Give the finished part file its final name. The name was reserved (created, empty) by this recording at start, so the
+    /// rename replaces only our own placeholder: it is atomic, never touches anyone else's file, and needs no hard links.
     fn publish(&mut self) -> Result<(), RecordError> {
-        let dir = self.part.parent().map(Path::to_path_buf).unwrap_or_default();
-        for _ in 0..100 {
-            match std::fs::hard_link(&self.part, &self.path) {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(&self.part);
-                    return Ok(());
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(_) if !self.path.exists() => match std::fs::rename(&self.part, &self.path) {
-                    Ok(()) => return Ok(()),
-                    Err(e) => return Err(self.fail_cleanup(RecordError::Io(e.to_string()))),
-                },
-                Err(_) => {}
-            }
-            self.path = unique_path(&dir, &stamp_now(), self.settings.format, |p| p.exists());
-        }
-        Err(self.fail_cleanup(RecordError::Io("could not find a free file name".into())))
+        std::fs::rename(&self.part, &self.path).map_err(|e| self.fail_cleanup(RecordError::Io(e.to_string())))
     }
 
     /// Remove only this recording's own part file.
     fn fail_cleanup(&self, e: RecordError) -> RecordError {
-        let _ = std::fs::remove_file(&self.part);
+        self.remove_own_files();
         e
+    }
+
+    /// The part file and the reserved (still empty) final name: both are this recording's alone.
+    fn remove_own_files(&self) {
+        let _ = std::fs::remove_file(&self.part);
+        let _ = std::fs::remove_file(&self.path);
     }
 
     /// Stop immediately and delete the partial file.
@@ -427,7 +469,7 @@ impl Recorder {
         let _ = self.child.kill();
         let _ = self.child.wait();
         self.shutdown_threads();
-        let _ = std::fs::remove_file(&self.part);
+        self.remove_own_files();
     }
 }
 
@@ -437,7 +479,23 @@ impl Drop for Recorder {
         if self.tx.take().is_some() {
             let _ = self.child.kill();
             let _ = self.child.wait();
-            let _ = std::fs::remove_file(&self.part);
+            self.remove_own_files();
+        }
+    }
+}
+
+/// Gives up a recording: the encoder is killed and the files removed instead of waiting for it. For quitting only.
+#[derive(Clone)]
+pub struct Canceller {
+    stop: Arc<AtomicBool>,
+    slot: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+}
+
+impl Canceller {
+    pub fn cancel(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(c) = self.slot.lock().unwrap().as_ref() {
+            c.store(true, Ordering::SeqCst);
         }
     }
 }
@@ -445,6 +503,9 @@ impl Drop for Recorder {
 /// A recording driven by a polling thread: see [`poll_record`].
 pub struct PollHandle {
     stop: Arc<AtomicBool>,
+    /// Set by the worker once it has begun finalising the file (after stop, the cap, or the picture going away).
+    finalising: Arc<AtomicBool>,
+    cancel: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     thread: Option<JoinHandle<Result<Finished, RecordError>>>,
 }
 
@@ -452,6 +513,16 @@ impl PollHandle {
     /// False once the thread has ended on its own (cap reached or encoder failure); `stop` then reports why.
     pub fn is_running(&self) -> bool {
         self.thread.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
+    /// True once the file is being finalised: from here the clip is over, only the encoding remains.
+    pub fn is_finalising(&self) -> bool {
+        self.finalising.load(Ordering::SeqCst)
+    }
+
+    /// A handle that can give up a finalisation in progress (for quitting), usable after `stop` has taken this one.
+    pub fn canceller(&self) -> Canceller {
+        Canceller { stop: self.stop.clone(), slot: self.cancel.clone() }
     }
 
     /// Stop recording, finalise the file and return the outcome.
@@ -489,6 +560,10 @@ where
     check_ffmpeg(&settings)?;
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
+    let finalising = Arc::new(AtomicBool::new(false));
+    let fin = finalising.clone();
+    let cancel_slot: Arc<Mutex<Option<Arc<AtomicBool>>>> = Arc::default();
+    let slot = cancel_slot.clone();
     let dir = dir.to_path_buf();
     let thread = std::thread::spawn(move || {
         let mut rec: Option<Recorder> = None;
@@ -503,7 +578,10 @@ where
                 last_frame = Instant::now();
                 if rec.is_none() {
                     match Recorder::start(settings.clone(), &dir, f.width, f.height) {
-                        Ok(r) => rec = Some(r),
+                        Ok(r) => {
+                            *slot.lock().unwrap() = Some(r.canceller());
+                            rec = Some(r)
+                        }
                         Err(e) => return Err(e),
                     }
                 }
@@ -512,6 +590,10 @@ where
                     Ok(PushOutcome::CapReached) => break Ok(()),
                     Ok(PushOutcome::Queued(_)) => {}
                     Err(e) => break Err(e),
+                }
+            } else if rec.is_none() {
+                if last_frame.elapsed() >= NO_FRAME_LIMIT {
+                    break Err(RecordError::NoFrames); // the picture never came (or went before the first frame)
                 }
             } else if let Some(r) = rec.as_mut() {
                 // No picture (the capture went away): the cap and the encoder's health still count, and a source
@@ -533,6 +615,7 @@ where
                 next = now; // fell far behind: do not spin to catch up
             }
         };
+        fin.store(true, Ordering::SeqCst);
         match (outcome, rec) {
             (Ok(()), Some(r)) => r.finish(),
             (Ok(()), None) => Err(RecordError::NoFrames),
@@ -545,6 +628,8 @@ where
     });
     Ok(PollHandle {
         stop,
+        finalising,
+        cancel: cancel_slot,
         thread: Some(thread),
     })
 }

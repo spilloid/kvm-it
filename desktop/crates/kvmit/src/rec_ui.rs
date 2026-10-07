@@ -69,12 +69,13 @@ pub struct RecordUi {
     active: Option<Active>,
     /// A stop in progress: finishing the file can take seconds (a GIF is encoded at the end), so it never runs on the GUI thread.
     finishing: Option<Receiver<Result<Finished, RecordError>>>,
+    finish_cancel: Option<kvmit_record::Canceller>,
     pub last_saved: Option<PathBuf>,
 }
 
 impl Default for RecordUi {
     fn default() -> Self {
-        RecordUi { format: Format::Gif, audio_sel: None, audio: Vec::new(), audio_job: None, audio_listed: false, active: None, finishing: None, last_saved: None }
+        RecordUi { format: Format::Gif, audio_sel: None, audio: Vec::new(), audio_job: None, audio_listed: false, active: None, finishing: None, finish_cancel: None, last_saved: None }
     }
 }
 
@@ -83,8 +84,9 @@ impl RecordUi {
         self.active.is_some()
     }
 
+    /// The running time, while the clip is still being recorded (not once it is being finalised).
     pub fn elapsed(&self) -> Option<Duration> {
-        self.active.as_ref().map(|a| a.since.elapsed())
+        self.active.as_ref().filter(|a| !a.handle.is_finalising()).map(|a| a.since.elapsed())
     }
 
     pub fn start(&mut self, source: impl FnMut() -> Option<SharedFrame> + Send + 'static) -> Result<(), String> {
@@ -99,6 +101,7 @@ impl RecordUi {
     /// Ask the recording to stop. The file is finished on a worker; collect the outcome with `poll_ended`.
     pub fn begin_stop(&mut self) {
         if let Some(a) = self.active.take() {
+            self.finish_cancel = Some(a.handle.canceller());
             let (tx, rx) = channel();
             std::thread::spawn(move || {
                 let _ = tx.send(a.handle.stop());
@@ -107,8 +110,9 @@ impl RecordUi {
         }
     }
 
+    /// The clip is over and its file is being finished (after a stop, the cap, or the picture going away).
     pub fn is_finishing(&self) -> bool {
-        self.finishing.is_some()
+        self.finishing.is_some() || self.active.as_ref().is_some_and(|a| a.handle.is_finalising())
     }
 
     /// The outcome of a recording that has finished: one stopped by `begin_stop`, or one that ended by itself (duration
@@ -123,13 +127,25 @@ impl RecordUi {
             Err(TryRecvError::Disconnected) => Err(RecordError::Io("the recording thread ended unexpectedly".into())),
         };
         self.finishing = None;
+        self.finish_cancel = None;
         Some(self.keep(r))
     }
 
-    /// Quitting: stop, and wait (bounded) so the file is not left cut off. Only used on the way out.
+    /// Quitting: stop and wait (bounded) so the file is not left cut off. If finishing outlasts `wait`, the encoder is killed and
+    /// the files removed, so quitting never leaves an ffmpeg or a half-written file behind.
     pub fn finish_for_exit(&mut self, wait: Duration) -> Option<Result<Finished, RecordError>> {
         self.begin_stop();
-        let r = self.finishing.take()?.recv_timeout(wait).ok()?;
+        let rx = self.finishing.take()?;
+        let r = match rx.recv_timeout(wait) {
+            Ok(r) => r,
+            Err(_) => {
+                if let Some(c) = &self.finish_cancel {
+                    c.cancel();
+                }
+                rx.recv_timeout(Duration::from_secs(5)).ok()?
+            }
+        };
+        self.finish_cancel = None;
         Some(self.keep(r))
     }
 
@@ -160,6 +176,7 @@ impl RecordUi {
                 match rx.try_recv() {
                     Ok(list) => {
                         self.audio = list;
+                        self.audio_sel = None; // indexes into the old list mean nothing now: sound stays off until chosen
                         self.audio_job = None;
                     }
                     Err(TryRecvError::Empty) => ui.ctx().request_repaint_after(Duration::from_millis(200)),
@@ -172,13 +189,13 @@ impl RecordUi {
             ui.horizontal(|ui| {
                 ui.label("Sound:");
                 let text = self.audio_sel.and_then(|i| self.audio.get(i)).map_or("none (off)".to_string(), |d| d.description.clone());
-                egui::ComboBox::from_id_salt("rec_audio").selected_text(text).show_ui(ui, |ui| {
+                ui.add_enabled_ui(self.audio_job.is_none(), |ui| egui::ComboBox::from_id_salt("rec_audio").selected_text(text).show_ui(ui, |ui| {
                     ui.selectable_value(&mut self.audio_sel, None, "none (off)");
                     for (i, d) in self.audio.iter().enumerate() {
                         let label = if d.monitor { format!("{} (what this computer plays)", d.description) } else { d.description.clone() };
                         ui.selectable_value(&mut self.audio_sel, Some(i), label);
                     }
-                });
+                }));
                 if self.audio_job.is_some() {
                     ui.small("looking for audio inputs…");
                 } else if ui.small_button("Rescan").clicked() {

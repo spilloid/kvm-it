@@ -21,7 +21,7 @@ mod recorder;
 pub use args::{build_args, AudioBackend, AudioInput, Format, Settings};
 pub use audio::{list_audio_devices, AudioDevice};
 pub use recorder::{
-    check_ffmpeg, poll_record, Finished, PollHandle, PushOutcome, RecordError, Recorder,
+    check_ffmpeg, poll_record, Canceller, Finished, PollHandle, PushOutcome, RecordError, Recorder,
 };
 
 /// Nearest-neighbour RGBA rescale (used when the capture size changes mid-recording).
