@@ -2327,6 +2327,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kvmit-record"
+version = "0.4.0"
+dependencies = [
+ "kvmit-video",
+]
+
+[[package]]
 name = "kvmit-script"
 version = "0.4.1"
 dependencies = [

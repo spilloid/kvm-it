@@ -1,0 +1,9 @@
+[package]
+name = "kvmit-record"
+description = "Session recording for kvm-it: pipe decoded RGBA frames to an ffmpeg subprocess (GIF or WebM); pure arg/filename/pacing logic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kvmit-video = { path = "../kvmit-video" }

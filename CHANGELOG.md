@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **`kvmit-record` crate (recording core, issue #29; no UI yet).** Pipes decoded RGBA frames as rawvideo to an `ffmpeg` subprocess and writes a timestamped, never-overwritten GIF (palettegen/paletteuse, 12 fps, <=960 px wide, 30 s cap) or WebM (VP9; Opus only if an audio input is chosen, off by default). Clear error when ffmpeg is missing; a dead or stalled encoder surfaces as an error and never blocks the caller; a mid-recording size change is rescaled to the first frame's size. Also lists audio input devices (pactl / `ffmpeg -sources pulse` / dshow parsers). Host-tested (pure arg/name/pacing/parser tests, plus end-to-end GIF and WebM through the host's ffmpeg and ffprobe); the Record button is a later change, and nothing is hardware-verified (no capture card was used, only synthetic frames). The audio path was exercised once against the host's PulseAudio/PipeWire input, not a capture card's audio.
+
 ### Changed
 - **Secure Boot: the boot drive now carries the iPXE project's signed shim and iPXE** (iPXE's fork of the shim, release `ipxe-16.1`, signed by Microsoft, as `EFI/BOOT/BOOTX64.EFI`; iPXE `v2.0.0`, signed by the iPXE project's CA, as
   `EFI/BOOT/IPXE.EFI`), instead of the unsigned iPXE built in 0.4.0. Firmware that trusts Microsoft's third-party UEFI CA (both its 2011 and its 2023 signing are on the shim) should accept it with Secure Boot **on** (verified in an OVMF virtual machine only; many locked-down PCs turn that CA off), and the same image works with Secure Boot off. Our own build
