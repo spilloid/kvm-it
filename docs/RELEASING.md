@@ -83,6 +83,18 @@ Certificate Profile Signer* on the certificate profile only, and creates the `re
 `main` and `v*` tags) with `SIGNING_*` variables and the three Azure identifiers. The workflow refuses to run, rather
 than ship unsigned, if any of them is missing. Steps 5 (smoke test) and the release notes stay manual.
 
+## 3c. Linux AppImage and the macOS preview (CI)
+
+- **AppImage:** `.github/workflows/appimage.yml` runs `scripts/build-appimage.sh` (Ubuntu 22.04 container, glibc 2.35
+  floor check, pinned appimagetool and runtime), smoke-tests it (extracts it, `kvmit --version` matches `VERSION`, the
+  bundled firmware is identical to `firmware/release`) and, when a release is published, attaches
+  `kvm-it-X.Y.Z-x86_64.AppImage` and its `.sha256`. To add one to an existing release: Actions > AppImage > Run
+  workflow with the tag and `attach` ticked. It is not code-signed (checksum only); say so in the notes.
+- **macOS (preview):** `.github/workflows/macos.yml` runs the workspace tests on Apple silicon and packages
+  `scripts/build-dmg.sh` into a `.dmg` that is an **artifact of the run, never attached to a release**: the macOS port
+  has no capture backend and pairing is untried there, and the app is only ad-hoc signed (not notarized). Promote it to
+  a release asset only when a macOS backend exists and has been hardware-verified.
+
 ## 4. Build the assets
 
 ```powershell

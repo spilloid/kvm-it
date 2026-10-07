@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+- **CI parity for Linux and macOS.** An `AppImage` workflow builds, smoke-tests and attaches the Linux AppImage when a release is published (or on demand for an existing release). A `macOS (preview)` workflow runs the tests on Apple silicon and packages an unsigned preview `.dmg` as a build artifact only: macOS has no capture backend yet, so it is never attached to a release. `scripts/build-dmg.sh` builds the `.dmg` on a Mac.
+- **`scripts/bootstrap.sh`**: checks a new machine (tools, `gh` login, container runtime, ffmpeg, disk, board access) and builds the build container; `CLAUDE.md` tells a session to run it first on a machine it has not used.
+
 ## [0.4.5] - 2026-10-06 (light and dark theme)
 
 GUI only. **Host-tested** only: the palette is held to WCAG AA contrast by unit tests, but nobody has looked at either mode on a real screen yet.

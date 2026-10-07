@@ -1,0 +1,53 @@
+name: macOS (preview)
+
+# The macOS port is a preview: no capture backend and pairing untried there. This workflow keeps it honest: the workspace
+# must keep compiling and passing its tests on Apple silicon, and the app must keep packaging into a .dmg. The disk image is
+# an ARTIFACT of the run, never attached to a release (it is ad-hoc signed, not notarized, and cannot drive a KVM yet).
+on:
+  push: {branches: [main]}
+  pull_request:
+    paths:
+      - desktop/**
+      - scripts/build-dmg.sh
+      - VERSION
+      - .github/workflows/macos.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (same version as the containers)
+        run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/target
+          key: macos-cargo-${{ hashFiles('desktop/Cargo.lock') }}
+          restore-keys: macos-cargo-
+      - name: Test
+        working-directory: desktop
+        run: cargo test --workspace --locked
+      - name: Package the preview .dmg
+        run: scripts/build-dmg.sh
+      - name: Smoke test the app bundle
+        run: |
+          want="$(tr -d '[:space:]' < VERSION)"
+          got="$(dist-macos/stage/kvm-it.app/Contents/MacOS/kvmit --version)"
+          echo "kvmit --version: $got"
+          case "$got" in *"$want"*) ;; *) echo "version mismatch (want $want)"; exit 1;; esac
+          hdiutil verify dist-macos/kvm-it-*.dmg
+          shasum -a 256 -c dist-macos/kvm-it-*.dmg.sha256 2>/dev/null || (cd dist-macos && shasum -a 256 -c kvm-it-*.dmg.sha256)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kvm-it-macos-preview
+          path: |
+            dist-macos/kvm-it-*.dmg
+            dist-macos/kvm-it-*.dmg.sha256
+          if-no-files-found: error
