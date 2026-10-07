@@ -21,6 +21,7 @@ kvmit-ble = { path = "../kvmit-ble" }
 kvmit-script = { path = "../kvmit-script" }
 kvmit-flash = { path = "../kvmit-flash" }
 kvmit-video = { path = "../kvmit-video" }
+kvmit-record = { path = "../kvmit-record" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
