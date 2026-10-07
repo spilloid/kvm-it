@@ -56,6 +56,7 @@ self-test types into the machine it is plugged into.
   AppImage's GUI start and a Linux board pass are unrun.
 - 2026-10-04: releases are unsigned until a signing certificate is configured on the release machine; never state a
   release is signed unless `dist/SIGNATURES.txt` (from Get-AuthenticodeSignature) says Valid.
+- 2026-10-06: 0.4.1's Linux video changes (dead-card detection, bounded drop, applied-mode readback with `set_params`, YUYV stride, stable device key, no-signal chip) are host-tested only. Unrun on a card: how a real UVC driver answers `set_params` / `set_format`, the `set_timeout` stall behaviour, real unplug detection, and whether the MacroSilicon no-signal fill is flagged blank. Tracked in the "Needs hardware" milestone (#31-#34).
 - 2026-10-03: BLE pairing + GATT and HDMI capture (one MacroSilicon card) were hardware-verified on Linux; LED
   GPIO48 verified.
 - 2026-10-03: 5-byte mouse report acceptance by BIOS boot protocol — unverified.

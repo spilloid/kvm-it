@@ -14,6 +14,26 @@
 - **Not exercised:** any real PC with Secure Boot on (including a stock Windows 11 laptop), firmware that trusts only Microsoft's 2023 CA, the shim's revocation level over
   time, the new image on the real adapter (the previous image was verified there; this one has not been flashed yet).
 
+## [0.4.1] - 2026-10-06 (honest video state)
+
+Everything below is **host-tested** (unit tests in the container); none of it has been run against a physical capture card, and nothing here is hardware-verified. The
+hardware checks are tracked in the "Needs hardware" milestone (issues #31-#34).
+
+### Fixed
+- **Linux capture detects a dead card or a failed start (#16).** Consecutive stream errors (or about five seconds without a frame) now mark the capture failed, so the
+  GUI shows "Video stopped" instead of a green chip on a frozen frame; a failure to start streaming is returned by `open` instead of waiting for a frame forever. A
+  capture thread that dies for any other reason (including a panic) is also marked failed. Mirrors the Windows backend.
+- **Closing a Linux capture can no longer hang the window (#17).** The frame wait now times out, and dropping a capture waits at most 1.5 s for its thread and then
+  detaches it (as on Windows).
+- **The Video chip shows what the card was really set to (#18).** Linux now requests the frame rate (it used to leave the card at its default), reads back the applied
+  pixel format, size and rate, and reports those; a driver that substitutes the other supported format (YUYV for MJPEG or the reverse) is decoded as what it is, an
+  undecodable format is an error, and YUYV rows are read with the driver's stride instead of assuming no padding.
+- **A blank picture is no longer shown as healthy (#19).** When the card sends a flat fill (no signal, or still locking) the chip turns amber "Video: no signal" and the
+  picture area says so. The chip and picture-area wording is derived by one tested function.
+- **A fresh install no longer opens the first video device (#20).** Only a remembered device (or the `KVMIT_DEMO_VIDEO` demo source) opens by itself; index 0 is often a
+  webcam. The remembered device is stored by a stable key (card name + bus location) in addition to the old path, so it survives `/dev/videoN` renumbering; configs
+  written by 0.4.0 (path only) still load and still match. `kvmit video snap` uses the same lookup.
+
 ## [0.4.0] - 2026-10-05 (network boot through the adapter)
 
 Firmware 0.2.0 and wire protocol 1.1 (backward compatible: one new message, one appended `STATUS` byte, one capability bit). **The boot drive is OFF until you turn it on**, with a
