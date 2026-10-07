@@ -5,6 +5,8 @@ use crate::host::ScriptHost;
 use crate::keymap;
 use crate::library::{self, Entry};
 use crate::session;
+use crate::theme;
+use crate::uistate::{self, Health, LinkKind, NoticeAction, NoticeClock, RunOutcome, WheelAccum};
 use kvmit_ble::backend::{self, Found};
 use kvmit_ble::Device;
 use kvmit_hid::Key;
@@ -15,7 +17,7 @@ use kvmit_video::{Capture, DeviceInfo};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc as std_mpsc, Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 #[derive(Clone)]
@@ -88,6 +90,24 @@ struct RunHandle {
     done: Arc<AtomicBool>,
     log: Arc<Mutex<Vec<String>>>,
     confirm: ConfirmSlot,
+    dry: bool,
+    /// Set by the run thread when it ends; drives the run-log header.
+    outcome: Arc<Mutex<Option<RunOutcome>>>,
+}
+
+impl RunHandle {
+    fn running(&self) -> bool {
+        !self.done.load(Ordering::SeqCst)
+    }
+
+    /// Stop the run: raise the cancel flag and decline a pending confirm so the run thread is not stuck waiting for it.
+    /// The run itself ends with release-all (kvmit-script `run`).
+    fn abort(&self) {
+        self.cancel.store(true, Ordering::SeqCst);
+        if let Some((_, tx)) = self.confirm.lock().unwrap().take() {
+            let _ = tx.send(false);
+        }
+    }
 }
 
 pub struct App {
@@ -112,6 +132,8 @@ pub struct App {
     released_this_frame: bool,
     video_devices: Vec<DeviceInfo>,
     video_sel: usize,
+    /// The newest frame is a flat fill (no signal); see `video_state`.
+    video_blank: bool,
     capture: Arc<Mutex<Option<Capture>>>,
     texture: Option<egui::TextureHandle>,
     last_seq: u64,
@@ -121,6 +143,11 @@ pub struct App {
     script_err: Option<String>,
     var_values: BTreeMap<String, String>,
     preview: Option<Result<Preview, String>>,
+    /// What `preview` was computed from (selected script index, variable values); it is recomputed only when this changes.
+    preview_key: Option<(usize, Vec<(String, String)>)>,
+    notice_clock: NoticeClock,
+    rec: crate::rec_ui::RecordUi,
+    wheel: WheelAccum,
     trust_ack: bool,
     run_handle: Option<RunHandle>,
     run_log: Vec<String>,
@@ -133,8 +160,11 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
         let rt = Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(2).build().expect("tokio runtime"));
         let cfg = Config::load();
+        cc.egui_ctx.set_theme(cfg.theme.preference());
         let library = library::load_all(&cfg.script_dir());
         let video_devices = kvmit_video::list_devices();
+        // only a device chosen before (or the demo source) opens by itself: index 0 is often a webcam
+        let remembered_video = crate::video_state::initial_video(&video_devices, cfg.last_video_key.as_deref(), cfg.last_video.as_deref());
         let mut app = App {
             rt,
             link: Arc::new(Mutex::new(Link::Disconnected)),
@@ -149,10 +179,11 @@ impl App {
             prev_mods: Vec::new(),
             grab: None,
             released_this_frame: false,
-            video_sel: cfg.last_video.as_ref().and_then(|p| video_devices.iter().position(|d| &d.path == p)).unwrap_or(0),
+            video_sel: remembered_video.unwrap_or(0),
             video_devices,
             capture: Arc::default(),
             texture: None,
+            video_blank: false,
             last_seq: 0,
             library,
             selected: None,
@@ -160,6 +191,10 @@ impl App {
             script_err: None,
             var_values: BTreeMap::new(),
             preview: None,
+            preview_key: None,
+            notice_clock: NoticeClock::default(),
+            rec: Default::default(),
+            wheel: WheelAccum::default(),
             trust_ack: false,
             run_handle: None,
             run_log: Vec::new(),
@@ -172,7 +207,7 @@ impl App {
         if let Some(id) = app.cfg.last_device.clone() {
             app.start_link(id, cc.egui_ctx.clone(), false);
         }
-        if !app.video_devices.is_empty() {
+        if remembered_video.is_some() {
             app.open_video();
         }
         app
@@ -409,6 +444,7 @@ impl App {
         let old = self.capture.lock().unwrap().take();
         drop(old);
         self.texture = None;
+        self.video_blank = false;
         self.last_seq = 0; // a still source always reports the same sequence number
         self.open_video();
     }
@@ -428,6 +464,7 @@ impl App {
                 if !d.path.starts_with(kvmit_video::DEMO_PREFIX) {
                     // the synthetic demo source is never the remembered card
                     self.cfg.last_video = Some(d.path.clone());
+                    self.cfg.last_video_key = Some(d.key.clone());
                     self.cfg.save();
                 }
                 *self.capture.lock().unwrap() = Some(c);
@@ -439,6 +476,7 @@ impl App {
     fn end_capture(&mut self, ctx: &egui::Context) {
         if self.capturing {
             self.capturing = false;
+            self.wheel.reset();
             self.grab = None; // unhooks: the controller's OS gets its keys back
             self.prev_mods.clear();
             if let Some(tx) = &self.input_tx {
@@ -453,10 +491,17 @@ impl App {
         if self.released_this_frame {
             return;
         }
-        if self.run_handle.as_ref().is_some_and(|r| !r.done.load(Ordering::SeqCst)) || self.pump().is_none() {
+        let script_running = self.run_handle.as_ref().is_some_and(|r| r.running());
+        if let Some(why) = uistate::input_block_reason(self.device().is_some(), script_running) {
+            self.set_notice(why); // never a silent no-op
+            return;
+        }
+        if self.pump().is_none() {
+            self.set_notice(uistate::WHY_NO_ADAPTER);
             return;
         }
         self.capturing = true;
+        self.wheel.reset();
         self.grab = crate::syskeys::Grab::start({
             let ctx = ctx.clone();
             move || ctx.request_repaint() // keyboard events arrive off-thread: wake the GUI to forward (and release) promptly
@@ -554,8 +599,8 @@ impl App {
                         dev.mouse_move(d.x.round() as i32, d.y.round() as i32);
                     }
                 }
-                egui::Event::MouseWheel { delta, .. } => {
-                    let v = delta.y.round().clamp(-127.0, 127.0) as i8;
+                egui::Event::MouseWheel { unit, delta, .. } => {
+                    let v = self.wheel.add(*unit, delta.y);
                     if v != 0 {
                         let _ = tx.send(Input::Scroll(v));
                     }
@@ -596,6 +641,7 @@ impl App {
         self.selected = Some(i);
         self.trust_ack = false;
         self.preview = None;
+        self.preview_key = None;
         self.var_values.clear();
         match Script::parse(&self.library[i].source) {
             Ok(s) => {
@@ -613,30 +659,43 @@ impl App {
         self.var_values.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 
-    fn start_run(&mut self, script: Script, base_dir: std::path::PathBuf, vars: Vars, dry: bool, ctx: egui::Context) {
-        if !self.input_idle() {
-            self.set_notice("Input is busy (capture, a running script, or queued keys): wait for it to finish.");
-            return;
-        }
-        let Some(dev) = self.device() else {
-            self.set_notice("Not connected to an adapter.");
-            return;
+    /// Start a run; returns whether it actually started (callers clear what they typed only then).
+    /// A dry run sends nothing, so it needs no adapter and does not wait for input to go idle.
+    fn start_run(&mut self, script: Script, base_dir: std::path::PathBuf, vars: Vars, dry: bool, ctx: egui::Context) -> bool {
+        let dev = if dry {
+            if self.run_handle.as_ref().is_some_and(|r| r.running()) {
+                self.set_notice("A script is already running: abort it first (Esc).");
+                return false;
+            }
+            None
+        } else {
+            let connected = self.device();
+            if let Some(why) = uistate::send_block_reason(connected.is_some(), self.input_idle()) {
+                self.set_notice(why);
+                return false;
+            }
+            connected
         };
         let ops = match compile(&script, &vars, &UsAnsi) {
             Ok(o) => o,
             Err(e) => {
                 self.set_notice(format!("Cannot run: {e}"));
-                return;
+                return false;
             }
         };
-        self.end_capture(&ctx);
+        if !dry {
+            self.end_capture(&ctx);
+        }
         let handle = RunHandle {
             cancel: Arc::new(AtomicBool::new(false)),
             done: Arc::new(AtomicBool::new(false)),
             log: Arc::default(),
             confirm: Arc::default(),
+            dry,
+            outcome: Arc::default(),
         };
-        let (cancel, done, log, confirm) = (handle.cancel.clone(), handle.done.clone(), handle.log.clone(), handle.confirm.clone());
+        let (cancel, done, log, confirm, outcome) =
+            (handle.cancel.clone(), handle.done.clone(), handle.log.clone(), handle.confirm.clone(), handle.outcome.clone());
         let (rt, capture) = (self.rt.handle().clone(), self.capture.clone());
         let ctx2 = ctx.clone();
         std::thread::spawn(move || {
@@ -667,11 +726,13 @@ impl App {
                 }),
             };
             let opts = RunOptions { dry_run: dry, ..Default::default() };
-            let _ = run(&ops, &mut host, &opts);
+            let result = run(&ops, &mut host, &opts);
+            *outcome.lock().unwrap() = Some(uistate::classify_run(&result));
             done.store(true, Ordering::SeqCst);
         });
         self.run_log.clear();
         self.run_handle = Some(handle);
+        true
     }
 }
 
@@ -686,10 +747,20 @@ impl eframe::App for App {
             self.forward_input(ctx);
         }
 
+        // Global abort key: plain Esc stops a running script, unless a text field has focus (Esc there leaves the field).
+        // Release-all follows from the run itself ending; nothing is typed by this key.
+        if let Some(h) = self.run_handle.as_ref().filter(|h| h.running()) {
+            let text_focused = ctx.wants_keyboard_input();
+            if ctx.input(|i| uistate::abort_fires(true, text_focused, &i.events)) {
+                h.abort();
+            }
+        }
+
         // a capture whose card vanished must not keep showing its last frame as if it were live
         if self.capture.lock().unwrap().as_ref().is_some_and(|c| c.failed()) {
             *self.capture.lock().unwrap() = None;
             self.texture = None;
+            self.video_blank = false;
             self.set_notice("Video stopped: the capture card was unplugged, reset or is in use by another app. Open it again from the Video button.");
         }
 
@@ -698,6 +769,7 @@ impl eframe::App for App {
         if let Some(f) = frame {
             if f.seq != self.last_seq {
                 self.last_seq = f.seq;
+                self.video_blank = f.is_blank();
                 let img = egui::ColorImage::from_rgba_unmultiplied([f.width, f.height], &f.rgba);
                 match &mut self.texture {
                     Some(t) => t.set(img, egui::TextureOptions::LINEAR),
@@ -710,52 +782,111 @@ impl eframe::App for App {
         let link = self.link.lock().unwrap().clone();
         let status = self.status.lock().unwrap().clone();
         let has_video = self.capture.lock().unwrap().is_some() && self.texture.is_some();
+        let vmode = self.capture.lock().unwrap().as_ref().map(|c| c.mode);
+        let vstate = crate::video_state::video_state(!self.video_devices.is_empty(), vmode, has_video, self.video_blank);
+
+        // notices clear when their cause resolves, or after a timeout; the link error line is separate and always shown
+        {
+            let facts = uistate::Facts { video_live: has_video, adapter_connected: matches!(link, Link::Connected { .. }) };
+            let current = self.notice.lock().unwrap().clone();
+            if uistate::notice_resolved(&current, facts) {
+                self.notice.lock().unwrap().clear();
+            }
+            let current = self.notice.lock().unwrap().clone();
+            match self.notice_clock.tick(&current, Instant::now(), uistate::NOTICE_TTL) {
+                NoticeAction::Clear => {
+                    // only if nothing replaced it in the meantime
+                    let mut n = self.notice.lock().unwrap();
+                    if *n == current {
+                        n.clear();
+                    }
+                }
+                NoticeAction::Keep(Some(left)) => ctx.request_repaint_after(left),
+                NoticeAction::Keep(None) => {}
+            }
+        }
 
         // ---- top bar: status chips that open the controls they describe. Green = working, amber = in progress,
         // red = broken, grey = idle. While input is captured every key belongs to the target, so only the
         // capture indicator is live. ----
+        // a recording that ended (stopped, duration cap, encoder died, picture gone) reports how
+        if let Some(r) = self.rec.poll_ended() {
+            self.set_notice(crate::rec_ui::describe(&r));
+        }
+        if self.rec.is_finishing() {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+        if self.rec.is_recording() {
+            ctx.request_repaint_after(Duration::from_millis(500)); // the timer
+        }
         let idle_ui = !self.capturing;
         let running = self.run_handle.as_ref().is_some_and(|r| !r.done.load(Ordering::SeqCst));
         egui::TopBottomPanel::top("bar").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 ui.add_enabled_ui(idle_ui, |ui| {
-                    let (h, t) = match &link {
-                        Link::Connected { name, .. } => (Health::Good, format!("Adapter: {name}")),
-                        Link::Connecting(id) => (Health::Working, format!("Adapter: connecting to {id}…")),
-                        Link::Failed(_) => (Health::Bad, "Adapter: not connected (retrying)".into()),
-                        Link::Disconnected => (Health::Idle, "Adapter: none — click to connect".into()),
+                    let kind = match &link {
+                        Link::Connected { name, .. } => LinkKind::Connected(name),
+                        Link::Connecting(id) => LinkKind::Connecting(id),
+                        Link::Failed(_) => LinkKind::Failed,
+                        Link::Disconnected => LinkKind::Disconnected,
                     };
+                    let (h, t) = uistate::adapter_chip(kind);
                     let r = chip(ui, h, t);
                     popup(&r, 380.0, |ui| self.adapter_ui(ui, ctx, &link));
 
-                    let (h, t) = match (&link, &status) {
-                        (Link::Connected { .. }, Some(s)) if s.hid_mounted => (Health::Good, "Target USB: connected"),
-                        (Link::Connected { .. }, Some(_)) => (Health::Bad, "Target USB: not enumerated"),
-                        (Link::Connected { .. }, None) => (Health::Working, "Target USB: checking…"),
-                        _ => (Health::Idle, "Target USB: —"),
-                    };
-                    chip(ui, h, t);
+                    // An indicator, not a control: a Label (not a Button), so it is not offered as clickable to screen
+                    // readers / UI Automation. egui exposes a Label's text as its accessible value, which UIA reports as
+                    // its Name, so "Target USB: ..." stays findable by name prefix.
+                    let (h, t) = uistate::target_usb_chip(matches!(link, Link::Connected { .. }), status.as_ref().map(|s| s.hid_mounted));
+                    indicator(ui, h, t);
 
-                    let mode = self.capture.lock().unwrap().as_ref().map(|c| c.mode);
-                    let (h, t) = match mode {
-                        Some(m) if has_video => (Health::Good, format!("Video: {}×{} @ {} fps", m.width, m.height, m.fps)),
-                        Some(_) => (Health::Working, "Video: waiting for a frame…".into()),
-                        None if self.video_devices.is_empty() => (Health::Bad, "Video: no capture card found".into()),
-                        None => (Health::Idle, "Video: not opened — click to open".into()),
+                    let (level, t) = crate::video_state::chip(vstate);
+                    let h = match level {
+                        crate::video_state::Level::Good => Health::Good,
+                        crate::video_state::Level::Working => Health::Working,
+                        crate::video_state::Level::Bad => Health::Bad,
+                        crate::video_state::Level::Idle => Health::Idle,
                     };
                     let r = chip(ui, h, t);
                     popup(&r, 420.0, |ui| self.video_ui(ui, ctx));
                 });
 
-                if self.capturing {
-                    chip(ui, Health::Bad, "INPUT CAPTURED — Ctrl+Alt+Esc to release");
-                } else {
-                    let can = self.device().is_some();
-                    let r = ui.add_enabled_ui(can, |ui| chip(ui, Health::Idle, "Input: click to capture")).inner;
-                    if r.clicked() && can {
+                {
+                    let block = uistate::input_block_reason(self.device().is_some(), running);
+                    let ic = uistate::input_chip(self.capturing, block);
+                    let r = ui.add_enabled_ui(ic.enabled, |ui| chip(ui, ic.health, ic.text)).inner;
+                    let r = match ic.disabled_reason {
+                        Some(why) => r.on_disabled_hover_text(why),
+                        None => r,
+                    };
+                    if r.clicked() && !self.capturing {
                         self.begin_capture(ctx);
                     }
+                }
+
+                // Recording stays stoppable while input is captured, like the Input chip: one click, always live.
+                if let Some(el) = self.rec.elapsed() {
+                    let r = chip(ui, Health::Bad, format!("● REC {} — click to stop", crate::rec_ui::format_elapsed(el)));
+                    if r.clicked() {
+                        self.rec.begin_stop(); // the file is finished off the GUI thread
+                    }
+                } else if self.rec.is_finishing() {
+                    chip(ui, Health::Working, "Finishing the recording…");
+                } else {
+                    ui.add_enabled_ui(idle_ui, |ui| {
+                        let block = crate::rec_ui::record_block_reason(has_video, self.rec.is_finishing());
+                        let r = ui.button("● Record…");
+                        popup(&r, 400.0, |ui| {
+                            if self.rec.popup_body(ui, block, self.video_blank) {
+                                let cap = self.capture.clone();
+                                match self.rec.start(move || cap.lock().ok()?.as_ref()?.latest()) {
+                                    Ok(()) => self.notice.lock().unwrap().clear(),
+                                    Err(e) => self.set_notice(format!("Cannot record: {e}")),
+                                }
+                            }
+                        });
+                    });
                 }
 
                 ui.separator();
@@ -766,12 +897,24 @@ impl eframe::App for App {
                     popup(&r, 340.0, |ui| self.text_ui(ui, ctx));
                     let r = ui.button(if running { "Scripts…  (running)" } else { "Scripts…" });
                     popup(&r, 460.0, |ui| self.scripts_ui(ui, ctx));
+                    if ui.button(self.cfg.theme.label()).on_hover_text("Click to cycle: follow the system, light, dark").clicked() {
+                        self.cfg.theme = self.cfg.theme.next();
+                        ctx.set_theme(self.cfg.theme.preference());
+                        self.cfg.save();
+                    }
                 });
             });
             let n = self.notice.lock().unwrap().clone();
-            let l = if let Link::Failed(e) = &link { e.clone() } else { String::new() };
-            if !n.is_empty() || !l.is_empty() {
-                ui.colored_label(AMBER, if n.is_empty() { l } else { n });
+            if !n.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, &n);
+                    if ui.small_button("✕").on_hover_text("Dismiss").clicked() {
+                        self.notice.lock().unwrap().clear();
+                    }
+                });
+            }
+            if let Link::Failed(e) = &link {
+                ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, format!("Adapter link: {e}"));
             }
             ui.add_space(2.0);
         });
@@ -804,8 +947,7 @@ impl eframe::App for App {
                             *h.confirm.lock().unwrap() = None;
                         }
                         if ui.button("Abort").clicked() {
-                            let _ = tx.send(false);
-                            *h.confirm.lock().unwrap() = None;
+                            h.abort();
                         }
                     });
                 });
@@ -814,14 +956,19 @@ impl eframe::App for App {
 
         // run progress outlives any popup: a strip along the bottom while a script runs or has output
         if running || !self.run_log.is_empty() {
+            let (header, health) = {
+                let h = self.run_handle.as_ref();
+                let outcome = h.and_then(|h| h.outcome.lock().unwrap().clone());
+                uistate::run_header(running, h.is_some_and(|h| h.dry), outcome.as_ref())
+            };
             egui::TopBottomPanel::bottom("runlog").resizable(true).show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.strong(if running { "Script running…" } else { "Script finished" });
+                    ui.label(egui::RichText::new(header).strong().color(health_color(health, ui)));
                     ui.weak("(no typed text or secrets are logged)");
                     if running {
-                        if ui.button("■ Abort").clicked() {
+                        if ui.button("■ Abort").on_hover_text("Esc").clicked() {
                             if let Some(h) = &self.run_handle {
-                                h.cancel.store(true, Ordering::SeqCst);
+                                h.abort();
                             }
                         }
                     } else if ui.button("Clear").clicked() {
@@ -844,6 +991,9 @@ impl eframe::App for App {
                     let ratio = tex.size()[0] as f32 / tex.size()[1] as f32;
                     let size = if avail.x / avail.y > ratio { egui::vec2(avail.y * ratio, avail.y) } else { egui::vec2(avail.x, avail.x / ratio) };
                     let resp = ui.centered_and_justified(|ui| ui.add(egui::Image::new((tex.id(), size)).sense(egui::Sense::click()))).inner;
+                    if let Some(msg) = crate::video_state::picture_message(vstate).filter(|_| self.video_blank) {
+                        ui.painter().text(resp.rect.center(), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(18.0), egui::Color32::from_rgb(235, 190, 70));
+                    }
                     if self.capturing {
                         ui.painter().rect_stroke(resp.rect, 0.0, egui::Stroke::new(4.0_f32, egui::Color32::from_rgb(220, 70, 60)), egui::StrokeKind::Inside);
                     } else if resp.clicked() {
@@ -856,7 +1006,7 @@ impl eframe::App for App {
                     // No picture, but input can still be driven (e.g. watching the target's own screen).
                     let can_capture = self.device().is_some();
                     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), egui::Sense::click());
-                    let msg = if self.video_devices.is_empty() { "No capture device found. Plug in an HDMI capture card." } else { "Open the capture card from the Video button above." };
+                    let msg = crate::video_state::picture_message(vstate).unwrap_or("");
                     let hint = if self.capturing { "Input captured — Ctrl+Alt+Esc to release" } else if can_capture { "Click here to capture keyboard and mouse without video" } else { "Connect an adapter to send input" };
                     ui.painter().text(rect.center() - egui::vec2(0.0, 10.0), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(16.0), ui.visuals().text_color());
                     ui.painter().text(rect.center() + egui::vec2(0.0, 14.0), egui::Align2::CENTER_CENTER, hint, egui::FontId::proportional(13.0), ui.visuals().weak_text_color());
@@ -875,6 +1025,8 @@ impl eframe::App for App {
             self.set_notice("Flashing is in progress: wait for it to finish before closing the app.");
         } else if ctx.input(|i| i.viewport().close_requested()) {
             self.end_capture(ctx);
+            // finalise the file instead of leaving a cut-off one (bounded: a stuck encoder must not hold the app open)
+            let _ = self.rec.finish_for_exit(Duration::from_secs(20));
             if let Some(d) = self.device() {
                 let _ = self.rt.block_on(async { tokio::time::timeout(Duration::from_millis(800), d.shutdown()).await });
             }
@@ -935,7 +1087,7 @@ impl App {
                         }
                     }
                     Scan::Error(e) => {
-                        ui.colored_label(egui::Color32::from_rgb(220, 70, 60), e);
+                        ui.colored_label(theme::palette(ui.visuals().dark_mode).bad_text, e);
                     }
                     _ => {}
                 }
@@ -1023,7 +1175,13 @@ impl App {
                 ui.label(format!("{}×{} @ {} fps {}", c.mode.width, c.mode.height, c.mode.fps, kind));
             }
         }
-        if ui.add_enabled(self.device().is_some(), egui::Button::new("Capture keyboard & mouse")).clicked() {
+        let block = uistate::input_block_reason(self.device().is_some(), self.run_handle.as_ref().is_some_and(|r| r.running()));
+        let r = ui.add_enabled(block.is_none(), egui::Button::new("Capture keyboard & mouse"));
+        let r = match block {
+            Some(why) => r.on_disabled_hover_text(why),
+            None => r,
+        };
+        if r.clicked() {
             self.begin_capture(ctx);
         }
     }
@@ -1031,26 +1189,17 @@ impl App {
     fn keys_ui(&mut self, ui: &mut egui::Ui) {
         ui.small("Keys your own OS would intercept, or that the capture view can't see.");
         // One input producer at a time: no chords during capture, a script, or while the pump is busy.
-        let on = self.device().is_some() && self.input_idle();
-        const CHORDS: &[(&str, &[&str])] = &[
-            ("Ctrl+Alt+Del", &["CTRL", "ALT", "DEL"]),
-            ("Win", &["WIN"]),
-            ("Alt+Tab", &["ALT", "TAB"]),
-            ("Alt+F4", &["ALT", "F4"]),
-            ("Ctrl+Esc", &["CTRL", "ESC"]),
-            ("Win+R", &["WIN", "R"]),
-            ("PrintScreen", &["PRTSC"]),
-            ("Menu", &["MENU"]),
-            ("CapsLock", &["CAPSLOCK"]),
-            ("NumLock", &["NUMLOCK"]),
-            ("Pause", &["PAUSE"]),
-            ("ScrollLock", &["SCROLLLOCK"]),
-        ];
+        let block = uistate::send_block_reason(self.device().is_some(), self.input_idle());
         ui.horizontal_wrapped(|ui| {
-            for (label, keys) in CHORDS {
-                if ui.add_enabled(on, egui::Button::new(*label)).clicked() {
-                    let ks: Vec<Key> = keys.iter().filter_map(|n| kvmit_hid::parse_key(n)).collect();
-                    if let Some(tx) = self.pump() {
+            for (label, keys) in uistate::CHORDS {
+                let r = ui.add_enabled(block.is_none(), egui::Button::new(*label));
+                let r = match block {
+                    Some(why) => r.on_disabled_hover_text(why),
+                    None => r,
+                };
+                if r.clicked() {
+                    // a chord with an unresolvable key name is never sent shortened
+                    if let (Some(ks), Some(tx)) = (uistate::chord_keys(keys), self.pump()) {
                         let _ = tx.send(Input::Chord(label, ks));
                     }
                 }
@@ -1061,12 +1210,31 @@ impl App {
     fn text_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.add(egui::TextEdit::singleline(&mut self.type_text).password(self.type_secret).hint_text("text to type on the target"));
         ui.checkbox(&mut self.type_secret, "Secret (masked, never logged)");
-        if ui.add_enabled(self.device().is_some() && !self.type_text.is_empty() && self.input_idle(), egui::Button::new("Type")).clicked() {
+        let warning = uistate::untypable_warning(&self.type_text, self.type_secret);
+        if let Some(w) = &warning {
+            ui.colored_label(theme::palette(ui.visuals().dark_mode).bad_text, w);
+        }
+        let block = if self.type_text.is_empty() {
+            Some("Type some text first.")
+        } else if warning.is_some() {
+            Some("The text has characters the US layout cannot type: remove them first.")
+        } else {
+            uistate::send_block_reason(self.device().is_some(), self.input_idle())
+        };
+        let r = ui.add_enabled(block.is_none(), egui::Button::new("Type"));
+        let r = match block {
+            Some(why) => r.on_disabled_hover_text(why),
+            None => r,
+        };
+        if r.clicked() {
             let mut s = Script::default();
             s.vars.insert("t".into(), kvmit_script::VarDef { secret: self.type_secret, ..Default::default() });
             s.steps.push(if self.type_secret { Step::SecretText("{{t}}".into()) } else { Step::Text("{{t}}".into()) });
-            let vars: Vars = [("t".to_string(), std::mem::take(&mut self.type_text))].into();
-            self.start_run(s, std::path::PathBuf::from("."), vars, false, ctx.clone());
+            // The text is cleared only once the run has actually started; on any failure it stays for another try.
+            let vars: Vars = [("t".to_string(), self.type_text.clone())].into();
+            if self.start_run(s, std::path::PathBuf::from("."), vars, false, ctx.clone()) {
+                self.type_text.clear();
+            }
         }
     }
 
@@ -1081,10 +1249,16 @@ impl App {
             self.library = library::load_all(&self.cfg.script_dir());
             self.selected = None;
             self.script = None;
+            // nothing of the previous selection may linger
+            self.script_err = None;
+            self.preview = None;
+            self.preview_key = None;
+            self.trust_ack = false;
+            self.var_values.clear();
         }
         ui.small(format!("Folder: {}", self.cfg.script_dir().display()));
         if let Some(e) = &self.script_err {
-            ui.colored_label(egui::Color32::from_rgb(220, 70, 60), e);
+            ui.colored_label(theme::palette(ui.visuals().dark_mode).bad_text, e);
         }
         if let (Some(script), Some(sel)) = (self.script.clone(), self.selected) {
             ui.separator();
@@ -1102,8 +1276,14 @@ impl App {
             }
             let vars = self.current_vars();
             let external = self.library[sel].path.is_some();
-            match preview(&script, &vars, &UsAnsi, &RunOptions::default()) {
-                Ok(p) => {
+            // Compile the preview only when the script or a variable changed, not on every frame the popup is open.
+            let key = (sel, vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>());
+            if self.preview_key.as_ref() != Some(&key) || self.preview.is_none() {
+                self.preview = Some(preview(&script, &vars, &UsAnsi, &RunOptions::default()).map_err(|e| e.to_string()));
+                self.preview_key = Some(key);
+            }
+            match &self.preview {
+                Some(Ok(p)) => {
                     ui.small(format!(
                         "{} steps · {} chars typed · {} secret · ~{} s typing{}{}",
                         p.steps, p.typed_chars, p.secret_chars, p.estimated_typing.as_secs(),
@@ -1111,31 +1291,53 @@ impl App {
                         if p.has_confirm { " · has prompts" } else { "" }
                     ));
                     for s in &p.suspicious {
-                        ui.colored_label(egui::Color32::from_rgb(230, 170, 40), format!("⚠ looks like a command: {s}"));
+                        ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, format!("⚠ looks like a command: {s}"));
                     }
-                    self.preview = Some(Ok(p));
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     ui.small(format!("Not ready: {e}"));
-                    self.preview = Some(Err(e.to_string()));
                 }
+                None => {}
             }
             if external {
                 ui.checkbox(&mut self.trust_ack, "I wrote or reviewed this script — it will type into the target");
             }
-            let running = self.run_handle.as_ref().is_some_and(|r| !r.done.load(Ordering::SeqCst));
-            let ready = matches!(self.preview, Some(Ok(_))) && (!external || self.trust_ack);
+            let running = self.run_handle.as_ref().is_some_and(|r| r.running());
+            let preview_ok = matches!(self.preview, Some(Ok(_)));
             let base = self.library[sel].path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.cfg.script_dir());
+            // Why each button is unavailable, shown on hover.
+            let why_not_ready = if !preview_ok {
+                Some("The script is not ready: see the message above.")
+            } else if external && !self.trust_ack {
+                Some("Tick \"I wrote or reviewed this script\" first.")
+            } else {
+                None
+            };
+            let why_run = why_not_ready
+                .or(if running { Some("A script is already running.") } else { None })
+                .or(uistate::send_block_reason(self.device().is_some(), self.input_idle()));
+            let why_dry = (!preview_ok).then_some("The script is not ready: see the message above.").or(if running { Some("A script is already running.") } else { None });
             ui.horizontal(|ui| {
-                if ui.add_enabled(ready && !running && self.device().is_some(), egui::Button::new("▶ Run")).clicked() {
+                let r = ui.add_enabled(why_run.is_none(), egui::Button::new("▶ Run"));
+                if let Some(w) = why_run {
+                    r.clone().on_disabled_hover_text(w);
+                }
+                if r.clicked() {
                     self.start_run(script.clone(), base.clone(), vars.clone(), false, ctx.clone());
                 }
-                if ui.add_enabled(matches!(self.preview, Some(Ok(_))) && !running && self.device().is_some(), egui::Button::new("Dry run")).clicked() {
+                // A dry run sends nothing, so it works without an adapter.
+                let r = ui.add_enabled(why_dry.is_none(), egui::Button::new("Dry run"));
+                if let Some(w) = why_dry {
+                    r.clone().on_disabled_hover_text(w);
+                }
+                if r.clicked() {
                     self.start_run(script.clone(), base.clone(), vars.clone(), true, ctx.clone());
                 }
-                if ui.add_enabled(running, egui::Button::new("■ Abort")).clicked() {
+                let r = ui.add_enabled(running, egui::Button::new("■ Abort"));
+                r.clone().on_hover_text("Esc").on_disabled_hover_text("Nothing is running.");
+                if r.clicked() {
                     if let Some(h) = &self.run_handle {
-                        h.cancel.store(true, Ordering::SeqCst);
+                        h.abort();
                     }
                 }
             });
@@ -1143,26 +1345,14 @@ impl App {
     }
 }
 
-const GREEN: egui::Color32 = egui::Color32::from_rgb(46, 160, 67);
-const AMBER: egui::Color32 = egui::Color32::from_rgb(214, 150, 30);
-const RED: egui::Color32 = egui::Color32::from_rgb(200, 60, 50);
-
-/// How a part of the setup is doing; drives a status chip's colour.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Health {
-    Good,
-    Working,
-    Bad,
-    Idle,
-}
-
 /// A status chip: a button filled with its health colour (grey/neutral when idle), so state reads at a glance.
 fn chip(ui: &mut egui::Ui, h: Health, text: impl Into<String>) -> egui::Response {
     let text: String = text.into();
+    let pal = theme::palette(ui.visuals().dark_mode);
     let fill = match h {
-        Health::Good => Some(GREEN),
-        Health::Working => Some(AMBER),
-        Health::Bad => Some(RED),
+        Health::Good => Some(pal.good_fill),
+        Health::Working => Some(pal.warn_fill),
+        Health::Bad => Some(pal.bad_fill),
         Health::Idle => None,
     };
     let btn = match fill {
@@ -1170,6 +1360,35 @@ fn chip(ui: &mut egui::Ui, h: Health, text: impl Into<String>) -> egui::Response
         None => egui::Button::new(text),
     };
     ui.add(btn)
+}
+
+fn health_color(h: Health, ui: &egui::Ui) -> egui::Color32 {
+    let pal = theme::palette(ui.visuals().dark_mode);
+    match h {
+        Health::Good => pal.good_text,
+        Health::Working => pal.warn_text,
+        Health::Bad => pal.bad_text,
+        Health::Idle => ui.visuals().text_color(),
+    }
+}
+
+/// A status indicator filled with its health colour, like `chip` but not a control: a Label inside a coloured frame, so it
+/// is neither clickable nor exposed as a button. It does not sense clicks or focus.
+fn indicator(ui: &mut egui::Ui, h: Health, text: impl Into<String>) -> egui::Response {
+    let text: String = text.into();
+    let pal = theme::palette(ui.visuals().dark_mode);
+    let (fill, rich) = match h {
+        Health::Good => (pal.good_fill, egui::RichText::new(text).color(egui::Color32::WHITE).strong()),
+        Health::Working => (pal.warn_fill, egui::RichText::new(text).color(egui::Color32::WHITE).strong()),
+        Health::Bad => (pal.bad_fill, egui::RichText::new(text).color(egui::Color32::WHITE).strong()),
+        Health::Idle => (ui.visuals().widgets.inactive.weak_bg_fill, egui::RichText::new(text)),
+    };
+    egui::Frame::new()
+        .fill(fill)
+        .corner_radius(ui.visuals().widgets.inactive.corner_radius)
+        .inner_margin(ui.spacing().button_padding)
+        .show(ui, |ui| ui.add(egui::Label::new(rich).selectable(false)))
+        .inner
 }
 
 /// A popup under `anchor` that stays open until you click outside it (these hold forms, not one-shot menu items).
@@ -1233,7 +1452,7 @@ mod tests {
 
     #[test]
     fn a_rescan_keeps_the_selection_on_the_same_device() {
-        let dev = |path: &str| DeviceInfo { path: path.into(), name: path.into() };
+        let dev = |path: &str| DeviceInfo::new(path, path);
         let after = vec![dev("/dev/video4"), dev("/dev/video0"), dev("/dev/video2")];
         assert_eq!(selection_after_rescan(Some("/dev/video0"), &after), 1, "same device, new position");
         assert_eq!(selection_after_rescan(Some("/dev/video9"), &after), 0, "gone: back to the first");

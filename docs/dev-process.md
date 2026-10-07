@@ -530,3 +530,46 @@ First report (`main...feat/ipxe` at `a54bd50`): **no High; three Medium; six Low
 - **Hardware check of the toggle (2026-10-05, real adapter)** found that HELLO still reported firmware 0.1.0 (hardcoded); fixed to 0.2.0.
 - **Opus review of the toggle (`a7ac215..8863517`):** NO SIGN-OFF, one Medium, docs only: they claimed the USB product id differs between drive off (`303a:4008`) and on (`303a:400a`); the id is `400a` in both states (esp_tinyusb derives it from the compiled-in classes). **Confirmed on hardware** (both states enumerate as `400a`; the interface count is what changes). Fixed everywhere, with a note for anyone whose allow-list or VM passthrough keys on the id. Lows fixed: the restart timer is now created before the setting is committed (a creation failure can no longer leave the stored setting changed under a BUSY reply), a stale header comment, a hardcoded iPXE tag in the generated source statement, and the status docs now state what was verified. Lows left: three comments in `usb_hid.c` and the flasher that still say "exactly as before" about the interface list (accurate for interfaces, loose for the id), and the drive's setting persists across power cycles and re-flashes (documented; an always-visible indicator in the app is a candidate for 0.4.x).
 - **Opus re-verify of those fixes (`8863517..9075114`):** **SIGN-OFF: no High or Medium defect remains.** Hash checks, host tests and the claims against the hardware facts all confirmed. The Codex round over the whole 0.4.0 diff, including the toggle, is still owed and will be logged here.
+
+## 2026-10-06 - 0.4.1-0.4.5 video honesty, button contract, recording, themes (`dev/0.4.x`, PR #35): review round 17 (Codex `gpt-6-astra`)
+
+The usual cross-model reviewer, read-only, high effort, over `feat/secure-boot...dev/0.4.x` (desktop only). Seven findings, each marked CONFIRMED by the reviewer and re-checked here against the source before accepting. Not run by the reviewer: Rust tests, Windows hardware.
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | High | A failed recording's cleanup deleted the final filename, which another instance (same second) could own | **Confirmed** (cleanup was `remove_file(final)`). ffmpeg now writes `.<pid>-<name>.part`; cleanup removes only that; the finished file is published by hard link (never replaces; next free name on a clash; rename fallback on filesystems without links) |
+| 2 | High | Stopping a recording joined the encoder on the GUI thread (up to 120 s), including with input captured | **Confirmed.** Stop now runs on a worker; the bar shows "Finishing the recording…"; quitting waits at most 20 s |
+| 3 | Med | A full queue dropped frames but the clock kept going: shorter, faster clip, and a wrong reported duration | **Confirmed.** Lost slots are owed and repaid as repeats (bounded to 2 s); `Finished.frames`/`duration` count frames actually written |
+| 4 | Med | With the capture gone, nothing called `push`, so the duration cap and an encoder's death went unnoticed | **Confirmed.** `Recorder::check` runs when no frame arrives; a source gone for 10 s ends the clip with what exists |
+| 5 | Med | A stored device key that matched nothing fell back to the old `/dev/videoN`, which may now be a webcam | **Confirmed.** The path is used only when no key was ever stored; regression test added |
+| 6 | Med | Audio lookup (`pactl` / `ffmpeg`) ran on the GUI thread | **Confirmed.** Runs on a worker with a "looking for audio inputs…" state. Not done: `ffmpeg -version` at Start is still synchronous (a local binary; left, noted) |
+| 7 | Med | "No signal" (flat fill) blocked recording, but a black boot screen is valid video | **Confirmed** (also a known gap from our own notes). Blank no longer blocks; the popup says it looks blank |
+
+Fixes verified: `scripts/rs.sh test` and `clippy` clean; the ffmpeg end-to-end tests pass against the host's ffmpeg.
+
+**Round 18** (re-review of the round-17 fixes, same reviewer): **NO SIGN-OFF**, eight findings, each confirmed from the control flow and fixed:
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | High | Two recorders in one process/second/format chose the same final name, hence the same `.part`; one's abort deleted the other's file | The final name is reserved atomically at start (`create_new`, an empty placeholder only this recording owns); the part file derives from it; cleanup removes only those two |
+| 2 | High | The rename fallback (no hard links) could replace another process's recording | Publishing is now a rename over our own reserved placeholder; the hard-link path is gone; a test starts and aborts two recorders in one second |
+| 3 | High | Quitting after a 20 s wait abandoned finalisation (orphan ffmpeg, stuck `.part`) | A `Canceller` makes `finish` kill the encoder and remove the files; exit waits 20 s, cancels, waits 5 s more |
+| 4 | Med | Owed frames were discarded at stop or cap; repeated failed repayments inflated `dropped` | `finish` repays what is owed (bounded 2 s) before closing; only newly lost slots count as dropped |
+| 5 | Med | The no-frame deadline did not cover a recording still awaiting its first frame | Applies from the start; ends with `NoFrames` |
+| 6 | Med | Rescan could leave a stale index selecting a different audio device | The list is read-only while a lookup runs, and the selection resets to "none" when a new list arrives |
+| 7 | Med | A hung `pactl`/ffmpeg lookup was never killed | Lookups are killed after 5 s |
+| 8 | Low | An automatic stop kept showing the REC timer during encoding | The worker flags finalising; the bar shows "Finishing the recording…" |
+
+**Round 19** (re-review of the round-18 fixes): **NO SIGN-OFF**, five findings; four fixed, one accepted:
+
+| # | Sev | Finding | Disposition |
+|---|---|---|---|
+| 1 | High | A cancel requested before the recorder was registered was lost (a fresh flag replaced it) | **Fixed.** The flag is made before the worker starts and handed to the recorder; a cancel can no longer be lost |
+| 2 | Med | The audio lookup's 5 s did not bound the pipe readers if a descendant held them | **Fixed.** Readers get 1 s after the tool is killed, then are abandoned. Not changed: the recorder's own reader joins (ffmpeg spawns no descendants) |
+| 3 | Med | Owed-frame flush gave up after 2 s and ignored cancel | **Fixed.** 10 s, cancel-aware. Residual debt after that is tolerated and shows in the dropped count |
+| 4 | Med | An empty file under the final name appeared immediately and survived a crash | **Fixed.** The name is reserved by a hidden `.<name>.reserved` marker; nothing is visible under the final name until publication; a crash leaves only hidden files. A cancel now also wins over a clean exit |
+| 5 | High (plausible) | A user deleting the placeholder, then another program creating that name, got overwritten | **Fixed by the same change:** cleanup never deletes the final name, and publication checks it is free (next free name otherwise; the check-then-rename gap against a non-cooperating writer remains, accepted) |
+
+Verification after the fixes: `rs.sh test`/`clippy` clean; ffmpeg end-to-end (4 tests) pass. **No sign-off is claimed.** Each round has found issues in the previous round's fixes, with the severity of the remaining ones falling toward exotic races; a fourth round is the gate before release.
+
+**Round 20** (final gate on the round-19 fixes): one Medium, no other finding: publication was check-then-rename, which a program that is not us could race. **Fixed:** publication tries a hard link first (atomic, never replaces; a taken name moves on to the next free one) and uses check-then-rename only on filesystems without hard links. The reviewer's verdict on round 20 was NO SIGN-OFF on that single finding; the fix has had **no further review round**, so **no sign-off is claimed**. The maintainer decides whether a fifth round is worth it before release.

@@ -43,6 +43,7 @@ self-test types into the machine it is plugged into.
 
 ## Things to re-verify before trusting them (dated, STD-003 rule 4)
 
+- 2026-10-06: 0.4.1-0.4.5 (video honesty, button contract, wheel/Esc abort, recording, light/dark theme) are host-tested only. Nothing ran on a capture card, a real target, the Linux GUI or Windows; see the "Needs hardware" issues #31-#34. Neither theme has been looked at on a real screen (contrast is unit-tested, not eyeballed).
 - 2026-10-03: "COM = CH343 UART, USB = native" port labelling is vendor-documented and consistent with
   `lsusb 1a86:55d3` on COM, but not checked against this board's silkscreen.
 - 2026-10-04: every Windows-controller claim is VM-verified only (Windows 11 VM, adapter and capture card passed
@@ -56,6 +57,7 @@ self-test types into the machine it is plugged into.
   AppImage's GUI start and a Linux board pass are unrun.
 - 2026-10-04: releases are unsigned until a signing certificate is configured on the release machine; never state a
   release is signed unless `dist/SIGNATURES.txt` (from Get-AuthenticodeSignature) says Valid.
+- 2026-10-06: 0.4.1's Linux video changes (dead-card detection, bounded drop, applied-mode readback with `set_params`, YUYV stride, stable device key, no-signal chip) are host-tested only. Unrun on a card: how a real UVC driver answers `set_params` / `set_format`, the `set_timeout` stall behaviour, real unplug detection, and whether the MacroSilicon no-signal fill is flagged blank. Tracked in the "Needs hardware" milestone (#31-#34).
 - 2026-10-03: BLE pairing + GATT and HDMI capture (one MacroSilicon card) were hardware-verified on Linux; LED
   GPIO48 verified.
 - 2026-10-03: 5-byte mouse report acceptance by BIOS boot protocol — unverified.

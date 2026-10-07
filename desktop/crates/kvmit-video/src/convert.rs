@@ -2,20 +2,30 @@
 use kvmit_script::Frame;
 
 /// YUYV (YUY2, 4:2:2) → RGBA8 using BT.601 limited-range coefficients, which is what UVC capture cards emit.
+/// Rows are tightly packed (`width * 2` bytes).
 pub fn yuyv_to_rgba(width: usize, height: usize, data: &[u8]) -> Option<Vec<u8>> {
-    if !width.is_multiple_of(2) || data.len() < width * height * 2 {
+    yuyv_to_rgba_strided(width, height, width * 2, data)
+}
+
+/// As [`yuyv_to_rgba`] for a buffer whose rows are `stride` bytes apart (drivers may pad each row).
+pub fn yuyv_to_rgba_strided(width: usize, height: usize, stride: usize, data: &[u8]) -> Option<Vec<u8>> {
+    let row = width * 2;
+    if width == 0 || !width.is_multiple_of(2) || stride < row || height == 0 || data.len() < stride * (height - 1) + row {
         return None;
     }
     let mut out = vec![255u8; width * height * 4];
     let clamp = |v: i32| v.clamp(0, 255) as u8;
-    for (i, px) in data[..width * height * 2].as_chunks::<4>().0.iter().enumerate() {
-        let (y0, u, y1, v) = (px[0] as i32, px[1] as i32 - 128, px[2] as i32, px[3] as i32 - 128);
-        for (j, y) in [y0, y1].into_iter().enumerate() {
-            let c = 298 * (y - 16);
-            let o = (i * 2 + j) * 4;
-            out[o] = clamp((c + 409 * v + 128) >> 8);
-            out[o + 1] = clamp((c - 100 * u - 208 * v + 128) >> 8);
-            out[o + 2] = clamp((c + 516 * u + 128) >> 8);
+    for y_row in 0..height {
+        let src = &data[y_row * stride..y_row * stride + row];
+        for (i, px) in src.as_chunks::<4>().0.iter().enumerate() {
+            let (y0, u, y1, v) = (px[0] as i32, px[1] as i32 - 128, px[2] as i32, px[3] as i32 - 128);
+            for (j, y) in [y0, y1].into_iter().enumerate() {
+                let c = 298 * (y - 16);
+                let o = (y_row * width + i * 2 + j) * 4;
+                out[o] = clamp((c + 409 * v + 128) >> 8);
+                out[o + 1] = clamp((c - 100 * u - 208 * v + 128) >> 8);
+                out[o + 2] = clamp((c + 516 * u + 128) >> 8);
+            }
         }
     }
     Some(out)
@@ -52,6 +62,20 @@ pub fn save_png(path: &std::path::Path, width: usize, height: usize, rgba: &[u8]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yuyv_stride_padding_is_skipped() {
+        // 2x2, two bytes of junk after each 4-byte row.
+        let data = [16, 128, 235, 128, 0xAA, 0xBB, 235, 128, 16, 128];
+        let rgba = yuyv_to_rgba_strided(2, 2, 6, &data).unwrap();
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 255]);
+        assert_eq!(&rgba[4..8], &[255, 255, 255, 255]);
+        assert_eq!(&rgba[8..12], &[255, 255, 255, 255], "row 1 starts at the stride, not at width*2");
+        assert_eq!(&rgba[12..16], &[0, 0, 0, 255]);
+        assert!(yuyv_to_rgba_strided(2, 2, 3, &data).is_none(), "stride below the row size");
+        assert!(yuyv_to_rgba_strided(2, 2, 6, &data[..8]).is_none(), "short buffer");
+        assert!(yuyv_to_rgba_strided(0, 2, 0, &[]).is_none());
+    }
 
     #[test]
     fn yuyv_black_white_and_gray() {

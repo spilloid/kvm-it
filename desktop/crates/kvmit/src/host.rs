@@ -15,7 +15,8 @@ pub type EventFn = Box<dyn FnMut(RunEvent) + Send>;
 
 pub struct ScriptHost {
     pub rt: Handle,
-    pub dev: Device,
+    /// `None` for a dry run, which sends nothing; any real send then fails with "not connected".
+    pub dev: Option<Device>,
     pub capture: Option<Arc<Mutex<Option<Capture>>>>,
     /// Directory reference images are resolved against (the script's folder).
     pub base_dir: PathBuf,
@@ -28,22 +29,24 @@ fn e(err: kvmit_ble::LinkError) -> String {
     err.to_string()
 }
 
+const NO_ADAPTER: &str = "not connected to an adapter";
+
 impl Host for ScriptHost {
     fn key_down(&mut self, key: Key) -> Result<(), String> {
-        self.rt.block_on(self.dev.key_down(key)).map_err(e)
+        self.rt.block_on(self.dev.as_ref().ok_or(NO_ADAPTER)?.key_down(key)).map_err(e)
     }
     fn key_up(&mut self, key: Key) -> Result<(), String> {
-        self.rt.block_on(self.dev.key_up(key)).map_err(e)
+        self.rt.block_on(self.dev.as_ref().ok_or(NO_ADAPTER)?.key_up(key)).map_err(e)
     }
     fn release_all(&mut self) -> Result<(), String> {
-        self.rt.block_on(self.dev.release_all()).map_err(e)
+        self.rt.block_on(self.dev.as_ref().ok_or(NO_ADAPTER)?.release_all()).map_err(e)
     }
     fn mouse_move(&mut self, dx: i32, dy: i32) -> Result<(), String> {
-        self.dev.mouse_move(dx, dy);
+        self.dev.as_ref().ok_or(NO_ADAPTER)?.mouse_move(dx, dy);
         Ok(())
     }
     fn mouse_button(&mut self, mask: u8, down: bool) -> Result<(), String> {
-        self.rt.block_on(self.dev.button(mask, down)).map_err(e)
+        self.rt.block_on(self.dev.as_ref().ok_or(NO_ADAPTER)?.button(mask, down)).map_err(e)
     }
     fn sleep(&mut self, d: Duration) {
         std::thread::sleep(d);
