@@ -5,7 +5,7 @@ use crate::host::ScriptHost;
 use crate::keymap;
 use crate::library::{self, Entry};
 use crate::session;
-use crate::uistate::{self, Health, LinkKind, NoticeAction, NoticeClock, RunOutcome};
+use crate::uistate::{self, Health, LinkKind, NoticeAction, NoticeClock, RunOutcome, WheelAccum};
 use kvmit_ble::backend::{self, Found};
 use kvmit_ble::Device;
 use kvmit_hid::Key;
@@ -143,6 +143,7 @@ pub struct App {
     /// What `preview` was computed from (selected script index, variable values); it is recomputed only when this changes.
     preview_key: Option<(usize, Vec<(String, String)>)>,
     notice_clock: NoticeClock,
+    wheel: WheelAccum,
     trust_ack: bool,
     run_handle: Option<RunHandle>,
     run_log: Vec<String>,
@@ -184,6 +185,7 @@ impl App {
             preview: None,
             preview_key: None,
             notice_clock: NoticeClock::default(),
+            wheel: WheelAccum::default(),
             trust_ack: false,
             run_handle: None,
             run_log: Vec::new(),
@@ -463,6 +465,7 @@ impl App {
     fn end_capture(&mut self, ctx: &egui::Context) {
         if self.capturing {
             self.capturing = false;
+            self.wheel.reset();
             self.grab = None; // unhooks: the controller's OS gets its keys back
             self.prev_mods.clear();
             if let Some(tx) = &self.input_tx {
@@ -487,6 +490,7 @@ impl App {
             return;
         }
         self.capturing = true;
+        self.wheel.reset();
         self.grab = crate::syskeys::Grab::start({
             let ctx = ctx.clone();
             move || ctx.request_repaint() // keyboard events arrive off-thread: wake the GUI to forward (and release) promptly
@@ -584,8 +588,8 @@ impl App {
                         dev.mouse_move(d.x.round() as i32, d.y.round() as i32);
                     }
                 }
-                egui::Event::MouseWheel { delta, .. } => {
-                    let v = delta.y.round().clamp(-127.0, 127.0) as i8;
+                egui::Event::MouseWheel { unit, delta, .. } => {
+                    let v = self.wheel.add(*unit, delta.y);
                     if v != 0 {
                         let _ = tx.send(Input::Scroll(v));
                     }
@@ -730,6 +734,15 @@ impl eframe::App for App {
         self.released_this_frame = false;
         if self.capturing {
             self.forward_input(ctx);
+        }
+
+        // Global abort key: plain Esc stops a running script, unless a text field has focus (Esc there leaves the field).
+        // Release-all follows from the run itself ending; nothing is typed by this key.
+        if let Some(h) = self.run_handle.as_ref().filter(|h| h.running()) {
+            let text_focused = ctx.wants_keyboard_input();
+            if ctx.input(|i| uistate::abort_fires(true, text_focused, &i.events)) {
+                h.abort();
+            }
         }
 
         // a capture whose card vanished must not keep showing its last frame as if it were live
