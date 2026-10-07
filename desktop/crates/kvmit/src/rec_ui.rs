@@ -4,14 +4,16 @@
 use kvmit_record::{poll_record, AudioDevice, Finished, Format, PollHandle, RecordError, Settings};
 use kvmit_video::SharedFrame;
 use std::path::PathBuf;
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-/// Why Record cannot start right now (shown as the disabled hover text), or `None` when it can.
-pub fn record_block_reason(has_picture: bool, blank: bool) -> Option<&'static str> {
-    if !has_picture {
+/// Why Record cannot start right now (shown as the disabled hover text), or `None` when it can. A blank picture does not
+/// block it: that is a heuristic (a black boot screen is valid video), so the popup only says so.
+pub fn record_block_reason(has_picture: bool, finishing: bool) -> Option<&'static str> {
+    if finishing {
+        Some("The last recording is still being finished")
+    } else if !has_picture {
         Some("Open the capture card first: there is no picture to record")
-    } else if blank {
-        Some("The picture is blank (no signal): nothing worth recording yet")
     } else {
         None
     }
@@ -61,14 +63,18 @@ pub struct RecordUi {
     /// Index into `audio` for WebM; `None` = no sound (the default).
     pub audio_sel: Option<usize>,
     audio: Vec<AudioDevice>,
+    /// Audio inputs are looked up on a worker (the lookup runs `pactl`/`ffmpeg`, which can hang): `Some` while one is out.
+    audio_job: Option<Receiver<Vec<AudioDevice>>>,
     audio_listed: bool,
     active: Option<Active>,
+    /// A stop in progress: finishing the file can take seconds (a GIF is encoded at the end), so it never runs on the GUI thread.
+    finishing: Option<Receiver<Result<Finished, RecordError>>>,
     pub last_saved: Option<PathBuf>,
 }
 
 impl Default for RecordUi {
     fn default() -> Self {
-        RecordUi { format: Format::Gif, audio_sel: None, audio: Vec::new(), audio_listed: false, active: None, last_saved: None }
+        RecordUi { format: Format::Gif, audio_sel: None, audio: Vec::new(), audio_job: None, audio_listed: false, active: None, finishing: None, last_saved: None }
     }
 }
 
@@ -90,18 +96,41 @@ impl RecordUi {
         Ok(())
     }
 
-    /// Stop now (a click, or quitting) and return the outcome.
-    pub fn stop(&mut self) -> Option<Result<Finished, RecordError>> {
-        let a = self.active.take()?;
-        Some(self.keep(a.handle.stop()))
+    /// Ask the recording to stop. The file is finished on a worker; collect the outcome with `poll_ended`.
+    pub fn begin_stop(&mut self) {
+        if let Some(a) = self.active.take() {
+            let (tx, rx) = channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(a.handle.stop());
+            });
+            self.finishing = Some(rx);
+        }
     }
 
-    /// If the recording ended by itself (duration cap, encoder died), collect its outcome.
+    pub fn is_finishing(&self) -> bool {
+        self.finishing.is_some()
+    }
+
+    /// The outcome of a recording that has finished: one stopped by `begin_stop`, or one that ended by itself (duration
+    /// cap, encoder died, the picture stayed gone). Never blocks.
     pub fn poll_ended(&mut self) -> Option<Result<Finished, RecordError>> {
-        if self.active.as_ref().is_some_and(|a| a.handle.is_running()) {
-            return None;
+        if self.active.as_ref().is_some_and(|a| !a.handle.is_running()) {
+            self.begin_stop();
         }
-        self.stop()
+        let r = match self.finishing.as_ref()?.try_recv() {
+            Ok(r) => r,
+            Err(TryRecvError::Empty) => return None,
+            Err(TryRecvError::Disconnected) => Err(RecordError::Io("the recording thread ended unexpectedly".into())),
+        };
+        self.finishing = None;
+        Some(self.keep(r))
+    }
+
+    /// Quitting: stop, and wait (bounded) so the file is not left cut off. Only used on the way out.
+    pub fn finish_for_exit(&mut self, wait: Duration) -> Option<Result<Finished, RecordError>> {
+        self.begin_stop();
+        let r = self.finishing.take()?.recv_timeout(wait).ok()?;
+        Some(self.keep(r))
     }
 
     fn keep(&mut self, r: Result<Finished, RecordError>) -> Result<Finished, RecordError> {
@@ -111,17 +140,34 @@ impl RecordUi {
         r
     }
 
-    /// The popup body. Returns true when Start was clicked.
-    pub fn popup_body(&mut self, ui: &mut egui::Ui, block: Option<&'static str>) -> bool {
+    fn look_for_audio(&mut self) {
+        let (tx, rx) = channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(kvmit_record::list_audio_devices(None));
+        });
+        self.audio_job = Some(rx);
+    }
+
+    /// The popup body. Returns true when Start was clicked. `blank`: the picture looks like a flat fill.
+    pub fn popup_body(&mut self, ui: &mut egui::Ui, block: Option<&'static str>, blank: bool) -> bool {
         ui.strong("Record the target's screen");
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.format, Format::Gif, "GIF (silent, short)");
             ui.selectable_value(&mut self.format, Format::WebM, "WebM (video, optional sound)");
         });
         if self.format == Format::WebM {
-            if !self.audio_listed {
-                self.audio = kvmit_record::list_audio_devices(None);
+            if let Some(rx) = &self.audio_job {
+                match rx.try_recv() {
+                    Ok(list) => {
+                        self.audio = list;
+                        self.audio_job = None;
+                    }
+                    Err(TryRecvError::Empty) => ui.ctx().request_repaint_after(Duration::from_millis(200)),
+                    Err(TryRecvError::Disconnected) => self.audio_job = None,
+                }
+            } else if !self.audio_listed {
                 self.audio_listed = true;
+                self.look_for_audio();
             }
             ui.horizontal(|ui| {
                 ui.label("Sound:");
@@ -133,9 +179,11 @@ impl RecordUi {
                         ui.selectable_value(&mut self.audio_sel, Some(i), label);
                     }
                 });
-                if ui.small_button("Rescan").clicked() {
-                    self.audio = kvmit_record::list_audio_devices(None);
+                if self.audio_job.is_some() {
+                    ui.small("looking for audio inputs…");
+                } else if ui.small_button("Rescan").clicked() {
                     self.audio_sel = None;
+                    self.look_for_audio();
                 }
             });
             ui.small("Pick the capture card's audio input to record the target's sound. Off unless you choose one.");
@@ -143,6 +191,9 @@ impl RecordUi {
             ui.small("GIF: about 12 frames per second, at most 960 px wide, stops after 30 s. Use WebM for longer clips or sound.");
         }
         ui.colored_label(crate::theme::palette(ui.visuals().dark_mode).warn_text, "⚠ A recording cannot be redacted: everything on the target's screen (passwords typed into it, private windows) is in the file.");
+        if blank {
+            ui.small("The picture looks blank (no signal, or a black screen). You can still record it.");
+        }
         ui.small(format!("Saved to {}", output_dir().display()));
         if let Some(p) = &self.last_saved {
             ui.small(format!("Last: {}", p.display()));
@@ -173,10 +224,10 @@ mod tests {
     }
 
     #[test]
-    fn reasons_cover_no_picture_and_no_signal() {
+    fn only_a_missing_picture_or_a_recording_still_finishing_blocks_record() {
         assert!(record_block_reason(false, false).is_some());
         assert!(record_block_reason(true, true).is_some());
-        assert!(record_block_reason(true, false).is_none());
+        assert!(record_block_reason(true, false).is_none(), "a blank picture can still be recorded");
     }
 
     #[test]

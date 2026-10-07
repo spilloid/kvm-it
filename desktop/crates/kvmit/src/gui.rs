@@ -809,9 +809,12 @@ impl eframe::App for App {
         // ---- top bar: status chips that open the controls they describe. Green = working, amber = in progress,
         // red = broken, grey = idle. While input is captured every key belongs to the target, so only the
         // capture indicator is live. ----
-        // a recording that ended by itself (duration cap, encoder died) reports why
+        // a recording that ended (stopped, duration cap, encoder died, picture gone) reports how
         if let Some(r) = self.rec.poll_ended() {
             self.set_notice(crate::rec_ui::describe(&r));
+        }
+        if self.rec.is_finishing() {
+            ctx.request_repaint_after(Duration::from_millis(200));
         }
         if self.rec.is_recording() {
             ctx.request_repaint_after(Duration::from_millis(500)); // the timer
@@ -866,16 +869,16 @@ impl eframe::App for App {
                 if let Some(el) = self.rec.elapsed() {
                     let r = chip(ui, Health::Bad, format!("● REC {} — click to stop", crate::rec_ui::format_elapsed(el)));
                     if r.clicked() {
-                        if let Some(res) = self.rec.stop() {
-                            self.set_notice(crate::rec_ui::describe(&res));
-                        }
+                        self.rec.begin_stop(); // the file is finished off the GUI thread
                     }
+                } else if self.rec.is_finishing() {
+                    chip(ui, Health::Working, "Finishing the recording…");
                 } else {
                     ui.add_enabled_ui(idle_ui, |ui| {
-                        let block = crate::rec_ui::record_block_reason(has_video, self.video_blank);
+                        let block = crate::rec_ui::record_block_reason(has_video, self.rec.is_finishing());
                         let r = ui.button("● Record…");
                         popup(&r, 400.0, |ui| {
-                            if self.rec.popup_body(ui, block) {
+                            if self.rec.popup_body(ui, block, self.video_blank) {
                                 let cap = self.capture.clone();
                                 match self.rec.start(move || cap.lock().ok()?.as_ref()?.latest()) {
                                     Ok(()) => self.notice.lock().unwrap().clear(),
@@ -1022,7 +1025,8 @@ impl eframe::App for App {
             self.set_notice("Flashing is in progress: wait for it to finish before closing the app.");
         } else if ctx.input(|i| i.viewport().close_requested()) {
             self.end_capture(ctx);
-            let _ = self.rec.stop(); // finalise the file instead of leaving a cut-off one
+            // finalise the file instead of leaving a cut-off one (bounded: a stuck encoder must not hold the app open)
+            let _ = self.rec.finish_for_exit(Duration::from_secs(20));
             if let Some(d) = self.device() {
                 let _ = self.rt.block_on(async { tokio::time::timeout(Duration::from_millis(800), d.shutdown()).await });
             }

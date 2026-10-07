@@ -530,3 +530,37 @@ First report (`main...feat/ipxe` at `a54bd50`): **no High; three Medium; six Low
 - **Hardware check of the toggle (2026-10-05, real adapter)** found that HELLO still reported firmware 0.1.0 (hardcoded); fixed to 0.2.0.
 - **Opus review of the toggle (`a7ac215..8863517`):** NO SIGN-OFF, one Medium, docs only: they claimed the USB product id differs between drive off (`303a:4008`) and on (`303a:400a`); the id is `400a` in both states (esp_tinyusb derives it from the compiled-in classes). **Confirmed on hardware** (both states enumerate as `400a`; the interface count is what changes). Fixed everywhere, with a note for anyone whose allow-list or VM passthrough keys on the id. Lows fixed: the restart timer is now created before the setting is committed (a creation failure can no longer leave the stored setting changed under a BUSY reply), a stale header comment, a hardcoded iPXE tag in the generated source statement, and the status docs now state what was verified. Lows left: three comments in `usb_hid.c` and the flasher that still say "exactly as before" about the interface list (accurate for interfaces, loose for the id), and the drive's setting persists across power cycles and re-flashes (documented; an always-visible indicator in the app is a candidate for 0.4.x).
 - **Opus re-verify of those fixes (`8863517..9075114`):** **SIGN-OFF: no High or Medium defect remains.** Hash checks, host tests and the claims against the hardware facts all confirmed. The Codex round over the whole 0.4.0 diff, including the toggle, is still owed and will be logged here.
+
+## 2026-10-06 - 0.4.1 Secure Boot boot drive (`feat/secure-boot`, PR #15): review rounds 15-16 (Claude Opus 5.5)
+
+Same STD-001 deviation as round 14 (Opus in place of the usual cross-model reviewer; a Codex round is still owed). The change swaps the unsigned iPXE we built for the iPXE project's signed Secure Boot pair.
+
+**Round 15** (`main...160688e`): NO SIGN-OFF, four Mediums, each verified before accepting.
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | Med | The shim's stated source was wrong: it is iPXE's fork (`ipxe/shim` tag `ipxe-16.1`, commit `d0367b25`), not rhboot/shim 16.1 (the commit I cited was the annotated tag object) | **Confirmed** (the binary's SBAT names `ipxe/shim`). Pins, notices and generated text corrected |
+| 2 | Med | The shim we shipped (from the v2.0.0 release image) carried only Microsoft's 2011 CA signature; a dual-signed (2011 + 2023) copy of the same build exists in the `ipxe/shim` release | **Confirmed** (`Microsoft UEFI CA 2023` appears in one file and not the other; the earlier download from boot.ipxe.org's root was that file). Now pinned from that release; re-run in the VM |
+| 3 | Med | Shim notices incomplete: it statically contains OpenSSL 1.0.2k, EDK2 crypto and gnu-efi code | **Confirmed.** `firmware/ipxe/signed/shim-NOTICES.txt` carries the shim COPYRIGHT, OpenSSL 1.0.2k LICENSE and EDK2 License.txt; reproduced in every package's `ipxe-SOURCE.txt`; the OpenSSL advertising acknowledgement is in `THIRD_PARTY_NOTICES.md` |
+| 4 | Med | Headlines said "a target with Secure Boot on accepts it" on VM-only evidence | **Confirmed.** Everything now says "firmware that trusts Microsoft's third-party UEFI CA, verified in a virtual machine only" (some locked-down PCs turn that CA off) |
+| 5-8 | Low | A stale hardware hash in the README row; stale `build-ipxe.sh` header; the licence statement cited a tool run on a different build; the `exit 1` fall-through only seen in OVMF (shim may try MokManager on some error codes) | 5-7 fixed. **8 stays open:** the fall-through is VM-observed only; a real-PC check is on the test plan |
+
+PR #14 (the source-archive workflow's relative-path bug found at the 0.4.0 release) was a prerequisite and was merged first.
+
+**Round 16** (`160688e..4fcd07e`): the pins, dual signature, notice texts (byte-compared with upstream), the generated `ipxe-SOURCE.txt`, image determinism, source hash and checksums all verified; the remaining blocker was the **gnu-efi** notice (Intel's BSD-style licence requires reproducing it in binary distributions) plus three Low wording items. All fixed (the text is `README.efilib` at the shim's pinned gnu-efi submodule commit `dc7fd96f`, which I confirmed against the shim tag). Verified in the VM with the exact final image: Secure Boot on (key press and no key), Secure Boot off, and the private Windows PE chain with Secure Boot on. **Not run:** this image on the real adapter, any real PC.
+
+## 2026-10-06 - 0.4.1-0.4.5 video honesty, button contract, recording, themes (`dev/0.4.x`, PR #35): review round 17 (Codex `gpt-6-astra`)
+
+The usual cross-model reviewer, read-only, high effort, over `feat/secure-boot...dev/0.4.x` (desktop only). Seven findings, each marked CONFIRMED by the reviewer and re-checked here against the source before accepting. Not run by the reviewer: Rust tests, Windows hardware.
+
+| # | Sev | Finding | Verdict |
+|---|---|---|---|
+| 1 | High | A failed recording's cleanup deleted the final filename, which another instance (same second) could own | **Confirmed** (cleanup was `remove_file(final)`). ffmpeg now writes `.<pid>-<name>.part`; cleanup removes only that; the finished file is published by hard link (never replaces; next free name on a clash; rename fallback on filesystems without links) |
+| 2 | High | Stopping a recording joined the encoder on the GUI thread (up to 120 s), including with input captured | **Confirmed.** Stop now runs on a worker; the bar shows "Finishing the recording…"; quitting waits at most 20 s |
+| 3 | Med | A full queue dropped frames but the clock kept going: shorter, faster clip, and a wrong reported duration | **Confirmed.** Lost slots are owed and repaid as repeats (bounded to 2 s); `Finished.frames`/`duration` count frames actually written |
+| 4 | Med | With the capture gone, nothing called `push`, so the duration cap and an encoder's death went unnoticed | **Confirmed.** `Recorder::check` runs when no frame arrives; a source gone for 10 s ends the clip with what exists |
+| 5 | Med | A stored device key that matched nothing fell back to the old `/dev/videoN`, which may now be a webcam | **Confirmed.** The path is used only when no key was ever stored; regression test added |
+| 6 | Med | Audio lookup (`pactl` / `ffmpeg`) ran on the GUI thread | **Confirmed.** Runs on a worker with a "looking for audio inputs…" state. Not done: `ffmpeg -version` at Start is still synchronous (a local binary; left, noted) |
+| 7 | Med | "No signal" (flat fill) blocked recording, but a black boot screen is valid video | **Confirmed** (also a known gap from our own notes). Blank no longer blocks; the popup says it looks blank |
+
+Fixes verified: `scripts/rs.sh test` and `clippy` clean; the ffmpeg end-to-end tests pass against the host's ffmpeg. A re-review of the fix diff is the next step (RELEASING step 0); no sign-off is claimed before it.

@@ -63,10 +63,13 @@ pub fn picture_message(s: VideoState) -> Option<&'static str> {
 /// stable key, else (config written before keys existed) on the old `/dev/videoN` path. The synthetic demo source
 /// opens only because `KVMIT_DEMO_VIDEO` asked for it. A fresh install opens nothing: index 0 is often a webcam.
 pub fn initial_video(devices: &[DeviceInfo], last_key: Option<&str>, last_path: Option<&str>) -> Option<usize> {
-    last_key
-        .and_then(|k| devices.iter().position(|d| d.key == k))
-        .or_else(|| last_path.and_then(|p| devices.iter().position(|d| d.path == p)))
-        .or_else(|| devices.iter().position(|d| d.path.starts_with(DEMO_PREFIX)))
+    // A stored key that matches nothing means the remembered card is not here: its old `/dev/videoN` may now be a webcam, so
+    // the path is only a fallback for configs that never had a key.
+    match last_key {
+        Some(k) => devices.iter().position(|d| d.key == k),
+        None => last_path.and_then(|p| devices.iter().position(|d| d.path == p)),
+    }
+    .or_else(|| devices.iter().position(|d| d.path.starts_with(DEMO_PREFIX)))
 }
 
 #[cfg(test)]
@@ -111,6 +114,7 @@ mod tests {
         assert_eq!(initial_video(&d, None, None), None, "never index 0 by default");
         assert_eq!(initial_video(&[], Some("k"), Some("/dev/video0")), None);
         assert_eq!(initial_video(&d, Some("gone"), Some("/dev/video9")), None, "remembered device absent: open nothing");
+        assert_eq!(initial_video(&d, Some("Gone @ usb-9"), Some("/dev/video0")), None, "a missing keyed card must not fall back to a path that is now the webcam");
     }
 
     #[test]
