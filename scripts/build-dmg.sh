@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the macOS PREVIEW disk image: kvm-it-<VERSION>-macos-<arch>.dmg (+ .sha256) in dist-macos/. Run it on a Mac.
+# Build the macOS PREVIEW disk image: kvm-it-<VERSION>-macos-<arch>-preview.dmg (+ .sha256) in dist-macos/. Run it on a Mac.
 #   scripts/build-dmg.sh [out-dir]          (SKIP_BUILD=1 reuses desktop/target/release)
 # PREVIEW: the macOS port has no capture backend (video is Linux/Windows only) and pairing has not been tried there, so
 # this proves the app compiles, starts and packages; it does not drive a KVM yet. The app is only ad-hoc signed (not
@@ -60,7 +60,7 @@ codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"
 
 ln -s /Applications "$OUT/stage/Applications"
-DMG="$OUT/kvm-it-$VERSION-macos-$ARCH.dmg"
+DMG="$OUT/kvm-it-$VERSION-macos-$ARCH-preview.dmg"
 hdiutil create -volname "kvm-it $VERSION" -srcfolder "$OUT/stage" -ov -format UDZO "$DMG" >/dev/null
 ( cd "$OUT" && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256" && cat "$(basename "$DMG").sha256" )
-echo "built $DMG (preview: ad-hoc signed, not notarized, no capture backend)"
+echo "built $DMG (preview: ad-hoc signed, not notarized, not hardware-verified)"

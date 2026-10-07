@@ -1,8 +1,11 @@
 name: macOS (preview)
 
-# The macOS port is a preview: no capture backend and pairing untried there. This workflow keeps it honest: the workspace
-# must keep compiling and passing its tests on Apple silicon, and the app must keep packaging into a .dmg. The disk image is
-# an ARTIFACT of the run, never attached to a release (it is ad-hoc signed, not notarized, and cannot drive a KVM yet).
+# The macOS port is a PREVIEW: built and tested on Apple silicon in CI, never run with an adapter, a capture card or a real
+# keyboard. The workspace must keep compiling and passing its tests there, and the app must keep packaging into a .dmg.
+#   - push to main / pull request: test + package + smoke test; the .dmg is an artifact of the run
+#   - release published: build the tag and attach kvm-it-X.Y.Z-macos-arm64-preview.dmg (+ .sha256)
+#   - manual: build a tag; attach it only when `attach` is true
+# The image is ad-hoc signed, not notarized: Gatekeeper refuses it until the user allows it (see the release notes).
 on:
   push: {branches: [main]}
   pull_request:
@@ -11,7 +14,20 @@ on:
       - scripts/build-dmg.sh
       - VERSION
       - .github/workflows/macos.yml
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build (e.g. v0.4.6); empty builds the current ref
+        required: false
+        default: ''
+        type: string
+      attach:
+        description: Attach the preview .dmg to that release
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -19,8 +35,22 @@ permissions:
 jobs:
   macos:
     runs-on: macos-14
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name || github.sha }}
+      - name: Check the tag against VERSION (releases and manual runs)
+        id: meta
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release tag"; exit 1; }
+            [ "v$(tr -d '[:space:]' < VERSION)" = "$RELEASE_TAG" ] || { echo "VERSION does not match the tag"; exit 1; }
+          fi
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
       - name: Rust toolchain (same version as the containers)
         run: rustup toolchain install 1.99.0 --profile minimal && rustup default 1.99.0
       - uses: actions/cache@v4
@@ -51,3 +81,25 @@ jobs:
             dist-macos/kvm-it-*.dmg
             dist-macos/kvm-it-*.dmg.sha256
           if-no-files-found: error
+
+  attach:
+    name: Attach the preview to the release
+    needs: macos
+    if: ${{ needs.macos.outputs.tag != '' && (github.event_name == 'release' || inputs.attach) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.macos.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: kvm-it-macos-preview
+          path: assets
+      - name: Re-check, then upload
+        working-directory: assets
+        run: |
+          for f in *.sha256; do sha256sum --check --strict "$f"; done
+          ls *-preview.dmg >/dev/null
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber *-preview.dmg *-preview.dmg.sha256

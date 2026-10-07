@@ -600,3 +600,5 @@ Verification after the fixes: `scripts/rs.sh test`, `clippy`, and `scripts/rs.sh
 | 3 | Med | Nothing repainted the GUI when an async start finished, so the first frame or a start error could stay invisible while the app was idle | The GUI polls every 100 ms while a capture is open with no frame yet (all backends) |
 
 Verification: `rs.sh test`, `clippy`, `rs.sh macos` clean.
+
+**Round 23** (re-review of the round-22 fixes): **SIGN-OFF**, no confirmed or plausible defect. Noted residual: the 20 s startup limit reports a native start that never returns, but cannot cancel it (that worker thread stays blocked; accepted). Static review only: no Mac hardware exists for this project, so the port ships in 0.4.6 as a labelled preview.

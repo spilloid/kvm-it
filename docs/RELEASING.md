@@ -90,10 +90,13 @@ than ship unsigned, if any of them is missing. Steps 5 (smoke test) and the rele
   bundled firmware is identical to `firmware/release`) and, when a release is published, attaches
   `kvm-it-X.Y.Z-x86_64.AppImage` and its `.sha256`. To add one to an existing release: Actions > AppImage > Run
   workflow with the tag and `attach` ticked. It is not code-signed (checksum only); say so in the notes.
-- **macOS (preview):** `.github/workflows/macos.yml` runs the workspace tests on Apple silicon and packages
-  `scripts/build-dmg.sh` into a `.dmg` that is an **artifact of the run, never attached to a release**: the macOS port
-  has no capture backend and pairing is untried there, and the app is only ad-hoc signed (not notarized). Promote it to
-  a release asset only when a macOS backend exists and has been hardware-verified.
+- **macOS (preview):** `.github/workflows/macos.yml` runs the workspace tests on Apple silicon, packages
+  `scripts/build-dmg.sh` into `kvm-it-X.Y.Z-macos-arm64-preview.dmg`, smoke-tests it and, when a release is published,
+  attaches it with its `.sha256` (Actions > macOS (preview) > Run workflow with the tag and `attach` ticked for an
+  existing release). Keep `-preview` in the name and say in the notes, every release, that it is ad-hoc signed and not
+  notarized (macOS asks the user to allow it in System Settings > Privacy & Security) and **not hardware-verified**
+  until someone runs it on a Mac with an adapter and a capture card. Drop the label only after that run, and record it
+  in the README status table and CLAUDE.md.
 
 ## 4. Build the assets
 
