@@ -34,6 +34,16 @@ controlled over BLE from a Rust desktop app. Read `README.md`, then `docs/archit
 | `scripts/build-release.ps1`, `sign.ps1`, `verify-release.py`, `installer/`, `docs/RELEASING.md` | Windows release packaging (run on the release machine) |
 | `docs/` | architecture, hardware, security, protocol draft, roadmap, dev-process log |
 
+## New machine or fresh session: bootstrap first
+
+When you start work on a machine you have not used in this repo, or the user says they hopped machines or just hooked
+this one up, **run `scripts/bootstrap.sh` before anything else and report its output** (`--check` reports without
+building). It checks git, `gh` login, podman, ffmpeg (needed to record), the `codex` CLI (astra review), free disk,
+worktrees, the board's COM port access and BlueZ, and builds the Rust build container the first time. Do not assume any
+of those exist on a new machine. If it says NOT ready, fix the MISS lines with the user before building or releasing.
+Known trap: `/var` filling up (container builds then fail with "no space left"); `rm -rf desktop/target/debug` is
+safe, it is only a cache.
+
 ## Working here
 
 The host has no ESP-IDF or Rust toolchain; use `scripts/fw.sh` (podman). `scripts/fw.sh test` and
