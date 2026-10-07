@@ -8,3 +8,4 @@ pub mod library;
 pub mod session;
 pub mod video_state;
 pub mod syskeys;
+pub mod uistate;

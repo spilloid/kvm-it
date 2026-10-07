@@ -419,7 +419,7 @@ fn execute(id: Option<String>, cfg: Config, script: Script, base: PathBuf, vars:
     with_device(id, cfg, |rt, dev| {
         let mut host = ScriptHost {
             rt: rt.handle().clone(),
-            dev: dev.clone(),
+            dev: Some(dev.clone()),
             capture: Some(capture),
             base_dir: base,
             cancel,
