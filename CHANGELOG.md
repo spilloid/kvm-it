@@ -2,7 +2,20 @@
 
 ## [Unreleased]
 
-Desktop only. **Host-tested** only: no run against two physical adapters at once yet.
+## [0.4.7] - 2026-10-08 (macOS out of preview; several adapters from the command line)
+
+Desktop, CI and docs; no firmware or protocol change.
+
+### Hardware verification
+- **macOS is hardware-verified** (on 0.4.6, by the maintainer): a real Mac with an adapter and a live picture from an
+  HDMI capture card, every button in the app's menu clicked through, and two boards reflashed from the Mac and working
+  afterwards. The download drops its `-preview` label: `kvm-it-X.Y.Z-macos-arm64.dmg` (still ad-hoc signed and not
+  notarized, so macOS asks you to allow it the first time).
+- **Bare-metal Windows** (on 0.4.6): the same pass. Windows was VM-verified only before.
+- **Not covered** by this pass, and still open: capture-card unplug / no-signal / fps readback (#31), recording with sound
+  (#32), YUYV colour range (#33), wheel and touchpad on a target (#34).
+
+The command-line changes below are **host-tested** only: no run against two physical adapters at once yet.
 
 ### Added
 - **`kvmit run --video <key|path>`** picks the capture card that the script's screen waits use, so several `kvmit run`

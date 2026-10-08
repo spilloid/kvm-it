@@ -83,20 +83,19 @@ Certificate Profile Signer* on the certificate profile only, and creates the `re
 `main` and `v*` tags) with `SIGNING_*` variables and the three Azure identifiers. The workflow refuses to run, rather
 than ship unsigned, if any of them is missing. Steps 5 (smoke test) and the release notes stay manual.
 
-## 3c. Linux AppImage and the macOS preview (CI)
+## 3c. Linux AppImage and the macOS .dmg (CI)
 
 - **AppImage:** `.github/workflows/appimage.yml` runs `scripts/build-appimage.sh` (Ubuntu 22.04 container, glibc 2.35
   floor check, pinned appimagetool and runtime), smoke-tests it (extracts it, `kvmit --version` matches `VERSION`, the
   bundled firmware is identical to `firmware/release`) and, when a release is published, attaches
   `kvm-it-X.Y.Z-x86_64.AppImage` and its `.sha256`. To add one to an existing release: Actions > AppImage > Run
   workflow with the tag and `attach` ticked. It is not code-signed (checksum only); say so in the notes.
-- **macOS (preview):** `.github/workflows/macos.yml` runs the workspace tests on Apple silicon, packages
-  `scripts/build-dmg.sh` into `kvm-it-X.Y.Z-macos-arm64-preview.dmg`, smoke-tests it and, when a release is published,
-  attaches it with its `.sha256` (Actions > macOS (preview) > Run workflow with the tag and `attach` ticked for an
-  existing release). Keep `-preview` in the name and say in the notes, every release, that it is ad-hoc signed and not
-  notarized (macOS asks the user to allow it in System Settings > Privacy & Security) and **not hardware-verified**
-  until someone runs it on a Mac with an adapter and a capture card. Drop the label only after that run, and record it
-  in the README status table and CLAUDE.md.
+- **macOS:** `.github/workflows/macos.yml` runs the workspace tests on Apple silicon, packages `scripts/build-dmg.sh`
+  into `kvm-it-X.Y.Z-macos-arm64.dmg`, smoke-tests it and, when a release is published, attaches it with its `.sha256`
+  (Actions > macOS > Run workflow with the tag and `attach` ticked for an existing release). Say in the notes, every
+  release, that it is ad-hoc signed and not notarized (macOS asks the user to allow it in System Settings > Privacy &
+  Security). Hardware-verified on a Mac with an adapter and a capture card since 0.4.7 (the `-preview` label was dropped
+  then; releases up to 0.4.6 carry it).
 
 ## 4. Build the assets
 

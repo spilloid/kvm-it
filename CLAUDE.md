@@ -54,12 +54,19 @@ self-test types into the machine it is plugged into.
 
 ## Things to re-verify before trusting them (dated, STD-003 rule 4)
 
-- 2026-10-07: the whole macOS port (AVFoundation capture, CoreBluetooth ids and pairing-on-first-use, the Quartz keyboard grab and its Accessibility fallback, `cu.` port de-duplication, AVFoundation audio) is built and CI-tested only; nobody has run it with an adapter, a capture card or a keyboard. Known gap: ISO Apple keyboards swap the codes of the key left of 1 and the key left of Z (the table follows ANSI).
+- 2026-10-08: maintainer hardware pass on 0.4.6 from **bare-metal Windows** and a **real Mac**: every button in the
+  app's menu, with an adapter and a live capture card picture, and two boards reflashed from each OS (working after).
+  Not covered by that pass: issues #31-#34 (capture-card unplug/no-signal/fps readback, recording with sound, YUYV
+  colour, wheel/touchpad), the Windows keyboard grab's edge cases, non-US layouts, ISO Apple keyboards. 0.4.7's
+  `kvmit run --video` / multi-adapter CLI is host-tested only: no two adapters have run at once.
+
+- 2026-10-07: the macOS port was built and CI-tested only until the 2026-10-08 hardware pass above; the parts that pass
+  did not reach (AVFoundation audio, the Accessibility-denied fallback) are still unrun. Known gap: ISO Apple keyboards swap the codes of the key left of 1 and the key left of Z (the table follows ANSI).
 - 2026-10-06: 0.4.1-0.4.5 (video honesty, button contract, wheel/Esc abort, recording, light/dark theme) are host-tested only. Nothing ran on a capture card, a real target, the Linux GUI or Windows; see the "Needs hardware" issues #31-#34. Neither theme has been looked at on a real screen (contrast is unit-tested, not eyeballed).
 - 2026-10-03: "COM = CH343 UART, USB = native" port labelling is vendor-documented and consistent with
   `lsusb 1a86:55d3` on COM, but not checked against this board's silkscreen.
-- 2026-10-04: every Windows-controller claim is VM-verified only (Windows 11 VM, adapter and capture card passed
-  through over USB), never bare-metal. The README says so; keep it that way until a bare-metal run exists.
+- 2026-10-04: Windows-controller claims were VM-verified only (Windows 11 VM, adapter and capture card passed
+  through over USB) until the 2026-10-08 bare-metal pass above; detail beyond that pass is still VM-only.
 - 2026-10-04: the mouse-motion change in `kvmit-ble` (127-unit frames, ordered before clicks) and the GUI redesign
   are untested on a Linux board / the Linux GUI. Run `scripts/rs.sh build` and a Linux hardware pass before release.
 - 2026-10-04: untested: the keyboard grab's hook-removal fallback and pre-held-key handling on real keys, the Media

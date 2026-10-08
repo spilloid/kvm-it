@@ -9,7 +9,7 @@ on:
   # not `release:` — that runs on the tag, and the github-pages environment only deploys from main. workflow_run runs on
   # main; after deleting or editing a release, run this workflow by hand.
   workflow_run:
-    workflows: ['Release Builds', 'AppImage', 'macOS (preview)']
+    workflows: ['Release Builds', 'AppImage', 'macOS']
     types: [completed]
   workflow_dispatch:
 permissions:
@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    # macOS (preview) also runs on every push to main; only its release runs change the downloads
+    # macOS also runs on every push to main; only its release runs change the downloads
     if: ${{ github.event_name != 'workflow_run' || contains(fromJSON('["release","workflow_dispatch"]'), github.event.workflow_run.event) }}
     runs-on: ubuntu-latest
     steps:
@@ -42,7 +42,7 @@ jobs:
               { tag: .tag_name, version: (.tag_name | ltrimstr("v")), url: .html_url, date: (.published_at // .created_at),
                 prerelease: .prerelease,
                 windows_msi: pick("-windows-x64.msi"), windows_zip: pick("-windows-x64.zip"),
-                linux: pick("-x86_64.AppImage"), mac: pick("-macos-arm64-preview.dmg") }
+                linux: pick("-x86_64.AppImage"), mac: (pick("-macos-arm64.dmg") // pick("-macos-arm64-preview.dmg")) }
               end' releases.json > docs/_data/release.json
           cat docs/_data/release.json
       - uses: actions/configure-pages@v5
