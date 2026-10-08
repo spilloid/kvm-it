@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+Desktop only. **Host-tested** only: no run against two physical adapters at once yet.
+
+### Added
+- **`kvmit run --video <key|path>`** picks the capture card that the script's screen waits use, so several `kvmit run`
+  processes can each drive their own adapter (`--device`) and capture card at once: the first step towards multi-probe
+  (roadmap 0.6.0). A card that is missing, ambiguous (two cards sharing a key), cannot be opened, or whose key changed
+  between listing and opening is an error, never a fallback to another card. Limit: two identical cards on a system
+  that reports no bus location share a key, so a swap between them cannot be detected; name such cards by path. `kvmit video list` now prints each
+  card's stable key, which survives a replug into the same USB port where `/dev/videoN` may not.
+
+### Changed
+- `kvmit run` no longer takes the first capture card it finds (on a laptop, often its webcam). Without `--video` it uses
+  the card the GUI last opened if exactly one connected card matches it and its key carries a location; with no card
+  remembered, the only card connected (with several targets, always pass `--video`: that lone card may be another
+  target's). Anything less certain (the remembered card missing, two cards it could be, a
+  remembered key with no location, several cards and none remembered) stops the run before it types anything and asks for `--video`. A `--dry-run` skips screen waits, so it no longer opens a card at all.
+
+### Fixed
+- `kvmit run` opened no capture card when a script's only screen waits were inside a `repeat`, so those waits timed out
+  after the steps before them had already typed.
+- Settings: saves are atomic (a temp file renamed into place), and the GUI and CLI now change only the setting they mean
+  to on top of the file's current contents, instead of writing back a copy loaded at startup. Concurrent `kvmit`
+  processes no longer leave a torn `config.json` or undo each other's settings (two saves at the same instant can still
+  race; nothing locks the file).
+
 ## [0.4.6] - 2026-10-07 (macOS preview)
 
 Desktop and CI only; no firmware or protocol change. The macOS port is **built and CI-tested** on a cloud Apple-silicon Mac (it compiles, its tests pass, it packages and its CLI starts); **it has never been run with an adapter, a capture card or a person at the keyboard.** Treat the macOS download as a preview. Windows and Linux behaviour is unchanged apart from the GUI polling noted below.

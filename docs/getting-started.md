@@ -99,6 +99,26 @@ kvmit import payload.txt
 kvmit flash
 ```
 
+**Several adapters at once.** Run one `kvmit run` per target, each naming its own adapter and capture card. Take the card's
+*key* from `kvmit video list` rather than its path: the key stays the same while a card stays in the same USB port, but
+two identical cards can swap `/dev/videoN` numbers when replugged.
+A script that never waits on the screen does not need `--video`. Without it, `run` uses the card you last opened in the
+app if it is connected; if you never opened one, the only card connected. Otherwise (that card unplugged, several
+cards, a remembered card the system names without a location) it stops and asks rather than guess. With more than one
+target, always give `--video`: if one target's card is unplugged, "the only card connected" is another target's.
+
+```bash
+kvmit video list        # /dev/video2  USB3 Video  (key: USB3 Video @ usb-0000:00:14.0-1)
+kvmit --device AA:BB:CC:00:00:01 run setup.toml --video "USB3 Video @ usb-0000:00:14.0-1" --yes &
+kvmit --device AA:BB:CC:00:00:02 run other.toml --video "USB3 Video @ usb-0000:00:14.0-2" --yes &
+wait
+```
+
+Each run is independent, with its own exit status: a failure, or stopping one process, leaves the others running. Every
+adapter shares the computer's Bluetooth radio, so how many run smoothly at once has not been measured yet. A run started
+in the background cannot answer prompts: give values with `--var`, and run scripts that ask for a secret or have a
+`confirm` step in a terminal of their own.
+
 ## 6. Boot a machine from the network (new in 0.4.0)
 
 The adapter can also be a tiny **read-only USB drive** with iPXE on it, so a machine with nothing on it can fetch an installer, WinPE or a rescue image over the

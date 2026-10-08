@@ -279,6 +279,15 @@ const RISKY: &[&str] = &[
     "net user", "reg add", "schtasks", "bash -c", "| sh", "|sh", "mshta", "certutil", "bitsadmin", "regsvr32",
 ];
 
+/// Whether any step, including inside a `repeat`, waits on the screen (and so needs a capture card open).
+pub fn needs_video(ops: &[(usize, Op)]) -> bool {
+    ops.iter().any(|(_, op)| match op {
+        Op::Wait(_) => true,
+        Op::Repeat { ops, .. } => needs_video(ops),
+        _ => false,
+    })
+}
+
 pub fn preview(script: &Script, vars: &Vars, layout: &dyn Layout, opts: &RunOptions) -> Result<Preview, RunError> {
     fn walk(ops: &[(usize, Op)], mult: usize, p: &mut Preview, opts: &RunOptions, plain: &mut Vec<String>) {
         for (_, op) in ops {
@@ -708,6 +717,14 @@ mod tests {
         let dump = format!("{:?}", m.events);
         assert!(!dump.contains("hunter2") && !dump.contains("visible-text"), "{dump}");
         assert!(dump.contains("7 chars (secret)"));
+    }
+
+    #[test]
+    fn a_wait_inside_a_repeat_still_needs_video() {
+        let nested = script("[[steps]]\nrepeat = { count = 2, steps = [ { key = \"TAB\" }, { wait_for = { stable_for = \"1s\", timeout = \"5s\" } } ] }\n");
+        let flat = script("[[steps]]\nrepeat = { count = 2, steps = [ { key = \"TAB\" } ] }\n");
+        assert!(needs_video(&compile(&nested, &Vars::new(), &UsAnsi).unwrap()));
+        assert!(!needs_video(&compile(&flat, &Vars::new(), &UsAnsi).unwrap()));
     }
 
     #[test]

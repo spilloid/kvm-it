@@ -231,8 +231,7 @@ impl App {
             *l = Link::Connecting(id.clone());
             g
         };
-        self.cfg.last_device = Some(id.clone());
-        self.cfg.save();
+        self.cfg.update(|c| c.last_device = Some(id.clone()));
         let (link, gen_ref, status, notice) = (self.link.clone(), self.link_gen.clone(), self.status.clone(), self.notice.clone());
         // Registered here, before the task is spawned, and held until the first connection attempt has resolved (Connected
         // published, or failed): from the first click until then the flasher cannot open, so no cancel can find a pairing, or the
@@ -346,8 +345,7 @@ impl App {
         if let Link::Connected { dev, .. } = previous {
             self.rt.spawn(async move { dev.shutdown().await });
         }
-        self.cfg.last_device = None;
-        self.cfg.save();
+        self.cfg.update(|c| c.last_device = None);
     }
 
     fn device(&self) -> Option<Device> {
@@ -466,9 +464,11 @@ impl App {
             Ok(c) => {
                 if !d.path.starts_with(kvmit_video::DEMO_PREFIX) {
                     // the synthetic demo source is never the remembered card
-                    self.cfg.last_video = Some(d.path.clone());
-                    self.cfg.last_video_key = Some(d.key.clone());
-                    self.cfg.save();
+                    let (path, key) = (d.path.clone(), d.key.clone());
+                    self.cfg.update(|c| {
+                        c.last_video = Some(path.clone());
+                        c.last_video_key = Some(key.clone());
+                    });
                 }
                 *self.capture.lock().unwrap() = Some(c);
             }
@@ -911,9 +911,9 @@ impl eframe::App for App {
                     let r = ui.button(if running { "Scripts…  (running)" } else { "Scripts…" });
                     popup(&r, 460.0, |ui| self.scripts_ui(ui, ctx));
                     if ui.button(self.cfg.theme.label()).on_hover_text("Click to cycle: follow the system, light, dark").clicked() {
-                        self.cfg.theme = self.cfg.theme.next();
-                        ctx.set_theme(self.cfg.theme.preference());
-                        self.cfg.save();
+                        let theme = self.cfg.theme.next();
+                        self.cfg.update(|c| c.theme = theme);
+                        ctx.set_theme(theme.preference());
                     }
                 });
             });
