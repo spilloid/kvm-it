@@ -602,3 +602,55 @@ Verification after the fixes: `scripts/rs.sh test`, `clippy`, and `scripts/rs.sh
 Verification: `rs.sh test`, `clippy`, `rs.sh macos` clean.
 
 **Round 23** (re-review of the round-22 fixes): **SIGN-OFF**, no confirmed or plausible defect. Noted residual: the 20 s startup limit reports a native start that never returns, but cannot cancel it (that worker thread stays blocked; accepted). Static review only: no Mac hardware exists for this project, so the port ships in 0.4.6 as a labelled preview.
+
+## 2026-10-07 - `kvmit run --video`, first multi-probe step (`feat/run-video`): review round 24 (Codex `gpt-6-astra`)
+
+Static review of the diff; every finding traced against the source before accepting. **NO SIGN-OFF**, six findings, all confirmed and fixed:
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | High | Atomic saves stop torn files, not lost updates: the CLI and the GUI's long-lived `self.cfg` wrote back whole stale snapshots over newer settings | `Config::update(f)` applies the change to the file's current contents and saves; every GUI and CLI save goes through it (unlocked: a same-instant race remains, documented) |
+| 2 | High | A remembered card that was missing fell back to the first card, which may be another target's: its screen waits could pass on the wrong picture | Remembered-but-missing is an error; the first card is used only when nothing is remembered |
+| 3 | High | The path picked by key could name another card if it was swapped between listing and opening | After opening, the capture's own key must equal the selected one, else the run stops |
+| 4 | High | A key without bus info is the bare card name, so two identical cards shared it and the first silently won | `select_video` refuses a key that matches more than one card and asks for the path |
+| 5 | Med | Only top-level waits opened a card; waits inside `repeat` never got one (existing bug that defeats `--video`) | `exec::needs_video` walks `repeat` bodies |
+| 6 | Low | The concurrency test could pass without ever reading during a write | The test keeps reading while any writer runs, requires every read to parse, and checks no temp files remain; a new test covers keeping another process's setting |
+
+**Round 25** (re-review of the round-24 fixes): **NO SIGN-OFF**, five confirmed, all fixed. One of our own changes was
+also corrected: a rename retry added for Windows readers rested on a wrong claim (Rust opens files with delete sharing
+by default), so it was reverted.
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | High | A remembered key shared by two cards (no bus info) picked the first, bypassing the ambiguity check | The CLI no longer reuses the GUI's `initial_video`; `video_state::run_video` requires a remembered key to match exactly one card |
+| 2 | High | A config with only an old `/dev/videoN` path could select whatever card now has that number, and the post-open check passed | A path-only config counts as nothing remembered: only a lone connected card is used, else `--video` is required |
+| 3 | High | With `KVMIT_DEMO_VIDEO` set, a missing remembered card fell back to the demo picture, so stable-screen waits passed on a still image | The demo source is used only when named with `--video` |
+| 4 | Med | A `--dry-run` failed when the card was missing, although dry runs skip waits | No card is opened for a dry run |
+| 5 | Low | The concurrency test could perform no read at all if the reader was descheduled | Writers keep saving until the reader has done 500 reads |
+
+Verification: `rs.sh test` (201 passed), `clippy` clean.
+
+**Round 26** (re-review of the round-25 fixes): **NO SIGN-OFF**, three confirmed, all fixed; every round-25 fix verified.
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | High | A key with no bus info is just the card name, so a remembered card that is gone "matched" an identical card on another target | `run_video` does not auto-select a key without a location (key == name); a swap between two such cards named by path stays undetectable, documented in the CHANGELOG |
+| 2 | Med | The concurrency test hung instead of failing: a panicking read skipped the stop flag and the scope joined writers forever; its comment overclaimed overlap | A drop guard stops the writers; comment corrected |
+| 3 | Low | `--help` and getting-started still described "else the first" | Both state the exact rule |
+
+**Round 27** (re-review of the round-26 fixes): **NO SIGN-OFF**, one High, confirmed and fixed: `device_key` trims the card
+name but the listed name keeps its padding, so `" Cam "` with no bus gave key `"Cam"` != name and slipped past the
+bare-name refusal. `run_video` now compares with the trimmed name; regression test added. Round-26 fixes verified.
+
+**Round 28** (re-review of the round-27 fix): fix verified; one High raised, **declined as a code change, fixed in the
+docs**. Claim: the lone-card fallback (nothing remembered) accepts a key with no location. The location check exists
+to tell a *remembered* card from an identical one; with nothing remembered and one card connected there is nothing to
+tell it from, and a location would not help. The real risk underneath (with several targets, the lone card may be
+another target's) applies to located keys too and is inherent to any no-flag default, so the docs and CHANGELOG now
+say to always pass `--video` with more than one target, and getting-started no longer overclaims that a
+locationless card always stops the run.
+
+**Round 29**: round-28 reasoning upheld ("no code change is warranted"); one Low docs finding (the CHANGELOG listed "a key
+with no location" as stopping the run unconditionally; it is only a *remembered* one), fixed.
+
+**Round 30** (confirmation pass): **SIGN-OFF**, no remaining source-confirmed defect. Verification: `rs.sh test` (201 passed), `clippy`, `rs.sh macos` clean; host-tested only, no run against two physical adapters yet.

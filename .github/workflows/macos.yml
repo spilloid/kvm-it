@@ -1,9 +1,9 @@
-name: macOS (preview)
+name: macOS
 
-# The macOS port is a PREVIEW: built and tested on Apple silicon in CI, never run with an adapter, a capture card or a real
-# keyboard. The workspace must keep compiling and passing its tests there, and the app must keep packaging into a .dmg.
+# The macOS controller (hardware-verified on a real Mac since 0.4.7). The workspace must keep compiling and passing its
+# tests on Apple silicon, and the app must keep packaging into a .dmg.
 #   - push to main / pull request: test + package + smoke test; the .dmg is an artifact of the run
-#   - release published: build the tag and attach kvm-it-X.Y.Z-macos-arm64-preview.dmg (+ .sha256)
+#   - release published: build the tag and attach kvm-it-X.Y.Z-macos-arm64.dmg (+ .sha256)
 #   - manual: build a tag; attach it only when `attach` is true
 # The image is ad-hoc signed, not notarized: Gatekeeper refuses it until the user allows it (see the release notes).
 on:
@@ -64,7 +64,7 @@ jobs:
       - name: Test
         working-directory: desktop
         run: cargo test --workspace --locked
-      - name: Package the preview .dmg
+      - name: Package the .dmg
         run: scripts/build-dmg.sh
       - name: Smoke test the app bundle
         run: |
@@ -76,14 +76,14 @@ jobs:
           shasum -a 256 -c dist-macos/kvm-it-*.dmg.sha256 2>/dev/null || (cd dist-macos && shasum -a 256 -c kvm-it-*.dmg.sha256)
       - uses: actions/upload-artifact@v4
         with:
-          name: kvm-it-macos-preview
+          name: kvm-it-macos
           path: |
             dist-macos/kvm-it-*.dmg
             dist-macos/kvm-it-*.dmg.sha256
           if-no-files-found: error
 
   attach:
-    name: Attach the preview to the release
+    name: Attach the .dmg to the release
     needs: macos
     if: ${{ needs.macos.outputs.tag != '' && (github.event_name == 'release' || inputs.attach) }}
     runs-on: ubuntu-latest
@@ -95,11 +95,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: kvm-it-macos-preview
+          name: kvm-it-macos
           path: assets
       - name: Re-check, then upload
         working-directory: assets
         run: |
           for f in *.sha256; do sha256sum --check --strict "$f"; done
-          ls *-preview.dmg >/dev/null
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber *-preview.dmg *-preview.dmg.sha256
+          ls *.dmg >/dev/null
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber *.dmg *.dmg.sha256
