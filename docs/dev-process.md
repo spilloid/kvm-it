@@ -672,3 +672,20 @@ locationless card always stops the run.
 with no location" as stopping the run unconditionally; it is only a *remembered* one), fixed.
 
 **Round 30** (confirmation pass): **SIGN-OFF**, no remaining source-confirmed defect. Verification: `rs.sh test` (201 passed), `clippy`, `rs.sh macos` clean; host-tested only, no run against two physical adapters yet.
+
+## 2026-10-08 - 0.4.8 polish (`release/0.4.8`): review round 31 (Codex `gpt-6-astra`)
+
+The usual cross-model reviewer, read-only, high effort, over the uncommitted 0.4.8 diff on `d5400d9` (Windows icon and
+version resource, plain-language Bluetooth errors, the generated licence listing, the firmware notices, the roadmap).
+
+**Round 31**: **NO SIGN-OFF**, seven findings, each re-checked against the source here.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | `THIRD_PARTY_LICENSES.html` was not in the tree, yet every package copies it | **Confirmed** (generation was still queued). Generated with `scripts/rs.sh licenses` and committed |
+| 2 | High | Linux `connect()` powered BlueZ's *default* adapter, which need not be the one btleplug then uses: with a blocked internal `hci0` and a working USB `hci1`, connecting would fail where it used to work | **Confirmed.** The up-front check is gone; a failed `find` is explained instead. Found alongside: the rfkill diagnosis blamed any blocked radio, so with a working second radio it misattributed failures; it now applies only when *every* Bluetooth radio is blocked (test added) |
+| 3 | High | The firmware notices named TinyUSB, FreeRTOS etc. but did not reproduce their copyright and licence texts (MIT and Apache-2.0 require it; NimBLE has a NOTICE file) | **Confirmed.** New `scripts/fw-licenses.py` maps every archive in the app and bootloader linker maps to its licence files in the pinned ESP-IDF and managed components and writes `THIRD_PARTY_FIRMWARE_LICENSES.txt` (shipped in every package); an archive with no known source is an error, and the CI firmware job regenerates and compares it |
+| 4 | Med | The listing's freshness hash covered only `Cargo.lock` and the cargo-about config | **Confirmed.** It now also covers every manifest, `desktop/vendor` and the pinned cargo-about version |
+| 5 | Med | A listing truncated after its stamp line passed the check | **Confirmed** (reproduced). The check (and `--stamp`) now requires the listing to name at least half the locked crates, including the app's direct dependencies |
+| 6 | Med | The version-resource check searched for byte strings anywhere in the exe: clearing the resource directory still passed | **Confirmed** (reproduced). `verify-release.py` now walks the PE resource directory, requires icon and group-icon resources, and checks `VS_FIXEDFILEINFO` and the `ProductVersion`, `FileVersion`, `OriginalFilename` and `ProductName` strings; tested against the built exes, a wrong version and a cleared directory |
+| 7 | Low | The packages' licence files were only checked by name (zip) or not at all (AppImage, dmg) | **Confirmed.** The zip, AppImage and dmg checks compare each licence file with the repository's and run the staleness check. **Not fixed:** the MSI's contents are not inspected; it is built from the same staged folder as the zip |

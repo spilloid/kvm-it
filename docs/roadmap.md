@@ -19,46 +19,69 @@ Status key: done = built and software-verified; **hw?** = built, awaiting verifi
 | 10b | Screen-aware `wait_for`, `confirm`, DuckyScript import, dry-run | host-tested on synthetic frames; not on real OOBE |
 | 11 | Pairing window, bond, BOOT trust reset | done — hardware-verified (15 s power-on window, BOOT window, 10 s trust reset, LED); residual risk in docs/security.md |
 | 12 | Hotplug/reconnect hardening | basic auto-reconnect built; soak testing outstanding |
-| 13 | Linux release build | **v0.1.0**: `scripts/rs.sh build`; no packaging yet |
-| 14 | Windows controller app | **v0.2.0**, in progress on `windows-0.2.0`: native pairing, scan, Media Foundation capture, the GUI and a BLE link fix have run in a Windows 11 VM (adapter and capture card passed through over USB); keyboard grab in progress; **not yet verified on bare-metal Windows** (Windows as a *target* already works: it is plain USB HID) |
+| 13 | Linux release build | done: AppImage since 0.2.1, built and attached by CI |
+| 14 | Windows controller app | done: since 0.2.0; MSI and zip signed in CI; **hardware-verified on bare-metal Windows** (0.4.6) |
+| 15 | macOS controller app (Apple silicon) | done: since 0.4.6; **hardware-verified on a real Mac** (0.4.6); ad-hoc signed, not notarized |
 
-## Planned releases
+## Shipped
 
-Direction, not commitments; each release is cut with its own notes and only claims what was verified.
-
-| Release | Theme | Notes |
+| Release | Date | Theme |
 |---|---|---|
-| **0.2.0** | Windows controller | See row 14. Also: top-bar GUI, native keyboard grab on Windows. |
-| **0.2.1** | Patch | Video device switching fixed (+ Rescan), logo, Linux AppImage. No firmware or protocol change. |
-| **0.3.0** | Flash the adapter from the app | A technician plugs the board's COM port into the controller, presses Flash, then moves the board to the target. **Shipped in 0.3.0** (`kvmit flash` and the GUI wizard): the firmware images ship with the app (`firmware/release/`) and are written with the `espflash` library (Rust >= 1.95). The app refuses to flash while an adapter's native USB port is plugged into the computer, keeps the pairing unless a full erase is confirmed, and checks the chip and flash size first. Later: pull firmware for a newer release, flash several boards in one go (0.6.0 multi-probe). |
-| **0.4.0** (candidate) | Network boot through the adapter (iPXE) | The adapter can also present (turned on from the app, off by default) a **read-only USB drive carrying an iPXE image**, so a target can boot from the network and reach WinPE, an installer ISO, a rescue image or anything else a boot server offers. There is no on-board image storage beyond that image and no SD/TF slot: *virtual-media ISO mounting is intentionally not planned.* Design questions to settle first, in this order: (1) can the ESP32-S3 expose read-only mass storage next to HID without disturbing BIOS/UEFI keyboard enumeration (some firmwares dislike composite devices); (2) one image that boots both legacy BIOS and UEFI, or two; (3) **Secure Boot is validated through the 0.4.x minors, and the 0.4.0 notes say exactly which cases were run.** iPXE is not signed by Microsoft, so a stock iPXE is refused by a Secure Boot target; the candidate paths to evaluate are a signed shim chaining a signed iPXE (with the one-time key enrolment driven through kvm-it itself, since it can drive the firmware's own screens), a path that needs no enrolment, and whatever the test matrix shows works in practice. Functional Secure Boot is the goal and will be tested heavily; it is not claimed before it has been. The matrix, with Secure Boot **on**: an OVMF virtual machine (automatable, and we already have that rig), a stock Windows 11 laptop in its default configuration, and at least one Linux-friendly UEFI board with and without the Microsoft third-party CA enabled; nothing is claimed beyond the cases actually run; (4) licensing: iPXE is GPLv2 (with UEFI additions), so it ships as a separate image with its own notice and source offer, like the `serialport` notice; (5) configuration: iPXE can load an `autoexec.ipxe` from the volume it booted from, so the app could write the boot URL there and flash the drive partition with the flasher it already has (to be confirmed). The flasher's settings check already allows this layout change as long as the settings (NVS) partition does not move, so existing adapters upgrade in place and keep their pairing. |
-| **Next** (candidate, PR #15 `feat/secure-boot`) | Secure Boot for the boot drive | The drive now carries the iPXE project's own **signed Secure Boot pair** (a Microsoft-signed shim and iPXE-CA-signed iPXE), so firmware that trusts Microsoft's third-party UEFI CA accepts it with Secure Boot **on** (the shim carries both the 2011 and 2023 Microsoft signatures); iPXE then only starts signed things (Windows PE via `wimboot` yes, an unsigned Linux kernel no). Run in an OVMF virtual machine with the stock Microsoft keys, Secure Boot on and off, with the real shipped image. **Still to run before this is called working:** a stock Windows 11 laptop in its default configuration, and other real PCs; the open questions are PCs that ship with the third-party CA turned off (they refuse the shim), the shim's revocation level over time, and what a user does when a firmware refuses it. The binaries are the iPXE project's own (v2.0.0, older than the iPXE we shipped in 0.4.0), pinned and checksummed. |
-| **0.4.1-0.4.5** | Honest video state, button contract, input fidelity, session recording, light/dark theme | Built and host-tested on one branch (issues #16-#30 and the theme work); a release carries them together. See the CHANGELOG. |
-| **0.5.0** (candidate) | Wired link over COM | Drive the adapter over its COM (UART) port with no Bluetooth: no BT passthrough in VMs, headless boxes work, lower latency, and it is the same cable the flasher uses. The client already talks over abstract byte-frame channels, so the desktop side is a serial transport plus framing; the firmware needs a second transport into the same dispatcher and the log console moved off UART0 (or wrapped). Open questions to settle first: opening the port must not toggle DTR/RTS (they are wired to the chip's reset and boot pins, so a careless open reboots the adapter and the target sees its USB device vanish); and a wire link has no pairing, so physical access to the cable is the trust, which means off by default, enabled deliberately and shown on the LED. Natural fit for multi-probe (0.6.0). |
-| **0.6.0** | Multi-probe | One running app attaches several adapters and capture cards, associates each adapter with its capture card, switches between the pairs and coordinates script runs across them (an IP-KVM-style fleet view). Builds on the multi-controller/multi-device groundwork noted below. |
-| **Later** | Phone and Apple-silicon controllers | A kvm-it **Android and iPhone/iPad app** (plus a macOS build for Apple silicon): the phone becomes the controller, over the same Bluetooth LE link, with the target's picture from a USB capture card where the platform allows it (Android can read a UVC card over USB-C OTG; iOS/iPadOS external-camera support is a question to settle, not an assumption). The Bluetooth client, protocol and script engine are already separate crates, so the plan would be to share them with the mobile apps and redo only the interface. It is a big piece of work, deliberately after multi-probe, and nothing about it is started. |
+| 0.1.0 | 2026-10-03 | MVP: Linux controller, adapter firmware, BLE pairing, capture, scripts |
+| 0.2.0 / 0.2.1 | 2026-10-04 | Windows controller; video switching, logo, Linux AppImage |
+| 0.3.0 | 2026-10-04 | Flash the adapter from the app |
+| 0.4.0 | 2026-10-05 | Network boot through the adapter (read-only iPXE drive) |
+| 0.4.1-0.4.5 | 2026-10-06 | Honest video state, button contract, input fidelity, session recording, light/dark theme |
+| 0.4.6 / 0.4.7 | 2026-10-07/08 | macOS (preview, then hardware-verified); `kvmit run --video` for several adapters at once |
 
-## Small lifts (ride along with a release, or land as 0.3.x)
+Details for each are in the CHANGELOG; the README status table says what each part has been verified on.
 
-Cheap, user-visible or debt-paying, none of them a theme on its own:
+## Road to 1.0
 
-- **0.3.1 review follow-ups:** disable *Pair & connect* / *Connect* while a pairing runs; disconnect on early errors in `backend::connect`; a timeout on the pairing guard; the Codex round that was owed after round 13.
-- **Windows polish:** embed the icon and a proper version resource in `kvmit.exe` / `kvmit-gui.exe` and the MSI (today only the window icon is set, and the version is stamped via the window title).
-- **A kinder "no Bluetooth adapter found" on Linux** (BlueZ not running, adapter blocked, adapter owned by a VM).
-- **Flasher touches:** say "now unplug COM and plug USB into the target" when it finishes; flash several boards in one go (rides with 0.6.0).
-- **Generated licence listing** of every dependency, next to `THIRD_PARTY_NOTICES.md` (promised there).
-- **Linux video:** notice a vanished card and bound the capture shutdown (the V4L2 backend keeps showing its last frame and can wait forever on a stalled card).
-- **Input ordering:** one ordered stream for keyboard and mouse so modifier+click can never reorder (review round 4, finding 6); end-to-end motion backpressure (finding 8); Enter vs keypad Enter on held-key seeding (round 5, finding 4).
-- **Verification debts, not features:** a Linux hardware pass (GUI wizard, pairing with the new connection code, the shared motion change); the adapter's release-everything-if-the-app-dies behaviour on hardware; the 5-byte mouse report under real BIOS boot protocol (relevant to the iPXE work); Windows 10, non-US layouts and IMEs; a factory-fresh board through the full-erase flash path.
+1.0 means: what kvm-it does today, finished. No new themes; every claim backed by the kind of test it names; known limits
+written down instead of open-ended. Direction, not commitments; each release only claims what was verified.
+
+| Release | Theme | Contents |
+|---|---|---|
+| **0.4.8** | Polish and housekeeping | Icon and version information on `kvmit.exe`, `kvmit-gui.exe` and the MSI; plain-language Bluetooth errors (off, blocked, no adapter, no `bluetoothd`); the generated licence listing of every Rust dependency (`THIRD_PARTY_LICENSES.html`) and the firmware's components in `THIRD_PARTY_NOTICES.md`; the Secure Boot boot drive from PR #15 (VM-verified only; real PCs are #40); this roadmap. |
+| **0.4.9** | Your own boot server, input ordering, review debt | **Point the boot drive at your own server from the app:** enter a boot URL in the Adapter popup (or `kvmit boot-drive --url`), the app writes it into the drive's `autoexec.ipxe` and reflashes only the drive partition, keeping the pairing; the drive stays safe by default (nothing runs without a key press), and the docs get a worked example with an object-storage bucket behind a custom domain, IP-restricted, since anything on the drive is readable by whoever holds the adapter. One ordered stream for keyboard and mouse so modifier+click can never reorder (review round 4, finding 6); Enter vs keypad Enter on held-key seeding (round 5, finding 4); the pairing UI follow-ups (disable *Pair & connect* / *Connect* while a pairing runs, disconnect on early errors, a timeout on the pairing guard); the cross-model review rounds still owed where Opus stood in for Codex (rounds 13-16). |
+| **1.0.0** | Finished | When the checklist below is done. |
+
+### 1.0 checklist
+
+- [ ] Hardware-verify issues **#31-#34** run, or each one written down as a known limit with what was seen.
+- [ ] **#40** (Secure Boot on real PCs) run on at least a stock Windows 11 laptop; the docs say exactly which machines worked.
+- [ ] A **Linux hardware pass** on the release build: GUI wizard, pairing, the shared motion change (owed since 0.2.0).
+- [ ] 0.4.9's input ordering on a real target, including wheel/touchpad (#34).
+- [ ] Every STD-001 deviation (a review round run by a stand-in reviewer) followed by the owed cross-model round.
+- [ ] README status table, getting-started and the docs site current for all three platforms; no row older than the code it describes.
+- [ ] Upgrade check: settings, pairings and saved scripts from 0.4.x still load in 1.0 on each OS.
+- [ ] Known limits listed in one place: US layout only, macOS not notarized, Windows Secure Attention Sequence per environment, unmeasured 1080p60 cost, Bluetooth link count per computer.
+
+## After 1.0 (candidates)
+
+| Theme | Notes |
+|---|---|
+| **Wired link over COM** | Drive the adapter over its COM (UART) port with no Bluetooth: no BT passthrough in VMs, headless boxes work, lower latency, and it is the same cable the flasher uses. The client already talks over abstract byte-frame channels, so the desktop side is a serial transport plus framing; the firmware needs a second transport into the same dispatcher and the log console moved off UART0 (or wrapped). Open questions to settle first: opening the port must not toggle DTR/RTS (they are wired to the chip's reset and boot pins, so a careless open reboots the adapter and the target sees its USB device vanish); and a wire link has no pairing, so physical access to the cable is the trust, which means off by default, enabled deliberately and shown on the LED. Natural fit for multi-probe. |
+| **Multi-probe** | One running app attaches several adapters and capture cards, associates each adapter with its capture card, switches between the pairs and coordinates script runs across them (an IP-KVM-style fleet view). Builds on the multi-controller/multi-device groundwork noted below. |
+| **Phone and tablet controllers** | A kvm-it **Android and iPhone/iPad app**: the phone becomes the controller, over the same Bluetooth LE link, with the target's picture from a USB capture card where the platform allows it (Android can read a UVC card over USB-C OTG; iOS/iPadOS external-camera support is a question to settle, not an assumption). The Bluetooth client, protocol and script engine are already separate crates, so the plan would be to share them with the mobile apps and redo only the interface. It is a big piece of work, deliberately after multi-probe, and nothing about it is started. |
+
+## Small lifts still open
+
+Cheap, user-visible or debt-paying, none of them a theme on its own (done ones are in the CHANGELOG):
+
+- **Flasher:** flash several boards in one go (rides with multi-probe).
+- **Input:** end-to-end motion backpressure (review round 4, finding 8).
+- **Verification debts, not features:** the adapter's release-everything-if-the-app-dies behaviour on hardware; the 5-byte mouse report under real BIOS boot protocol (relevant to the boot drive); Windows 10, non-US layouts and IMEs; a factory-fresh board through the full-erase flash path.
 
 ## Backlog / known gaps
 
-- v0.2.0 (Windows controller): bare-metal verification, the OS-level keyboard grab (Win, Alt+Tab, ... go to the
-  target; Ctrl+Alt+Esc releases), YUY2 capture path, Linux hardware regression run for the motion-frame cap.
+- Windows controller: the keyboard grab's edge cases on bare metal, the YUY2 capture path, the Linux hardware regression
+  run for the motion-frame cap.
 - GUI video upload is a full-frame texture copy per frame; 1080p60 cost unmeasured.
 - Only the US layout.
 - Privacy-enabled (RPA) controllers are handled by identity-address lookup in the bond store; untested.
-- Packaging (AppImage/MSI), signed releases, firmware OTA.
+- Firmware OTA (see the update path below); macOS notarization.
 
 - HID idle-rate (SET_IDLE) retransmission for the keyboard (astra review #5, deferred).
 - Host-testable seam around `usb_hid.c` state/rollback/pending-release logic (currently hardware-only).
@@ -68,7 +91,7 @@ Cheap, user-visible or debt-paying, none of them a theme on its own:
   signed images + `ota_0/ota_1` partition layout (needs a custom partition table), then optional USB DFU.
 - Boot-compatible 4-byte mouse report fallback if BIOS testing shows it is needed.
 - PSRAM enablement, if ever needed.
-- Multi-controller trust and multi-device UI (architecture avoids singletons; not built; see 0.6.0 above).
+- Multi-controller trust and multi-device UI (architecture avoids singletons; not built; see multi-probe above).
 - Windows Secure Attention Sequence (Ctrl+Alt+Del): the macro will send it as an ordinary USB HID chord.
   Whether a given Windows/secure-desktop environment honours it is unverified and will be documented per
   environment once tested on real hardware.

@@ -72,10 +72,10 @@ Cargo workspace with one crate per concern so no layer reaches into another:
 
 (Config, app state and UI live in the single `kvmit` crate for now; split them if a second front end appears.)
 
-Several adapters at once (multi-probe, roadmap 0.6.0): the script engine (`run` over a `Host`), the BLE `Device` and
+Several adapters at once (multi-probe, on the roadmap after 1.0): the script engine (`run` over a `Host`), the BLE `Device` and
 `Capture` are all per instance, with no globals, so independent runs need only one host each. The CLI does this today
 (one `kvmit run --device … --video …` process per adapter). The GUI does not yet: its `App` holds a single link,
-capture and run, and becomes a list of per-probe sessions in 0.6.0.
+capture and run, and becomes a list of per-probe sessions when multi-probe lands.
 
 ### UI framework — chosen: egui/eframe
 
