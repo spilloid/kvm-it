@@ -16,10 +16,11 @@ COPIES = {"bootloader/bootloader.bin": BUILD / "bootloader/bootloader.bin",
           "kvm-it-firmware.bin": BUILD / "kvm-it-firmware.bin",
           "ipxe.img": ROOT / "firmware" / "ipxe" / "ipxe.img",
           "ipxe-COPYING.GPLv2": ROOT / "firmware" / "ipxe" / "COPYING.GPLv2"}
+SIGNED = ROOT / "firmware" / "ipxe" / "signed"
 
 
 def main() -> None:
-    # rebuild the boot drive from its inputs (deterministic), so a changed ipxe.efi or autoexec.ipxe can never ship a stale image
+    # rebuild the boot drive from its inputs (deterministic), so a changed signed binary or autoexec.ipxe can never ship a stale image
     subprocess.run([str(ROOT / "scripts" / "build-ipxe-image.sh")], check=True, stdout=subprocess.DEVNULL)
     for dst, src in COPIES.items():
         if not src.is_file():
@@ -45,15 +46,22 @@ def main() -> None:
         f"scripts/refresh-firmware-release.py. Refreshed {datetime.date.today().isoformat()}.\n"
         f"source-sha256: {src_hash}\n"
         "(hash of the firmware build inputs, see scripts/fw-source-hash.py; CI and verify-release.py check it)\n")
-    commit = re.search(r"^IPXE_COMMIT=([0-9a-f]{40})", (ROOT / "scripts" / "build-ipxe.sh").read_text(), re.M).group(1)
+    pins = dict(re.findall(r"^([A-Z_0-9]+)=(\S+)", (SIGNED / "pins.env").read_text(), re.M))
+    commit, tag = pins["IPXE_COMMIT"], pins["IPXE_TAG"]
     (REL / "ipxe-SOURCE.txt").write_text(
-        "ipxe.img carries the iPXE UEFI binary (EFI/BOOT/BOOTX64.EFI), built from UNMODIFIED upstream iPXE source by scripts/build-ipxe.sh\n"
-        "in the kvm-it repository (default configuration, x86-64 UEFI target; the build is repeatable with the pinned container image).\n"
-        f"Upstream source: https://github.com/ipxe/ipxe at commit {commit}.\n"
+        "ipxe.img carries two UEFI binaries exactly as published by the iPXE project (https://ipxe.org), so that it boots with UEFI Secure Boot on (on firmware that trusts Microsoft's third-party UEFI CA) or off:\n"
+        f"  EFI/BOOT/BOOTX64.EFI  the Secure Boot shim: the iPXE project's fork of rhboot/shim 16.1 ({pins['SHIM_VERSION']}), signed by Microsoft (UEFI CA 2011 and 2023); BSD-2-Clause, OpenSSL, EDK2 and gnu-efi notices below\n"
+        f"  EFI/BOOT/IPXE.EFI     iPXE {tag}, signed with the iPXE project's CA (which that shim trusts); GNU GPL version 2\n"
+        f"IPXE.EFI comes from {pins['USB_URL']} (sha256 {pins['USB_SHA256']}), BOOTX64.EFI from {pins['SHIM_URL']} (sha256 {pins['SHIM_SHA256']}); kvm-it adds only its own autoexec.ipxe.\n"
+        "\n"
+        f"iPXE source (corresponding source for IPXE.EFI): https://github.com/ipxe/ipxe at tag {tag}, commit {commit}.\n"
         f"An archive of exactly that source, ipxe-{commit[:12]}-source.tar.gz (with a .sha256), is attached to every kvm-it release that ships this file.\n"
         "iPXE is licensed under the GNU General Public License, version 2 (individual files carry their own declarations; see COPYING in the\n"
         "source and https://ipxe.org/licensing). The licence text is ipxe-COPYING.GPLv2 next to this file. It is shipped as a separate data image,\n"
-        "not linked into kvm-it's MIT-licensed firmware or app. See THIRD_PARTY_NOTICES.md in the kvm-it release.\n")
+        "not linked into kvm-it's MIT-licensed firmware or app. See THIRD_PARTY_NOTICES.md in the kvm-it release.\n"
+        "\n"
+        f"Shim source: {pins['SHIM_REPO']} at tag {pins['SHIM_VERSION']} (commit {pins['SHIM_COMMIT']}). Its licence notices:\n"
+        "\n" + (SIGNED / "shim-NOTICES.txt").read_text())
     names = ["kvm-it-firmware.bin", "bootloader/bootloader.bin", "partition_table/partition-table.bin", "ipxe.img", "ipxe-COPYING.GPLv2", "ipxe-SOURCE.txt", "flasher_args.json"]
     (REL / "SHA256SUMS").write_text("".join(f"{hashlib.sha256((REL / n).read_bytes()).hexdigest()}  {n}\n" for n in names))
     print("refreshed", REL, "version", version, "source", src_hash[:16])

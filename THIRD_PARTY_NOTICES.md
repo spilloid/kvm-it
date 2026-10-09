@@ -20,21 +20,28 @@ MPL-2.0 is file-level: it applies to serialport's own source files and does not 
 Used for writing firmware and for finding USB devices. Sources: <https://crates.io/crates/espflash/4.6.0>,
 <https://crates.io/crates/nusb>.
 
-## iPXE: GNU GPL version 2
+## iPXE and the Secure Boot shim: GNU GPL version 2, BSD, OpenSSL and EDK2 licences
 
-The adapter's read-only boot drive carries the **iPXE** UEFI binary, **built from unmodified upstream source** by `scripts/build-ipxe.sh` (a pinned
-commit, default configuration, in a container pinned by digest). iPXE (<https://ipxe.org/>) is free software; its source files carry their own licence
-declarations (mostly GPL, many also under the project's Unmodified Binary Distribution Licence), and its own `make ...licence` tool **cannot determine a single
-licence for this default build** (it reports source files with no declaration, in drivers such as Atheros, Broadcom and Mellanox). We therefore treat
-and distribute the binary as a whole under the **GNU General Public License, version 2** (the licence text is `firmware/ipxe/COPYING.GPLv2`, shipped as
-`firmware/ipxe-COPYING.GPLv2` in every package), and we make no stronger claim. See <https://ipxe.org/licensing>. It is a separate data image written to its own
-flash partition, not linked into kvm-it's MIT-licensed firmware or app.
+The adapter's read-only boot drive carries two UEFI binaries **exactly as the iPXE project published them**: iPXE from its `v2.0.0` release (file `ipxe-x86_64-sb.usb`, SHA-256
+`1bba4318a1818ef148a80b32c7cfe3199d4f7cd93b600d74f1d8f64cea64eb46`) and the shim from the `ipxe/shim` release `ipxe-16.1` (pins and checks in `firmware/ipxe/signed/pins.env` and
+`scripts/fetch-ipxe-signed.sh`):
 
-**Corresponding source:** upstream <https://github.com/ipxe/ipxe> at commit `6262f1081fe185564e8ec8365a1d23597ec6e6f5` (2026-10-01, `v2.0.0-375`), unmodified,
-plus `scripts/build-ipxe.sh` in this repository (the exact recipe). An archive of that upstream source, `ipxe-6262f1081fe1-source.tar.gz` (with a `.sha256`), is
-attached to every release that ships the drive (built and attached by `.github/workflows/ipxe-source.yml`; `scripts/ipxe-source-archive.sh` makes the same archive
-by hand), and every package carries `firmware/ipxe-SOURCE.txt` saying so. `firmware/ipxe/ipxe.efi` has SHA-256
-`1e3252f2dd6163368e7908bb7ee53642aacc73bdf2bcfa6a41d0764332e9e8d4`.
+- **`EFI/BOOT/IPXE.EFI` is iPXE** (<https://ipxe.org/>), signed with the iPXE project's Secure Boot CA and built by the v2.0.0 tag's "UEFI SB" CI job (`bin-x86_64-efi-sb`; its recipe is that tag's `.github/workflows/build.yml`). iPXE is free software; its source files carry their own licence
+  declarations (mostly GPL, many also under the project's Unmodified Binary Distribution Licence), and iPXE's own `make ...licence` tool could not determine a single
+  licence for a default build (that tool was not run on this Secure Boot build). We therefore treat and distribute the binary as a whole under the **GNU General Public License, version 2** (the licence text is
+  `firmware/ipxe/COPYING.GPLv2`, shipped as `firmware/ipxe-COPYING.GPLv2` in every package), and we make no stronger claim. See <https://ipxe.org/licensing>. It is a
+  separate data image written to its own flash partition, not linked into kvm-it's MIT-licensed firmware or app.
+  **Corresponding source:** upstream <https://github.com/ipxe/ipxe> at tag `v2.0.0`, commit `12798ec29aa8a64d8675c4378b99f5fe28447afb`, unmodified. An archive of that
+  source, `ipxe-12798ec29aa8-source.tar.gz` (with a `.sha256`), is attached to every release that ships the drive (built and attached by `.github/workflows/ipxe-source.yml`;
+  `scripts/ipxe-source-archive.sh` makes the same archive by hand), and every package carries `firmware/ipxe-SOURCE.txt` saying so. `IPXE.EFI` has SHA-256
+  `6558e37887516b246d6a97122e8d18bedfe4197b7ba7f67bf1bf102a16678d33`. kvm-it cannot rebuild this binary (the signature is the iPXE project's); building iPXE yourself
+  from that source gives an unsigned binary that Secure Boot targets refuse.
+- **`EFI/BOOT/BOOTX64.EFI` is the Secure Boot shim**: the iPXE project's fork of rhboot/shim 16.1 (<https://github.com/ipxe/shim>, tag `ipxe-16.1`, commit
+  `d0367b25d04ec90d332909b99d932571f15e5a06`: upstream 16.1 plus iPXE's changes and certificate), from that repository's `ipxe-16.1` release (`ipxe-shimx64.efi`), signed by
+  Microsoft's 2011 and 2023 UEFI CAs. SHA-256 `5eecca2780bd49c900565e124516a1bd666ec5e012825f34991b6ba1ef2fa6cf`. The shim is under the BSD-2-Clause licence and statically
+  includes OpenSSL 1.0.2k (OpenSSL and SSLeay licences), EDK2 cryptographic library code (BSD-2-Clause-Patent) and gnu-efi code (Intel's BSD-style notice). **This product includes
+  software developed by the OpenSSL Project for use in the OpenSSL Toolkit (<http://www.openssl.org/>), and cryptographic software written by Eric Young
+  (<eay@cryptsoft.com>).** The full notices are `firmware/ipxe/signed/shim-NOTICES.txt` and are reproduced in `firmware/ipxe-SOURCE.txt` in every package.
 
 ---
 

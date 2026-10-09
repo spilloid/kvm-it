@@ -19,7 +19,7 @@ to the same release. Treat this file as a checklist: each numbered step is a ste
       boot-drive image `ipxe.img`, the iPXE licence text and source statement, and the manifest. If anything under `firmware/` or the iPXE inputs changed:
       `scripts/fw.sh build`, then `scripts/refresh-firmware-release.py` (it rebuilds `ipxe.img` from its inputs, copies the build, rewrites the manifest paths to sit
       inside the folder, and rewrites `FIRMWARE.txt` and `SHA256SUMS`). CI fails if the sources moved on without this (`scripts/fw-source-hash.py --check`);
-      `verify-release.py` checks the packages carry these files. Changing iPXE itself: `scripts/build-ipxe.sh` (pinned commit), then the same.
+      `verify-release.py` checks the packages carry these files. Changing iPXE itself: bump the pins in `firmware/ipxe/signed/pins.env` and run `scripts/fetch-ipxe-signed.sh` (it downloads the iPXE project's signed release image and verifies it against the pinned checksums), then the same. The signed binaries cannot be rebuilt by us; `scripts/build-ipxe.sh` builds an unsigned iPXE for experiments only.
 - [ ] **iPXE source archive.** Every release that ships the boot drive carries the exact upstream source: `.github/workflows/ipxe-source.yml` builds
       `ipxe-<commit>-source.tar.gz` (+ `.sha256`) with `scripts/ipxe-source-archive.sh` and attaches it when the release is published. Check it is on the release
       page; if not, run the workflow by hand (`workflow_dispatch` with the tag) or attach the output of `scripts/ipxe-source-archive.sh` yourself.

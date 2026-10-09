@@ -33,7 +33,7 @@ desktop/target/release/kvmit flash --firmware firmware/build     # or: scripts/f
 
 ## The boot drive image
 
-The adapter's read-only iPXE drive is `firmware/ipxe/ipxe.img`, built from `firmware/ipxe/ipxe.efi` and `autoexec.ipxe` (edit that script to boot your
+The adapter's read-only iPXE drive is `firmware/ipxe/ipxe.img`, built from the signed shim and iPXE in `firmware/ipxe/signed/` and `autoexec.ipxe` (edit that script to boot your
 own server) by `scripts/build-ipxe-image.sh` (needs dosfstools, mtools and sfdisk). Then `scripts/fw.sh build` and
 `scripts/refresh-firmware-release.py` (the latter refreshes `firmware/release`, what the app ships). To try it without a spare PC:
 `tools/ipxe-test/boot-vm.sh off` boots a UEFI virtual machine from the real adapter and screenshots it (`sb` = Secure Boot on).

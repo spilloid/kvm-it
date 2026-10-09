@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Archive the exact upstream iPXE source the shipped binary was built from, to attach to each release that ships the boot drive
-# (GPL: the corresponding source accompanies the binary). Reads the pinned commit from scripts/build-ipxe.sh.
+# Archive the exact upstream iPXE source the shipped (signed) binary was built from, to attach to each release that ships the boot drive
+# (GPL: the corresponding source accompanies the binary). Reads the pinned commit from firmware/ipxe/signed/pins.env.
 #   scripts/ipxe-source-archive.sh [out-dir]    -> ipxe-<12 hex>-source.tar.gz and its .sha256
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME="${CONTAINER_RUNTIME:-podman}"
-COMMIT="$(sed -n 's/^IPXE_COMMIT=\([0-9a-f]\{40\}\).*/\1/p' "$ROOT/scripts/build-ipxe.sh")"
+COMMIT="$(sed -n 's/^IPXE_COMMIT=\([0-9a-f]\{40\}\).*/\1/p' "$ROOT/firmware/ipxe/signed/pins.env")"
 BASE="$(sed -n 's/^BASE=\([^ ]*\).*/\1/p' "$ROOT/scripts/build-ipxe.sh")"
-[ -n "$COMMIT" ] && [ -n "$BASE" ] || { echo "could not read the pinned commit from scripts/build-ipxe.sh" >&2; exit 1; }
+[ -n "$COMMIT" ] && [ -n "$BASE" ] || { echo "could not read the pinned commit from firmware/ipxe/signed/pins.env (or the container from scripts/build-ipxe.sh)" >&2; exit 1; }
 OUT="${1:-$ROOT/dist-ipxe-source}"; mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"  # absolute: podman reads a relative -v source as a named volume
 NAME="ipxe-${COMMIT:0:12}-source"
 "$RUNTIME" run --rm -v "$OUT":/o:Z "$BASE" bash -c "set -euo pipefail

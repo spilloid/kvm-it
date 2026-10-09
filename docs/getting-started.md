@@ -136,9 +136,10 @@ The drive is **read-only by design**: the adapter reports it write-protected and
 If a target's firmware dislikes the extra drive, turn it off (the adapter goes back to presenting just a keyboard and mouse), or flash the previous firmware
 from the 0.3.0 release with `kvmit flash --firmware <its firmware folder>`; your pairing is kept.
 
-Three honest limits for now: **UEFI only** (not legacy BIOS), **Secure Boot must be off** on the target (a stock iPXE is not signed, so Secure Boot refuses it; making
-that work is the next piece of work), and the boot script on the drive is the demo until editing it from the app lands (developers can change it today:
-[developing.md](developing.md)).
+Honest limits for now: **UEFI only** (not legacy BIOS). **Secure Boot can stay on** on firmware that trusts Microsoft's third-party UEFI CA, because the drive carries the iPXE
+project's signed shim and iPXE; but then iPXE only starts signed things (Windows PE through `wimboot` is fine; an unsigned Linux kernel is refused with "Security Policy
+Violation"), and some locked-down PCs turn that CA off and refuse the drive. All of that has been run in a virtual machine, not yet on a real PC. And the boot script on the
+drive is the demo until editing it from the app lands (developers can change it today: [developing.md](developing.md)).
 
 ## When something is off
 
@@ -150,8 +151,9 @@ that work is the next piece of work), and the boot script on the drive is the de
   [hardware guide](hardware.md).
 - **Keys stuck on the target:** *Release all keys* in the **Adapter** popup. If the app crashes, the adapter lets go of everything by
   itself within a few seconds (designed that way; not yet verified on hardware).
-- **The target does not offer a "kvm-it" boot entry, or says "Access Denied":** the boot drive is UEFI-only, and Secure Boot must be off
-  (see step 6).
+- **The target does not offer a "kvm-it" boot entry, or says "Access Denied":** the boot drive is UEFI-only. If it refuses the signed shim, that firmware does not
+  trust Microsoft's third-party CA (some locked-down machines); tell us the model. "Security Policy Violation" after iPXE starts means the thing you chained to is not
+  signed (see step 6).
 - **Flashing says an Espressif USB device is plugged in:** that is the safety check. Unplug the board's **USB** port (and any other ESP
   board) from this computer; keep only **COM**.
 

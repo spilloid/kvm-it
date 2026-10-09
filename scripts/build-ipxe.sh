@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build the iPXE UEFI binary the adapter's boot drive carries, from a pinned upstream commit, in a container.
-#   scripts/build-ipxe.sh                 -> firmware/ipxe/ipxe.efi (then: scripts/build-ipxe-image.sh)
-# The source is upstream iPXE, unmodified, at IPXE_COMMIT; the recipe is this script (default build configuration, x86_64 UEFI target).
-# That pair (upstream commit + this script) is the corresponding source for the shipped binary (see THIRD_PARTY_NOTICES.md); the upstream half is
-# archived by scripts/ipxe-source-archive.sh and attached to each release. Reproducible given the pinned container image and its apt toolchain.
+# EXPERIMENTS ONLY: build an UNSIGNED iPXE UEFI binary from a pinned upstream commit, in a container (a custom build, or your own certificate or embedded script).
+#   scripts/build-ipxe.sh                 -> firmware/ipxe/ipxe.efi
+# This is NOT what the adapter ships: the boot drive carries the iPXE project's signed binaries (firmware/ipxe/signed, see pins.env), which scripts/build-ipxe-image.sh
+# uses; an unsigned build is refused by Secure Boot targets unless you enrol your own key. Source is upstream iPXE, unmodified, at IPXE_COMMIT (default configuration,
+# x86_64 UEFI target). Reproducible given the pinned container image and its apt toolchain.
 # Needs podman (or CONTAINER_RUNTIME=docker) and network access.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
