@@ -54,6 +54,15 @@ self-test types into the machine it is plugged into.
 
 ## Things to re-verify before trusting them (dated, STD-003 rule 4)
 
+- 2026-10-08 (0.4.8): the signed Secure Boot boot drive (PR #15) is **VM-verified only** and its image has not been
+  flashed to a real adapter; real PCs are issue #40. The plain-language Bluetooth errors are host-tested on Linux and
+  macOS (only Windows' no-adapter case ran on real hardware); the Linux scan/pair/unpair BlueZ setup was refactored into
+  one helper (same calls). Checked with the CI-built AppImage on a Linux host with a working radio: `scan` found a real
+  adapter, `status` to an absent address gave the explained "not found"; `status` to that real (bonded) adapter timed
+  out waiting for a reply, **identically with the released 0.4.7**, so not a 0.4.8 regression (cause not yet looked at).
+  `THIRD_PARTY_FIRMWARE_LICENSES.txt` is only as complete as `scripts/fw-licenses.py`'s mapping (CI-checked against
+  each build); prebuilt Espressif and toolchain libraries are covered by their licence files, not per source.
+
 - 2026-10-08: maintainer hardware pass on 0.4.6 from **bare-metal Windows** and a **real Mac**: every button in the
   app's menu, with an adapter and a live capture card picture, and two boards reflashed from each OS (working after).
   Not covered by that pass: issues #31-#34 (capture-card unplug/no-signal/fps readback, recording with sound, YUYV

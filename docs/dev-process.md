@@ -727,3 +727,10 @@ none lost; the regenerated file matches.
 | 2 | Med | Only the first matching string table was checked; a second advertised language could carry a wrong version | Every table named by a Translation pair is checked |
 | 3 | Med | `pe_info` read the security directory without the directory-count and optional-header bounds, so a crafted header could fake a signature blob for `--require-signed` | Bounded; a directory pointing outside the file fails |
 | 4 | Med | A header with Apache boilerplate skipped the `WITH` check | Exceptions are rejected before the full-text shortcut (synthetic case; none in this build) |
+
+**Round 35** (re-review of the round-34 fixes, `f44adcc..2fb2568`): **SIGN-OFF**, no confirmed defect within scope.
+The prompt from this round on stated the tool's input domain (binaries our own CI builds and signs, plus licence
+generation). The reviewer verified all four round-34 fixes, ran 18 negative cases, confirmed both built executables
+pass, checked the signature-size detection against two real Authenticode-signed PEs (x64 and PE32), and regenerated the
+firmware licence file byte-for-byte. Rounds 32-34 drifted towards hand-mutated inputs the release check never sees; that
+observation is recorded in corporate-strategy (`state/products/kvm-it.md`) as an STD-001 intake candidate.

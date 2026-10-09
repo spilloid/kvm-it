@@ -2,7 +2,18 @@
 
 ## [Unreleased]
 
-Polish ahead of 1.0 (the plan and the 1.0 checklist are in `docs/roadmap.md`).
+## [0.4.8] - 2026-10-08 (polish ahead of 1.0; signed Secure Boot boot drive, VM-verified)
+
+Polish ahead of 1.0 (the plan and the 1.0 checklist are in `docs/roadmap.md`). Desktop, CI and docs, plus a new
+boot-drive image (below); no protocol change. **Reflash the adapter** to get the new boot drive (pairing is kept).
+
+### Verification
+- **Windows (real hardware, kubert, no Bluetooth adapter):** Explorer's *Details* show kvm-it's description, version
+  and copyright and the icon is extracted from the executable; `kvmit scan` names the missing adapter in plain language.
+- **Linux, macOS Bluetooth messages:** host-tested (unit tests for the decision logic); the off/blocked/no-daemon cases
+  have not been provoked on real hardware.
+- **Secure Boot boot drive:** virtual machine only (details below); real PCs are tracked in #40.
+- Review rounds 31-35 (astra) in `docs/dev-process.md`, signed off.
 
 ### Added
 - **Windows: kvm-it's icon and version information on `kvmit.exe` and `kvmit-gui.exe`**, so Explorer, the taskbar, the Start
