@@ -14,6 +14,121 @@
 - **Not exercised:** any real PC with Secure Boot on (including a stock Windows 11 laptop), firmware that trusts only Microsoft's 2023 CA, the shim's revocation level over
   time, the new image on the real adapter (the previous image was verified there; this one has not been flashed yet).
 
+## [0.4.7] - 2026-10-08 (macOS out of preview; several adapters from the command line)
+
+Desktop, CI and docs; no firmware or protocol change.
+
+### Hardware verification
+- **macOS is hardware-verified** (on 0.4.6, by the maintainer): a real Mac with an adapter and a live picture from an
+  HDMI capture card, every button in the app's menu clicked through, and two boards reflashed from the Mac and working
+  afterwards. The download drops its `-preview` label: `kvm-it-X.Y.Z-macos-arm64.dmg` (still ad-hoc signed and not
+  notarized, so macOS asks you to allow it the first time).
+- **Bare-metal Windows** (on 0.4.6): the same pass. Windows was VM-verified only before.
+- **Not covered** by this pass, and still open: capture-card unplug / no-signal / fps readback (#31), recording with sound
+  (#32), YUYV colour range (#33), wheel and touchpad on a target (#34).
+
+The command-line changes below are **host-tested** only: no run against two physical adapters at once yet.
+
+### Added
+- **`kvmit run --video <key|path>`** picks the capture card that the script's screen waits use, so several `kvmit run`
+  processes can each drive their own adapter (`--device`) and capture card at once: the first step towards multi-probe
+  (roadmap 0.6.0). A card that is missing, ambiguous (two cards sharing a key), cannot be opened, or whose key changed
+  between listing and opening is an error, never a fallback to another card. Limit: two identical cards on a system
+  that reports no bus location share a key, so a swap between them cannot be detected; name such cards by path. `kvmit video list` now prints each
+  card's stable key, which survives a replug into the same USB port where `/dev/videoN` may not.
+
+### Changed
+- `kvmit run` no longer takes the first capture card it finds (on a laptop, often its webcam). Without `--video` it uses
+  the card the GUI last opened if exactly one connected card matches it and its key carries a location; with no card
+  remembered, the only card connected (with several targets, always pass `--video`: that lone card may be another
+  target's). Anything less certain (the remembered card missing, two cards it could be, a
+  remembered key with no location, several cards and none remembered) stops the run before it types anything and asks for `--video`. A `--dry-run` skips screen waits, so it no longer opens a card at all.
+
+### Fixed
+- `kvmit run` opened no capture card when a script's only screen waits were inside a `repeat`, so those waits timed out
+  after the steps before them had already typed.
+- Settings: saves are atomic (a temp file renamed into place), and the GUI and CLI now change only the setting they mean
+  to on top of the file's current contents, instead of writing back a copy loaded at startup. Concurrent `kvmit`
+  processes no longer leave a torn `config.json` or undo each other's settings (two saves at the same instant can still
+  race; nothing locks the file).
+
+## [0.4.6] - 2026-10-07 (macOS preview)
+
+Desktop and CI only; no firmware or protocol change. The macOS port is **built and CI-tested** on a cloud Apple-silicon Mac (it compiles, its tests pass, it packages and its CLI starts); **it has never been run with an adapter, a capture card or a person at the keyboard.** Treat the macOS download as a preview. Windows and Linux behaviour is unchanged apart from the GUI polling noted below.
+
+### Added
+- **CI parity for Linux and macOS.** An `AppImage` workflow builds, smoke-tests and attaches the Linux AppImage when a release is published (or on demand for an existing release). A `macOS (preview)` workflow runs the tests on Apple silicon, packages the app into a `.dmg` (ad-hoc signed, not notarized) and attaches it to a published release as `kvm-it-X.Y.Z-macos-arm64-preview.dmg`. `scripts/build-dmg.sh` builds the `.dmg` on a Mac.
+- **macOS support (built and CI-tested on Apple silicon; not hardware-verified).** Capture cards through AVFoundation (the first open asks for camera permission; macOS decodes the card's format); the adapter over CoreBluetooth, with ids that are macOS's own (it never reveals Bluetooth addresses, so a saved adapter is per Mac) and pairing done by macOS on first encrypted use (it may show its own prompt); a keyboard grab through a Quartz event tap, so Cmd+Tab, Cmd+Space and Cmd+Q go to the target (needs the Accessibility permission; without it the app says so once and falls back), with the same heartbeat safety valve as Windows and Ctrl+Option+Esc to release; the flasher lists each board once (the `cu.` device); recording can take sound from an AVFoundation input. `scripts/rs.sh macos` type-checks and lints the macOS build from Linux.
+- **`scripts/bootstrap.sh`**: checks a new machine (tools, `gh` login, container runtime, ffmpeg, disk, board access) and builds the build container; `CLAUDE.md` tells a session to run it first on a machine it has not used.
+
+### Fixed (adversarial review, rounds 21-22, macOS)
+- Eleven findings in the new macOS code before it shipped: the exact frame duration of a 59.94 fps format (a rounded one crashes AVFoundation), no GUI blocking on the camera prompt or session start/stop, a keyboard grab that gives up safely if the window stalls and knows keys held before capture, pairing confirmed by an encrypted write, AVFoundation audio chosen by index, capture start and stop kept in order, and a slow start no longer mistaken for a dead card. Details in `docs/dev-process.md`.
+- All platforms: while a capture is open but has not shown a frame yet, the window keeps checking, so the first picture (or the reason it failed) appears without having to move the mouse.
+
+## [0.4.5] - 2026-10-06 (light and dark theme)
+
+GUI only. **Host-tested** only: the palette is held to WCAG AA contrast by unit tests, but nobody has looked at either mode on a real screen yet.
+
+### Added
+- **Light / dark theme.** The top bar's **Theme** button cycles auto (follow the operating system, the default), light and dark, and the choice is saved in the config.
+
+### Fixed (adversarial review, round 17)
+- Recording: a failed recording can no longer delete another one (it writes a private `.part` file and publishes it without ever replacing a file); stopping no longer freezes the window (the file is finished in the background, with a "Finishing the recording…" chip); dropped frames no longer make the clip shorter and faster; the duration cap and an encoder's death are noticed even when the picture is gone, and a picture gone for 10 s ends the clip; the audio lookup no longer runs on the window's thread; a black or blank picture can still be recorded. Second round: each recording reserves its own file name and publishes by renaming over it (nothing else's file can be replaced or deleted); quitting while a file is finishing kills a stuck encoder instead of leaving it; frames owed at the end are repaid; the REC timer gives way to "Finishing" for automatic stops too; audio lookups are killed after 5 s.
+- Video: if the remembered capture card is missing, nothing is opened (it no longer falls back to an old `/dev/videoN` that may be the webcam).
+
+### Changed
+- **Status colours are per mode and readable in both.** Chip fills are darker (white text was 2.6-3.6:1 on the old amber and green, now at least 5:1), and coloured text (notices, errors, warnings, the flasher's results) uses a light-mode and a dark-mode shade. Tests fail if any falls below 4.5:1 on the panel it is drawn on.
+
+## [0.4.4] - 2026-10-06 (session recording)
+
+GUI and desktop only; no firmware or protocol change. **Host-tested** only (unit tests, clippy, and the encoder run against a real `ffmpeg` on synthetic frames); never run against a physical capture card, and audio sync is unmeasured (issue #32).
+
+### Added
+- **Record button** (#30): the top bar's **● Record…** opens a popup: GIF (silent, ~12 fps, at most 960 px wide, 30 s cap) or WebM (VP9, up to 30 fps, optional sound). Sound is **off** unless you pick an input; its list is separate from the video devices. The popup warns that a recording cannot be redacted. While recording the bar shows a red **● REC mm:ss — click to stop** chip that stays live even while input is captured; recordings go to `~/Videos/kvm-it/` with timestamped names and never overwrite. A recording that ends by itself (duration cap, ffmpeg died) says why, and quitting finalises the file. Record is disabled with a reason when there is no picture or the picture is blank (no signal). Needs `ffmpeg` on PATH; without it you get a clear message.
+- **`kvmit-record` crate (recording core, #29).** Pipes decoded RGBA frames as rawvideo to an `ffmpeg` subprocess and writes a timestamped, never-overwritten GIF (palettegen/paletteuse, 12 fps, <=960 px wide, 30 s cap) or WebM (VP9; Opus only if an audio input is chosen, off by default). Clear error when ffmpeg is missing; a dead or stalled encoder surfaces as an error and never blocks the caller; a mid-recording size change is rescaled to the first frame's size. Also lists audio input devices (pactl / `ffmpeg -sources pulse` / dshow parsers). Host-tested (pure arg/name/pacing/parser tests, plus end-to-end GIF and WebM through the host's ffmpeg and ffprobe); the Record button is a later change, and nothing is hardware-verified (no capture card was used, only synthetic frames). The audio path was exercised once against the host's PulseAudio/PipeWire input, not a capture card's audio.
+
+## [0.4.3] - 2026-10-06 (input fidelity)
+
+GUI only; no firmware or protocol change. **Host-tested** only (unit tests, clippy); the real-touchpad and real-key checks are tracked in the "Needs hardware" issues.
+
+### Fixed
+- **Mouse wheel honours egui's scroll unit** (#27): touchpad pixel deltas are accumulated and sent as whole notches (40 points per notch, the remainder carried, dropped on a reversal and on capture start/end) instead of dozens of notches per swipe or nothing for small deltas; line deltas are unchanged.
+
+### Added
+- **Global abort key** (#28): Esc aborts a running script from anywhere in the window and releases every key (the run always ends with release-all); it does nothing while a text field has focus, so editing a variable cannot abort a run, and Ctrl+Alt+Esc remains the capture-release chord. An abort also unblocks a script waiting on a confirm. `docs/ux.md` now says so (it used to promise a chord that did not exist).
+
+## [0.4.2] - 2026-10-06 (button contract and feedback)
+
+GUI only; no firmware or protocol change. Everything here is **host-tested** (unit tests, clippy) and has not been run on a screen or against hardware; the checks are tracked in the "Needs hardware" issues.
+
+### Fixed
+- **Type no longer loses your text** (#21): it is cleared only once the run has actually started, and characters the US layout cannot type are flagged (never named for a secret) before the click.
+- **No silent no-ops** (#22): starting capture with no adapter or while a script runs (Input chip, picture click, Video popup button) now says why; the Input chip and the Video popup's capture button are greyed out with the reason on hover.
+- **Run-log header tells the truth** (#23): *Finished*, *Dry run finished*, *Aborted: reason* or *Failed: reason*, colour-coded, instead of "Script finished" for everything.
+- **Notices** (#24) can be dismissed, clear when their cause resolves (e.g. video is showing again) or after 15 s, and the adapter-link error keeps its own line instead of being hidden by a notice.
+- **Contract gaps** (#25): a dry run works without an adapter (it sends nothing); the Target USB chip is a coloured label, not a button, and keeps its "Target USB: ..." accessible name; disabled Input, Type, Run, Dry run, Abort and Keys controls say why on hover. A Scripts-popup Abort or the confirm dialog's Abort now also releases a script blocked on a confirm.
+- **Hygiene** (#26): Scripts > Reload folder resets the stale error, preview and variables; the preview is compiled only when the script or a variable changes, not every frame; new tests pin every Keys chord to its keys and the chip/button state table (pure functions in `uistate.rs`).
+
+## [0.4.1] - 2026-10-06 (honest video state)
+
+Everything below is **host-tested** (unit tests in the container); none of it has been run against a physical capture card, and nothing here is hardware-verified. The
+hardware checks are tracked in the "Needs hardware" milestone (issues #31-#34).
+
+### Fixed
+- **Linux capture detects a dead card or a failed start (#16).** Consecutive stream errors (or about five seconds without a frame) now mark the capture failed, so the
+  GUI shows "Video stopped" instead of a green chip on a frozen frame; a failure to start streaming is returned by `open` instead of waiting for a frame forever. A
+  capture thread that dies for any other reason (including a panic) is also marked failed. Mirrors the Windows backend.
+- **Closing a Linux capture can no longer hang the window (#17).** The frame wait now times out, and dropping a capture waits at most 1.5 s for its thread and then
+  detaches it (as on Windows).
+- **The Video chip shows what the card was really set to (#18).** Linux now requests the frame rate (it used to leave the card at its default), reads back the applied
+  pixel format, size and rate, and reports those; a driver that substitutes the other supported format (YUYV for MJPEG or the reverse) is decoded as what it is, an
+  undecodable format is an error, and YUYV rows are read with the driver's stride instead of assuming no padding.
+- **A blank picture is no longer shown as healthy (#19).** When the card sends a flat fill (no signal, or still locking) the chip turns amber "Video: no signal" and the
+  picture area says so. The chip and picture-area wording is derived by one tested function.
+- **A fresh install no longer opens the first video device (#20).** Only a remembered device (or the `KVMIT_DEMO_VIDEO` demo source) opens by itself; index 0 is often a
+  webcam. The remembered device is stored by a stable key (card name + bus location) in addition to the old path, so it survives `/dev/videoN` renumbering; configs
+  written by 0.4.0 (path only) still load and still match. `kvmit video snap` uses the same lookup.
+
 ## [0.4.0] - 2026-10-05 (network boot through the adapter)
 
 Firmware 0.2.0 and wire protocol 1.1 (backward compatible: one new message, one appended `STATUS` byte, one capability bit). **The boot drive is OFF until you turn it on**, with a

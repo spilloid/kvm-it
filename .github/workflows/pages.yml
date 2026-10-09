@@ -1,8 +1,16 @@
 name: docs
+# Builds the site from docs/. The download buttons point at the newest published release that carries the Windows
+# installer: its assets are looked up at build time (docs/_data/release.json, generated, never committed), and the
+# site rebuilds whenever a release's asset workflows finish, so the buttons follow each release with no manual edit.
 on:
   push:
     branches: [main]
     paths: ['docs/**', '.github/workflows/pages.yml']
+  # not `release:` — that runs on the tag, and the github-pages environment only deploys from main. workflow_run runs on
+  # main; after deleting or editing a release, run this workflow by hand.
+  workflow_run:
+    workflows: ['Release Builds', 'AppImage', 'macOS']
+    types: [completed]
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,9 +21,30 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
+    # macOS also runs on every push to main; only its release runs change the downloads
+    if: ${{ github.event_name != 'workflow_run' || contains(fromJSON('["release","workflow_dispatch"]'), github.event.workflow_run.event) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Look up the release the download buttons point at
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p docs/_data
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" > releases.json
+          jq '
+            [ .[] | select(.draft | not) | select(any(.assets[]; .name | endswith("-windows-x64.msi"))) ][0]
+            | if . == null then {} else
+              (.assets | map({key: .name, value: .browser_download_url}) | from_entries) as $a
+              | def pick(suffix): ($a | to_entries | map(select(.key | endswith(suffix))) | .[0].value // null);
+              { tag: .tag_name, version: (.tag_name | ltrimstr("v")), url: .html_url, date: (.published_at // .created_at),
+                prerelease: .prerelease,
+                windows_msi: pick("-windows-x64.msi"), windows_zip: pick("-windows-x64.zip"),
+                linux: pick("-x86_64.AppImage"), mac: (pick("-macos-arm64.dmg") // pick("-macos-arm64-preview.dmg")) }
+              end' releases.json > docs/_data/release.json
+          cat docs/_data/release.json
       - uses: actions/configure-pages@v5
       - uses: actions/jekyll-build-pages@v1
         with:

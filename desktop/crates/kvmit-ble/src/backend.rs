@@ -1,4 +1,8 @@
-//! BLE transport: scan, connect, GATT (btleplug, Linux + Windows) and Linux/BlueZ pairing (bluer).
+//! BLE transport: scan, connect, GATT (btleplug: Linux, Windows, macOS) and pairing (BlueZ via bluer, WinRT, and on macOS
+//! CoreBluetooth's own pairing on first encrypted access).
+//!
+//! Adapter ids: the Bluetooth address on Linux and Windows. macOS never reveals addresses; there the id is the UUID
+//! CoreBluetooth assigns the peripheral, stable on that Mac (so a saved id does not carry over to another Mac).
 //! Hardware-dependent; not unit-testable. Protocol logic lives in `client`.
 use crate::client::LinkIo;
 use btleplug::api::{Central, CentralEvent, Manager as _, Peripheral as _, ScanFilter, WriteType};
@@ -39,7 +43,8 @@ fn err<T>(s: impl Into<String>) -> Result<T> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Found {
-    /// Bluetooth address, "AA:BB:CC:DD:EE:FF" — the stable id used by connect/pair.
+    /// The stable id used by connect/pair: the Bluetooth address ("AA:BB:CC:DD:EE:FF"), or on macOS the peripheral's
+    /// CoreBluetooth UUID.
     pub id: String,
     pub name: String,
     pub rssi: Option<i16>,
@@ -53,6 +58,15 @@ async fn adapter() -> Result<Adapter> {
     }
 }
 
+/// The id an adapter is known by on this platform (see the module comment).
+fn peripheral_id(p: &Peripheral, props: &btleplug::api::PeripheralProperties) -> String {
+    if cfg!(target_os = "macos") {
+        p.id().to_string()
+    } else {
+        props.address.to_string()
+    }
+}
+
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 async fn describe(p: &Peripheral) -> Option<Found> {
     let props = p.properties().await.ok()??;
@@ -62,7 +76,7 @@ async fn describe(p: &Peripheral) -> Option<Found> {
         return None;
     }
     Some(Found {
-        id: props.address.to_string(),
+        id: peripheral_id(p, &props),
         name: props.local_name.unwrap_or_else(|| "kvm-it".into()),
         rssi: props.rssi,
     })
@@ -151,7 +165,7 @@ async fn find(ad: &Adapter, id: &str, wait: Duration) -> Result<Peripheral> {
     loop {
         for p in ad.peripherals().await? {
             if let Ok(Some(props)) = p.properties().await {
-                if props.address.to_string().eq_ignore_ascii_case(id) {
+                if peripheral_id(&p, &props).eq_ignore_ascii_case(id) {
                     let _ = ad.stop_scan().await;
                     return Ok(p);
                 }
@@ -382,7 +396,34 @@ pub async fn pair(id: &str) -> Result<()> {
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+/// macOS: there is no pairing API. CoreBluetooth pairs by itself when an encrypted characteristic is used, so pairing is:
+/// connect, then a write *with response* of a harmless PING to the adapter's receive characteristic, which requires an
+/// encrypted link. The write only succeeds once macOS has paired (it may show its own prompt), so success here means the
+/// bond exists. The adapter must be in its pairing window.
+#[cfg(target_os = "macos")]
+pub async fn pair(id: &str) -> Result<()> {
+    let ad = adapter().await?;
+    let p = find(&ad, id, Duration::from_secs(90)).await?;
+    p.connect().await?;
+    let outcome = async {
+        p.discover_services().await?;
+        let rx = p.characteristics().into_iter().find(|c| c.uuid == RX_UUID);
+        let Some(rx) = rx else { return err("device does not expose the kvm-it characteristics") };
+        let ping = kvmit_protocol::message::Request::Ping(Vec::new()).encode(0);
+        match tokio::time::timeout(Duration::from_secs(60), p.write(&rx, &ping, WriteType::WithResponse)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => err(format!(
+                "{e}. macOS pairs on first use: open the adapter's pairing window (re-plug it, or a short BOOT press), accept macOS's pairing prompt if one appears, and try again"
+            )),
+            Err(_) => err("pairing did not complete within 60 s (was macOS's pairing prompt accepted? is the adapter's pairing window open?)"),
+        }
+    }
+    .await;
+    let _ = p.disconnect().await;
+    outcome
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 pub async fn pair(_id: &str) -> Result<()> {
     err("pairing is not implemented on this platform")
 }
@@ -407,7 +448,12 @@ pub async fn unpair(id: &str) -> Result<()> {
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
+pub async fn unpair(_id: &str) -> Result<()> {
+    err("macOS has no API to forget a Bluetooth LE device: remove it in System Settings > Bluetooth (and hold BOOT 10 s on the adapter to erase its side)")
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 pub async fn unpair(_id: &str) -> Result<()> {
     err("remove the device in the OS Bluetooth settings")
 }

@@ -15,7 +15,7 @@ use std::time::Duration;
 #[derive(Parser)]
 #[command(name = "kvmit", version, about = "kvm-it controller: drive a target computer through the ESP32-S3 USB-HID adapter")]
 struct Cli {
-    /// Adapter address (default: the last one used, else the strongest in range)
+    /// Adapter id: its Bluetooth address (on macOS, the id macOS gave it) (default: the last one used, else the strongest in range)
     #[arg(long, global = true)]
     device: Option<String>,
     #[command(subcommand)]
@@ -90,6 +90,11 @@ enum Cmd {
         /// Skip the "this will type into the target" confirmation
         #[arg(long)]
         yes: bool,
+        /// Capture card for screen waits, by its key (stable across replugs) or path from `kvmit video list`.
+        /// Default: the card last opened in the app if it is connected, else (none remembered) the only card connected;
+        /// otherwise the run stops and asks. With `--device`, one adapter and card pair per process.
+        #[arg(long)]
+        video: Option<String>,
     },
     /// Convert a DuckyScript payload to the native format and list anything untranslatable
     Import {
@@ -158,9 +163,7 @@ fn real_main(cli: Cli) -> R<()> {
             let id = session::resolve(cli.device, None).await?;
             println!("pairing with {id} (the adapter must be in its pairing window: first 15 s after plug-in, or BOOT short press)…");
             backend::pair(&id).await?;
-            let mut c = cfg;
-            c.last_device = Some(id.clone());
-            c.save();
+            cfg.clone().update(|c| c.last_device = Some(id.clone()));
             let (dev, conn) = session::connect(&id).await?;
             println!("paired and connected: {} (firmware {}.{}.{})", dev.info().name, dev.info().fw[0], dev.info().fw[1], dev.info().fw[2]);
             dev.shutdown().await;
@@ -173,9 +176,7 @@ fn real_main(cli: Cli) -> R<()> {
         Cmd::Unpair => rt().block_on(async {
             let id = session::resolve(cli.device, cfg.last_device.clone()).await?;
             backend::unpair(&id).await?;
-            let mut c = cfg;
-            c.last_device = None;
-            c.save();
+            cfg.clone().update(|c| c.last_device = None);
             println!("removed pairing for {id}. To erase the adapter's side too, hold BOOT for 10 s.");
             Ok(())
         }),
@@ -231,7 +232,7 @@ fn real_main(cli: Cli) -> R<()> {
             script.vars.insert("t".into(), kvmit_script::VarDef { secret, ..Default::default() });
             script.steps.push(if secret { Step::SecretText("{{t}}".into()) } else { Step::Text("{{t}}".into()) });
             let vars: Vars = [("t".to_string(), text)].into();
-            execute(cli.device, cfg, script, PathBuf::from("."), vars, false, true)
+            execute(cli.device, None, cfg, script, PathBuf::from("."), vars, false, true)
         }
         Cmd::Key { keys, hold } => {
             if keys.is_empty() {
@@ -271,9 +272,9 @@ fn real_main(cli: Cli) -> R<()> {
             }
             let mut script = Script::default();
             script.steps.push(if keys.len() == 1 { Step::Key(keys[0].clone()) } else { Step::Chord(keys) });
-            execute(cli.device, cfg, script, PathBuf::from("."), Vars::new(), false, true)
+            execute(cli.device, None, cfg, script, PathBuf::from("."), Vars::new(), false, true)
         }
-        Cmd::Run { file, vars, dry_run, yes } => {
+        Cmd::Run { file, vars, dry_run, yes, video } => {
             let src = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             let script = Script::parse(&src)?;
             let mut v: Vars = vars.into_iter().collect();
@@ -297,7 +298,7 @@ fn real_main(cli: Cli) -> R<()> {
                 println!("  warning: types something that looks like a command: {s}");
             }
             let base = file.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
-            execute(cli.device, cfg, script, base, v, dry_run, yes || dry_run)
+            execute(cli.device, video, cfg, script, base, v, dry_run, yes || dry_run)
         }
         Cmd::Import { file, output } => {
             let src = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
@@ -326,14 +327,21 @@ fn real_main(cli: Cli) -> R<()> {
                     println!("no capture devices");
                 }
                 for x in d {
-                    println!("{}  {}", x.path, x.name);
+                    // the key is what `run --video` should be given: the path can change across replugs
+                    let key = if x.key != x.path { format!("  (key: {})", x.key) } else { String::new() };
+                    println!("{}  {}{key}", x.path, x.name);
                 }
                 Ok(())
             }
             VideoCmd::Snap { output, path, timeout } => {
-                let path = match path.or(cfg.last_video) {
+                let path = match path {
                     Some(p) => p,
-                    None => kvmit_video::list_devices().first().map(|d| d.path.clone()).ok_or("no capture device")?,
+                    None => {
+                        let devices = kvmit_video::list_devices();
+                        // the remembered device by its stable key, else the first one (an explicit command, not a startup guess)
+                        let i = kvmit::video_state::initial_video(&devices, cfg.last_video_key.as_deref(), cfg.last_video.as_deref()).unwrap_or(0);
+                        devices.get(i).map(|d| d.path.clone()).ok_or("no capture device")?
+                    }
                 };
                 let cap = kvmit_video::Capture::open(&path)?;
                 let deadline = std::time::Instant::now() + timeout;
@@ -378,9 +386,10 @@ fn with_device<T>(id: Option<String>, cfg: Config, f: impl FnOnce(&tokio::runtim
     let rt = rt();
     let id = rt.block_on(session::resolve(id, cfg.last_device.clone()))?;
     let (dev, conn) = rt.block_on(session::connect(&id))?;
-    let mut c = cfg;
-    c.last_device = Some(id);
-    c.save();
+    // skip a no-op save: several `kvmit` processes (one per adapter) may be running
+    if cfg.last_device.as_deref() != Some(id.as_str()) {
+        cfg.clone().update(|c| c.last_device = Some(id.clone()));
+    }
     let out = f(&rt, &dev);
     rt.block_on(async {
         dev.shutdown().await;
@@ -389,7 +398,8 @@ fn with_device<T>(id: Option<String>, cfg: Config, f: impl FnOnce(&tokio::runtim
     out
 }
 
-fn execute(id: Option<String>, cfg: Config, script: Script, base: PathBuf, vars: Vars, dry: bool, yes: bool) -> R<()> {
+#[allow(clippy::too_many_arguments)]
+fn execute(id: Option<String>, video: Option<String>, cfg: Config, script: Script, base: PathBuf, vars: Vars, dry: bool, yes: bool) -> R<()> {
     let ops = compile(&script, &vars, &UsAnsi)?;
     if !yes {
         print!("This will type into the target computer. Continue? [y/N] ");
@@ -405,16 +415,24 @@ fn execute(id: Option<String>, cfg: Config, script: Script, base: PathBuf, vars:
     ctrlc::set_handler(move || c2.store(true, Ordering::SeqCst)).ok();
     // Only open a capture device when the script waits on the screen: holding it otherwise blocks other users of
     // the card (e.g. `kvmit video snap`) for no reason.
-    let needs_video = ops.iter().any(|(_, o)| matches!(o, kvmit_script::Op::Wait(_)));
-    let video = if needs_video { kvmit_video::list_devices().first().and_then(|d| kvmit_video::Capture::open(&d.path).ok()) } else { None };
+    // A dry run skips waits, so it neither needs nor holds a card.
+    let video = if kvmit_script::exec::needs_video(&ops) && !dry {
+        let devices = kvmit_video::list_devices();
+        let d = &devices[kvmit::video_state::run_video(&devices, video.as_deref(), cfg.last_video_key.as_deref())?];
+        let cap = kvmit_video::Capture::open(&d.path).map_err(|e| format!("capture device {}: {e}", d.name))?;
+        // the path is only a handle: if the card was swapped between listing and opening, it names another one
+        if cap.info.key != d.key {
+            return Err(format!("capture device changed while opening {} (now {}): run again", d.key, cap.info.key).into());
+        }
+        Some(cap)
+    } else {
+        None
+    };
     let capture = Arc::new(std::sync::Mutex::new(video));
-    if needs_video && capture.lock().unwrap().is_none() {
-        eprintln!("note: this script waits on the screen but no capture device could be opened");
-    }
     with_device(id, cfg, |rt, dev| {
         let mut host = ScriptHost {
             rt: rt.handle().clone(),
-            dev: dev.clone(),
+            dev: Some(dev.clone()),
             capture: Some(capture),
             base_dir: base,
             cancel,

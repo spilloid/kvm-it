@@ -1,0 +1,94 @@
+name: AppImage
+
+# Builds the Linux AppImage the tested way (scripts/build-appimage.sh: Ubuntu 22.04 container, glibc floor check, pinned
+# appimagetool and runtime) and, for a release, attaches it with its checksum. Not code-signed (checksum only).
+#   - pull request touching the packaging: build + smoke test only, nothing attached
+#   - release published: build the tag and attach
+#   - manual: build a tag; attach it only when `attach` is true (use this to add an AppImage to an existing release)
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build (e.g. v0.4.5)
+        required: true
+        type: string
+      attach:
+        description: Attach the AppImage to that release
+        required: false
+        default: false
+        type: boolean
+  pull_request:
+    paths:
+      - scripts/build-appimage.sh
+      - scripts/appimage.Containerfile
+      - installer/linux/**
+      - .github/workflows/appimage.yml
+
+permissions:
+  contents: read
+
+jobs:
+  appimage:
+    name: Build the AppImage
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name || github.sha }}
+      - name: Check the tag against VERSION (releases and manual runs)
+        id: meta
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          if [ -n "$RELEASE_TAG" ]; then
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid release tag"; exit 1; }
+            [ "v$(tr -d '[:space:]' < VERSION)" = "$RELEASE_TAG" ] || { echo "VERSION does not match the tag"; exit 1; }
+          fi
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+      - name: Build
+        run: scripts/build-appimage.sh dist-linux
+      - name: Smoke test (extract it, run the CLI, check the version and the bundled firmware)
+        run: |
+          cd dist-linux
+          APP="$(ls kvm-it-*-x86_64.AppImage)"
+          chmod +x "$APP"
+          ./"$APP" --appimage-extract >/dev/null
+          want="$(tr -d '[:space:]' < ../VERSION)"
+          got="$(squashfs-root/usr/bin/kvmit --version)"
+          echo "kvmit --version: $got"
+          case "$got" in *"$want"*) ;; *) echo "version mismatch (want $want)"; exit 1;; esac
+          test -s squashfs-root/usr/bin/firmware/FIRMWARE.txt
+          (cd ../firmware/release && diff -r . ../../dist-linux/squashfs-root/usr/bin/firmware)
+          sha256sum --check --strict "$APP.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: |
+            dist-linux/kvm-it-*-x86_64.AppImage
+            dist-linux/kvm-it-*-x86_64.AppImage.sha256
+          if-no-files-found: error
+
+  attach:
+    name: Attach to the release
+    needs: appimage
+    if: ${{ needs.appimage.outputs.tag != '' && (github.event_name == 'release' || inputs.attach) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.appimage.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: appimage
+          path: assets
+      - name: Re-check, then upload
+        working-directory: assets
+        run: |
+          for f in *.sha256; do sha256sum --check --strict "$f"; done
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber *.AppImage *.sha256

@@ -154,8 +154,8 @@ Click("Type"); Shoot("05-type.png", "Type popup", "Type"); CloseTransient();
 // 6. scripts: pick a built-in script to show the preview
 Click("Scripts"); Click("[built-in] demo-notepad"); Shoot("06-scripts.png", "Scripts popup with a script's preview", "[built-in] demo-notepad", "Run"); 
 // 7. a dry run (types nothing), then the run log strip along the bottom
-Click("Dry run"); WaitFor("Script finished", 20000); CloseTransient();
-Shoot("07-run-log.png", "run-log strip after a dry run", "Script finished", "Clear");
+Click("Dry run"); WaitFor("Dry run finished", 20000); CloseTransient();
+Shoot("07-run-log.png", "run-log strip after a dry run", "Dry run finished", "Clear");
 // 8. capturing: the red frame and chip; release with the real chord
 Click("Clear"); Click("Input: click to capture"); Thread.Sleep(1200); moveAway = false;
 Shoot("08-capturing.png", "input captured: red chip and frame", "INPUT CAPTURED");

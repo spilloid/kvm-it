@@ -5,8 +5,6 @@ use kvmit_flash::{check_no_native_adapter, check_port, flash, list_ports, usb_de
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-const RED: egui::Color32 = egui::Color32::from_rgb(220, 70, 60);
-const GREEN: egui::Color32 = egui::Color32::from_rgb(60, 160, 90);
 
 #[derive(Clone, Default)]
 struct Progress {
@@ -192,14 +190,14 @@ impl Wizard {
             }
             match finished {
                 Some(Ok(report)) => {
-                    ui.colored_label(GREEN, format!("Flashed and verified{}.", report.mac.map(|m| format!(" ({m})")).unwrap_or_default()));
+                    ui.colored_label(crate::theme::palette(ui.visuals().dark_mode).good_text, format!("Flashed and verified{}.", report.mac.map(|m| format!(" ({m})")).unwrap_or_default()));
                     ui.label("The adapter restarts by itself. Unplug the COM cable and plug the board into the target when you are ready, then connect from the Adapter chip. If it was paired before, it keeps its pairing; if you erased everything, pair it again.");
                     if ui.button("Close").clicked() {
                         close = true;
                     }
                 }
                 Some(Err(e)) => {
-                    ui.colored_label(RED, "Flashing failed.");
+                    ui.colored_label(crate::theme::palette(ui.visuals().dark_mode).bad_text, "Flashing failed.");
                     ui.label(&e);
                     ui.weak("The board can be recovered: flash again. If it is not found, hold BOOT while plugging in the COM cable, then flash again.");
                     if ui.button("Try again").clicked() {
@@ -222,15 +220,15 @@ impl Wizard {
         });
         match &self.image {
             Ok(im) => {
-                ui.colored_label(GREEN, format!("Firmware OK: {} parts, {} bytes", im.parts.len(), im.total_bytes()));
+                ui.colored_label(crate::theme::palette(ui.visuals().dark_mode).good_text, format!("Firmware OK: {} parts, {} bytes", im.parts.len(), im.total_bytes()));
             }
             Err(e) if e.is_empty() => {}
             Err(e) => {
-                ui.colored_label(RED, e);
+                ui.colored_label(crate::theme::palette(ui.visuals().dark_mode).bad_text, e);
             }
         }
         if self.firmware.trim().is_empty() {
-            ui.colored_label(RED, "No firmware folder found next to the program: type the folder that holds flasher_args.json.");
+            ui.colored_label(crate::theme::palette(ui.visuals().dark_mode).bad_text, "No firmware folder found next to the program: type the folder that holds flasher_args.json.");
         }
         ui.separator();
         ui.horizontal(|ui| {
@@ -270,7 +268,7 @@ impl Wizard {
         ui.add_space(4.0);
         let reasons = blockers(self.image.is_ok(), self.native.as_deref(), external, self.selected(), self.erase_all, self.erase_ack, false);
         for r in &reasons {
-            ui.colored_label(RED, r);
+            ui.colored_label(crate::theme::palette(ui.visuals().dark_mode).bad_text, r);
         }
         ui.weak("Keep the board's native USB port unplugged from this computer: it acts as a keyboard and mouse.");
         if ui.add_enabled(reasons.is_empty(), egui::Button::new("Flash adapter")).clicked() {

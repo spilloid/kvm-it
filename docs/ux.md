@@ -25,11 +25,21 @@ The picture is the window. A single top bar holds everything else:
 
 - **Adapter**, **Target USB**, **Video**, **Input**: status chips filled with their health colour. *Adapter*, *Video*
   and *Input* open the controls they describe (scan/pair/connect, device and mode, capture), and the *Input* chip
-  starts capture when clicked. *Target USB* is an indicator only.
+  starts capture when clicked. *Target USB* is an indicator only: a coloured label, not a button (screen readers and UI
+  Automation still read it by name, "Target USB: ..."). A control that cannot be used right now is greyed out and says why on
+  hover (no adapter, a script running, text the layout cannot type).
 - **Keys**, **Type**, **Scripts**: buttons that open popups (chords the OS would swallow; typing a string, masked
   if secret; the script library, variables, preview, run and dry run). Popups stay open until you click outside.
-- While input is captured only the *Input* chip is live: every key belongs to the target.
-- A running script's log is a strip along the bottom, with Abort, and outlives any popup.
+- While input is captured only the *Input* chip is live: every key belongs to the target. The mouse wheel is forwarded in
+  notches: pixel deltas (touchpads) are accumulated and sent as whole notches, line deltas as they are.
+- **Record…** opens the recording popup (GIF, or WebM with optional sound; off by default, with a no-redaction warning). While recording it becomes a red **REC** chip, always live, one click to stop.
+- **Theme** cycles auto (follows the system), light, dark; the choice is remembered. Status colours are chosen per mode and held to WCAG AA contrast (4.5:1) by tests.
+- A running script's log is a strip along the bottom, with Abort, and outlives any popup. Its header reports the outcome,
+  colour-coded: *Finished*, *Dry run finished*, *Aborted: reason* or *Failed: reason*. A dry run sends nothing, so it works
+  without an adapter.
+- Notices (amber line under the bar) can be dismissed, clear themselves when their cause goes away (e.g. video is showing
+  again) or after 15 s, and never hide the adapter-link error, which has its own line. *Type* keeps your text until the run
+  has actually started, and flags characters the US layout cannot type before you click.
 - The chips and buttons are exposed to screen readers and UI Automation by name.
 
 <img src="assets/screenshots/01-overview.png" alt="The window: chips and buttons along the top, the picture filling the rest" style="max-width:100%">
@@ -104,8 +114,11 @@ selected keyboard layout abstraction, not the payload's assumptions.
 - **Preview before run:** shows step count, total typed characters (secrets counted, not shown), and any
   `text` that looks like a command. Scripts from files you did not write get an explicit "this will type
   commands into the target" confirmation — a script is remote code execution on the target by design.
-- **Controls:** run / pause / step / abort. Abort (and any error) sends release-all. A global abort chord works
-  even when the target is mid-typing.
+- **Controls:** run / pause / step / abort (the GUI today has run, dry run and abort). Abort (and any error) sends
+  release-all. **Esc aborts a running script** from anywhere in the window, even mid-typing on the target, except while a
+  text field has focus (there Esc just leaves the field, so editing a variable can never abort a run by accident; use the
+  Abort button). Plain Esc only: Ctrl+Alt+Esc stays the capture-release chord. While input is captured no script can be
+  running, so Esc then belongs to the target.
 - **Run log:** step names, timings, outcomes; never typed text or secret values.
 - **Dry-run** against the live preview without sending anything (highlights what would be typed).
 - **Library:** scripts are plain files in a folder (and a built-in set), so they can be versioned in git and

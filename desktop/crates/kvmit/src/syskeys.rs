@@ -1,6 +1,8 @@
 //! OS-level keyboard capture. While input is captured, every key belongs to the target: the controller's OS must not
-//! act on Win, Alt+Tab, Ctrl+Esc, Alt+F4 and friends. On Windows a low-level keyboard hook swallows each key locally
-//! and hands it to the app; elsewhere `Grab::start` returns `None` and the GUI keeps using egui's key events.
+//! act on Win, Alt+Tab, Ctrl+Esc, Alt+F4 (macOS: Cmd+Tab, Cmd+Space, Cmd+Q) and friends. On Windows a low-level keyboard
+//! hook (in a helper process) swallows each key locally and hands it to the app; on macOS a Quartz event tap does the
+//! same in-process and needs the Accessibility permission. Elsewhere, or without the permission, `Grab::start` returns
+//! `None` and the GUI keeps using egui's key events.
 //!
 //! The logic (physical key -> HID usage, auto-repeat, the Ctrl+Alt+Esc release chord) is pure and unit-tested
 //! here; the Windows glue below it only moves events across a channel. Ctrl+Alt+Del and Win+L are handled by Windows
@@ -162,7 +164,12 @@ impl Tracker {
         if raw.extended && (raw.scan == 0x2A || raw.scan == 0x36) {
             return Action::Swallow(None);
         }
-        let Some(key) = usage(raw) else { return Action::Pass };
+        self.on_usage(usage(raw), down)
+    }
+
+    /// The platform-independent part: a key already mapped to its HID usage (`None`: one we cannot forward).
+    pub fn on_usage(&mut self, key: Option<Key>, down: bool) -> Action {
+        let Some(key) = key else { return Action::Pass };
 
         if key == Key::ESC {
             let ctrl = self.is_down(Key::LEFT_CTRL) || self.is_down(Key(0xE4));
@@ -196,6 +203,105 @@ impl Tracker {
         }
     }
 }
+
+/// macOS virtual key code (kVK_*, which is positional, like a scan code) -> USB HID usage. Known gap: on ISO Apple
+/// keyboards macOS swaps the codes of the key left of 1 and the key left of Z; this table follows the ANSI meaning.
+/// `None` for keys the adapter
+/// cannot send (Fn, media keys) and for the modifiers, which arrive as flag changes (see `mac_modifier`).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn mac_usage(code: u16) -> Option<Key> {
+    // ANSI letters/digits/punctuation, indexed by kVK code 0x00..=0x32.
+    const MAIN: [u8; 0x33] = [
+        0x04, 0x16, 0x07, 0x09, 0x0B, 0x0A, 0x1D, 0x1B, 0x06, 0x19, // a s d f h g z x c v
+        0x64, 0x05, 0x14, 0x1A, 0x08, 0x15, 0x1C, 0x17, 0x1E, 0x1F, // ISO-section b q w e r y t 1 2
+        0x20, 0x21, 0x23, 0x22, 0x2E, 0x26, 0x24, 0x2D, 0x25, 0x27, // 3 4 6 5 = 9 7 - 8 0
+        0x30, 0x12, 0x18, 0x2F, 0x0C, 0x13, 0x28, 0x0F, 0x0D, 0x34, // ] o u [ i p Return l j '
+        0x0E, 0x33, 0x31, 0x36, 0x38, 0x11, 0x10, 0x37, 0x2B, 0x2C, // k ; \ , / n m . Tab Space
+        0x35, // `
+    ];
+    let u: u8 = match code {
+        0x00..=0x32 => MAIN[code as usize],
+        0x33 => 0x2A, // Delete (backspace)
+        0x35 => 0x29, // Escape
+        0x39 => 0x39, // CapsLock (handled as a tap: see the macOS grab)
+        0x40 => 0x6C, // F17
+        0x41 => 0x63, // keypad .
+        0x43 => 0x55, // keypad *
+        0x45 => 0x57, // keypad +
+        0x47 => 0x53, // keypad Clear = NumLock position
+        0x4B => 0x54, // keypad /
+        0x4C => 0x58, // keypad Enter
+        0x4E => 0x56, // keypad -
+        0x4F => 0x6D, // F18
+        0x50 => 0x6E, // F19
+        0x51 => 0x67, // keypad =
+        0x52 => 0x62, // keypad 0
+        0x53..=0x59 => 0x59 + (code - 0x53) as u8, // keypad 1..7
+        0x5A => 0x6F, // F20
+        0x5B => 0x60, // keypad 8
+        0x5C => 0x61, // keypad 9
+        0x5D => 0x89, // JIS Yen
+        0x5E => 0x87, // JIS underscore (International1)
+        0x5F => 0x85, // JIS keypad comma
+        0x60 => 0x3E, // F5
+        0x61 => 0x3F, // F6
+        0x62 => 0x40, // F7
+        0x63 => 0x3C, // F3
+        0x64 => 0x41, // F8
+        0x65 => 0x42, // F9
+        0x66 => 0x91, // JIS Eisu (LANG2)
+        0x67 => 0x44, // F11
+        0x68 => 0x90, // JIS Kana (LANG1)
+        0x69 => 0x68, // F13
+        0x6A => 0x6B, // F16
+        0x6B => 0x69, // F14
+        0x6D => 0x43, // F10
+        0x6E => 0x65, // ContextualMenu -> Menu
+        0x6F => 0x45, // F12
+        0x71 => 0x6A, // F15
+        0x72 => 0x49, // Help -> Insert (same position on full keyboards)
+        0x73 => 0x4A, // Home
+        0x74 => 0x4B, // PageUp
+        0x75 => 0x4C, // Forward Delete
+        0x76 => 0x3D, // F4
+        0x77 => 0x4D, // End
+        0x78 => 0x3B, // F2
+        0x79 => 0x4E, // PageDown
+        0x7A => 0x3A, // F1
+        0x7B => 0x50, // Left
+        0x7C => 0x4F, // Right
+        0x7D => 0x51, // Down
+        0x7E => 0x52, // Up
+        _ => return mac_modifier(code).map(|(k, _)| k),
+    };
+    Some(Key(u))
+}
+
+/// A macOS modifier key code -> its HID usage and the device-dependent flag bit (NX_DEVICE*KEYMASK) that says whether
+/// that exact key (left or right) is down after a flags-changed event.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn mac_modifier(code: u16) -> Option<(Key, u64)> {
+    Some(match code {
+        0x3B => (Key::LEFT_CTRL, 0x0001),
+        0x3E => (Key(0xE4), 0x2000), // right Control
+        0x38 => (Key::LEFT_SHIFT, 0x0002),
+        0x3C => (Key(0xE5), 0x0004), // right Shift
+        0x3A => (Key::LEFT_ALT, 0x0020), // Option
+        0x3D => (Key(0xE6), 0x0040), // right Option
+        0x37 => (Key::LEFT_GUI, 0x0008), // Command
+        0x36 => (Key(0xE7), 0x0010), // right Command
+        _ => return None,
+    })
+}
+
+/// For a flags-changed event: is the modifier `code` down now? `None` if `code` is not a tracked modifier.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn mac_modifier_down(code: u16, flags: u64) -> Option<bool> {
+    mac_modifier(code).map(|(_, bit)| flags & bit != 0)
+}
+
+/// The release chord as this platform's keyboard labels it.
+pub const RELEASE_CHORD: &str = if cfg!(target_os = "macos") { "Ctrl+Option+Esc" } else { "Ctrl+Alt+Esc" };
 
 #[cfg(windows)]
 mod imp {
@@ -512,7 +618,227 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod imp {
+    //! A Quartz event tap on a private run-loop thread. It swallows keyboard events while capture is on and hands them
+    //! to the GUI. Safety valve, as on Windows: if the GUI stops draining (hung) for `HEARTBEAT_TIMEOUT`, or macOS turns
+    //! the tap off, the grab gives up for good: it passes everything to macOS from then on and queues a release, so the GUI
+    //! ends capture and releases every key on the target as soon as it runs again (no modifier is left held there).
+    //! After the release chord everything passes through too.
+    use super::{mac_modifier_down, mac_usage, Action, Event, Tracker};
+    use kvmit_hid::Key;
+    use objc2_core_foundation::{kCFRunLoopCommonModes, CFMachPort, CFRunLoop};
+    use objc2_core_foundation::kCFRunLoopDefaultMode;
+    use objc2_core_graphics::{
+        CGEvent, CGEventField, CGEventMask, CGEventSource, CGEventSourceStateID, CGEventTapLocation, CGEventTapOptions,
+        CGEventTapPlacement, CGEventTapProxy, CGEventType, CGPreflightPostEventAccess, CGRequestPostEventAccess,
+    };
+    use std::ffi::c_void;
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(3);
+
+    struct State {
+        tracker: Mutex<Tracker>,
+        tx: Mutex<Sender<Event>>,
+        wake: Box<dyn Fn() + Send + Sync>,
+        epoch: Instant,
+        last_beat_ms: AtomicU64,
+        released: AtomicBool,
+    }
+
+    impl State {
+        fn stale(&self) -> bool {
+            let now = self.epoch.elapsed().as_millis() as u64;
+            now.saturating_sub(self.last_beat_ms.load(Ordering::SeqCst)) > HEARTBEAT_TIMEOUT.as_millis() as u64
+        }
+        fn send(&self, ev: Event) {
+            let _ = self.tx.lock().unwrap().send(ev);
+            (self.wake)();
+        }
+        /// Give the keyboard back for good: pass everything from now on, and tell the GUI to end capture (which releases
+        /// every key on the target). Only the first call queues the release.
+        fn give_up(&self) {
+            if !self.released.swap(true, Ordering::SeqCst) {
+                self.send(Event::Release);
+            }
+        }
+    }
+
+    /// Keys physically down right now (as macOS's HID state sees them), so a key held when capture began is treated like
+    /// on Windows: its repeats and release go to macOS, and a held Ctrl still counts for the release chord.
+    fn held_keys() -> Vec<Key> {
+        (0u16..0x80)
+            .filter(|c| CGEventSource::key_state(CGEventSourceStateID::HIDSystemState, *c))
+            .filter_map(mac_usage)
+            .collect()
+    }
+
+    /// The tap callback. Returns the event to let macOS have it, null to swallow it.
+    unsafe extern "C-unwind" fn on_event(_proxy: CGEventTapProxy, ty: CGEventType, event: NonNull<CGEvent>, user: *mut c_void) -> *mut CGEvent {
+        let pass = event.as_ptr();
+        // SAFETY: `user` is the `State` the tap thread keeps alive for as long as the tap exists.
+        let st = unsafe { &*(user as *const State) };
+        if ty == CGEventType::TapDisabledByTimeout || ty == CGEventType::TapDisabledByUserInput {
+            // macOS turned the tap off, so keys may already have reached macOS unseen: the tracked state is no longer
+            // trustworthy. Give up rather than re-enable on top of it.
+            st.give_up();
+            return pass;
+        }
+        if st.released.load(Ordering::SeqCst) {
+            return pass;
+        }
+        if st.stale() {
+            st.give_up(); // the GUI hung: never trap the Mac's keyboard, and have the target released when it resumes
+            return pass;
+        }
+        let ev = unsafe { event.as_ref() };
+        let code = CGEvent::integer_value_field(Some(ev), CGEventField::KeyboardEventKeycode) as u16;
+        let down = match ty {
+            CGEventType::KeyDown => true,
+            CGEventType::KeyUp => false,
+            CGEventType::FlagsChanged => {
+                if code == 0x39 {
+                    // CapsLock reports only its toggles: forward each as a tap.
+                    st.send(Event::Down(Key(0x39)));
+                    st.send(Event::Up(Key(0x39)));
+                    return std::ptr::null_mut();
+                }
+                match mac_modifier_down(code, CGEvent::flags(Some(ev)).0) {
+                    Some(d) => d,
+                    None => return pass, // Fn and other flag changes stay with macOS
+                }
+            }
+            _ => return pass,
+        };
+        let action = st.tracker.lock().unwrap().on_usage(mac_usage(code), down);
+        match action {
+            Action::Pass => pass,
+            Action::Swallow(Some(e)) => {
+                if e == Event::Release {
+                    st.released.store(true, Ordering::SeqCst);
+                }
+                st.send(e);
+                std::ptr::null_mut()
+            }
+            Action::Swallow(None) => std::ptr::null_mut(),
+        }
+    }
+
+    pub struct Grab {
+        rx: Receiver<Event>,
+        state: Arc<State>,
+        /// Tells the tap thread to leave its run loop (it checks every `LOOP_SLICE`; no cross-thread CFRunLoopStop, which a
+        /// stop arriving before the loop runs would lose).
+        shutdown: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    const LOOP_SLICE: f64 = 0.1;
+
+    impl Grab {
+        /// Start the tap. `None` without the Accessibility permission (macOS is then asked to show its prompt once; the
+        /// GUI falls back to egui's key events and says why).
+        pub fn start(wake: impl Fn() + Send + Sync + 'static) -> Option<Grab> {
+            let (tx, rx) = channel();
+            let state = Arc::new(State {
+                tracker: Mutex::new(Tracker::with_pre_held(held_keys())),
+                tx: Mutex::new(tx),
+                wake: Box::new(wake),
+                epoch: Instant::now(),
+                last_beat_ms: AtomicU64::new(0),
+                released: AtomicBool::new(false),
+            });
+            let (ready_tx, ready_rx) = channel::<bool>();
+            let st = state.clone();
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let stop = shutdown.clone();
+            let thread = std::thread::Builder::new()
+                .name("kvmit-keyboard-grab".into())
+                .spawn(move || {
+                    let mask: CGEventMask =
+                        (1 << CGEventType::KeyDown.0) | (1 << CGEventType::KeyUp.0) | (1 << CGEventType::FlagsChanged.0);
+                    // SAFETY: the callback only reads `st`, which this thread keeps alive until the tap is gone.
+                    let port = unsafe {
+                        CGEvent::tap_create(
+                            CGEventTapLocation::SessionEventTap,
+                            CGEventTapPlacement::HeadInsertEventTap,
+                            CGEventTapOptions::Default,
+                            mask,
+                            Some(on_event),
+                            Arc::as_ptr(&st) as *mut c_void,
+                        )
+                    };
+                    let (Some(port), Some(run_loop)) = (port, CFRunLoop::current()) else {
+                        let _ = ready_tx.send(false);
+                        return;
+                    };
+                    let Some(source) = CFMachPort::new_run_loop_source(None, Some(&port), 0) else {
+                        let _ = ready_tx.send(false);
+                        return;
+                    };
+                    run_loop.add_source(Some(&source), unsafe { kCFRunLoopCommonModes });
+                    CGEvent::tap_enable(&port, true);
+                    let _ = ready_tx.send(true);
+                    // Short slices, so a shutdown request (also one made before the loop first ran) is always seen.
+                    while !stop.load(Ordering::SeqCst) {
+                        CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, LOOP_SLICE, false);
+                    }
+                    CGEvent::tap_enable(&port, false);
+                    port.invalidate(); // no callback can run after this; `st` outlives it
+                })
+                .ok()?;
+            match ready_rx.recv_timeout(Duration::from_secs(3)) {
+                Ok(true) => {
+                    state.last_beat_ms.store(state.epoch.elapsed().as_millis() as u64, Ordering::SeqCst);
+                    Some(Grab { rx, state, shutdown, thread: Some(thread) })
+                }
+                _ => {
+                    // Failed, or slow to start: make sure a late start leaves at once (and never swallows), then wait for
+                    // the thread, which is bounded by one loop slice once it sees the flag.
+                    state.released.store(true, Ordering::SeqCst);
+                    shutdown.store(true, Ordering::SeqCst);
+                    let _ = thread.join();
+                    if !CGPreflightPostEventAccess() {
+                        CGRequestPostEventAccess(); // macOS shows its Accessibility prompt (once)
+                    }
+                    None
+                }
+            }
+        }
+
+        /// Events since the last call, in order; also the heartbeat that keeps the tap swallowing.
+        pub fn drain(&mut self) -> Vec<Event> {
+            self.state.last_beat_ms.store(self.state.epoch.elapsed().as_millis() as u64, Ordering::SeqCst);
+            self.rx.try_iter().collect()
+        }
+    }
+
+    impl Drop for Grab {
+        fn drop(&mut self) {
+            self.state.released.store(true, Ordering::SeqCst); // pass everything from this instant
+            self.shutdown.store(true, Ordering::SeqCst);
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
+
+    pub fn run_helper_if_requested() -> bool {
+        false
+    }
+
+    /// Why there is no OS-level grab, for the GUI to show once.
+    pub fn unavailable_hint() -> Option<&'static str> {
+        Some("macOS is keeping Cmd+Tab, Cmd+Space, Cmd+Q and similar shortcuts for itself: allow kvm-it in System Settings > Privacy & Security > Accessibility, then capture again so they go to the target. Until then use the Keys menu for them.")
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use super::Event;
 
@@ -529,9 +855,64 @@ mod imp {
     pub fn run_helper_if_requested() -> bool {
         false
     }
+    /// No OS-level grab here; egui's key events are used, which is fine on Linux desktops.
+    pub fn unavailable_hint() -> Option<&'static str> {
+        None
+    }
 }
 
+#[cfg(windows)]
+pub fn unavailable_hint() -> Option<&'static str> {
+    None
+}
+#[cfg(not(windows))]
+pub use imp::unavailable_hint;
 pub use imp::{run_helper_if_requested, Grab};
+
+#[cfg(test)]
+mod mac_tests {
+    use super::*;
+
+    #[test]
+    fn mac_letters_digits_and_named_keys_agree_with_the_name_parser() {
+        for (code, name) in [(0x00, "A"), (0x0B, "B"), (0x08, "C"), (0x06, "Z"), (0x0C, "Q"), (0x12, "1"), (0x1D, "0"),
+                             (0x24, "ENTER"), (0x35, "ESC"), (0x30, "TAB"), (0x31, "SPACE"), (0x33, "BACKSPACE"),
+                             (0x75, "DELETE"), (0x7A, "F1"), (0x6F, "F12"), (0x7E, "UP"), (0x7B, "LEFT"), (0x73, "HOME")] {
+            assert_eq!(mac_usage(code), kvmit_hid::parse_key(name), "kVK 0x{code:02X} should be {name}");
+        }
+    }
+
+    #[test]
+    fn every_mapped_mac_code_is_a_distinct_valid_usage() {
+        let mut seen = std::collections::HashMap::new();
+        for code in 0u16..0x80 {
+            if let Some(k) = mac_usage(code) {
+                assert!(k.is_valid(), "0x{code:02X}");
+                assert!(seen.insert(k, code).is_none(), "0x{code:02X} and 0x{:02X} both map to {k:?}", seen[&k]);
+            }
+        }
+        let letters = (0x04..=0x1D).filter(|u| seen.contains_key(&Key(*u))).count();
+        assert_eq!(letters, 26);
+    }
+
+    #[test]
+    fn mac_modifiers_read_their_own_left_or_right_bit() {
+        assert_eq!(mac_usage(0x3B), Some(Key::LEFT_CTRL));
+        assert_eq!(mac_usage(0x36), Some(Key(0xE7)), "right Command");
+        assert_eq!(mac_modifier_down(0x3B, 0x0001), Some(true));
+        assert_eq!(mac_modifier_down(0x3B, 0x2000), Some(false), "right Control down does not mean left is");
+        assert_eq!(mac_modifier_down(0x3A, 0x0020 | 0x80000), Some(true));
+        assert_eq!(mac_modifier_down(0x3F, 0xFFFF), None, "Fn is not forwarded");
+    }
+
+    #[test]
+    fn the_release_chord_works_from_mac_codes() {
+        let mut t = Tracker::default();
+        assert_eq!(t.on_usage(mac_usage(0x3B), true), Action::Swallow(Some(Event::Down(Key::LEFT_CTRL))));
+        assert_eq!(t.on_usage(mac_usage(0x3A), true), Action::Swallow(Some(Event::Down(Key::LEFT_ALT))));
+        assert_eq!(t.on_usage(mac_usage(0x35), true), Action::Swallow(Some(Event::Release)));
+    }
+}
 
 #[cfg(test)]
 mod tests {
