@@ -7,6 +7,10 @@
     <MajorUpgrade DowngradeErrorMessage="A newer version of kvm-it is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- the icon in Settings > Apps / Programs and Features (the exes carry the same icon for Explorer and the shortcut) -->
+    <Icon Id="kvmit.ico" SourceFile="$(sys.SOURCEFILEDIR)..\desktop\crates\kvmit\assets\kvmit.ico" />
+    <Property Id="ARPPRODUCTICON" Value="kvmit.ico" />
+
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="kvm-it" />
     </StandardDirectory>
@@ -31,6 +35,12 @@
       </Component>
       <Component Id="NoticesFile" Guid="*">
         <File Id="ThirdPartyNotices" Source="$(SourceDir)\THIRD_PARTY_NOTICES.md" Name="THIRD_PARTY_NOTICES.md" KeyPath="yes" />
+      </Component>
+      <Component Id="FirmwareLicensesFile" Guid="*">
+        <File Id="FirmwareLicenses" Source="$(SourceDir)\THIRD_PARTY_FIRMWARE_LICENSES.txt" Name="THIRD_PARTY_FIRMWARE_LICENSES.txt" KeyPath="yes" />
+      </Component>
+      <Component Id="LicensesFile" Guid="*">
+        <File Id="ThirdPartyLicenses" Source="$(SourceDir)\THIRD_PARTY_LICENSES.html" Name="THIRD_PARTY_LICENSES.html" KeyPath="yes" />
       </Component>
       <!-- the adapter firmware that Flash adapter... writes; the app looks for a "firmware" folder next to itself -->
       <Component Id="FwManifest" Guid="*" Subdirectory="firmware">
