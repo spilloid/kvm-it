@@ -18,7 +18,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 install -m 755 "$BIN/kvmit-gui" "$BIN/kvmit" "$APP/Contents/MacOS/"
 # the adapter firmware Flash adapter... writes: a `firmware` folder next to the executables
 cp -R "$ROOT/firmware/release" "$APP/Contents/MacOS/firmware"
-cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/"
+cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/THIRD_PARTY_LICENSES.html" "$ROOT/THIRD_PARTY_FIRMWARE_LICENSES.txt" "$APP/Contents/Resources/"
 
 # icon: build an .icns from the 256 px logo (sips resizes, iconutil packs)
 ICONSET="$OUT/kvm-it.iconset"

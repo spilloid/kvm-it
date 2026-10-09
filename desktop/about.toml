@@ -1,0 +1,22 @@
+# cargo-about: the licence listing shipped as THIRD_PARTY_LICENSES.html (regenerate with scripts/rs.sh licenses).
+# Only what ends up in the shipped programs: build and dev dependencies are left out.
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnu", "aarch64-apple-darwin"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "BSL-1.0",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+    "LicenseRef-UFL-1.0",
+]

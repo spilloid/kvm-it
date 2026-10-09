@@ -73,6 +73,8 @@ jobs:
           echo "kvmit --version: $got"
           case "$got" in *"$want"*) ;; *) echo "version mismatch (want $want)"; exit 1;; esac
           hdiutil verify dist-macos/kvm-it-*.dmg
+          python3 scripts/licenses.py --check
+          for f in LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.html THIRD_PARTY_FIRMWARE_LICENSES.txt; do cmp "$f" "dist-macos/stage/kvm-it.app/Contents/Resources/$f"; done
           shasum -a 256 -c dist-macos/kvm-it-*.dmg.sha256 2>/dev/null || (cd dist-macos && shasum -a 256 -c kvm-it-*.dmg.sha256)
       - uses: actions/upload-artifact@v4
         with:

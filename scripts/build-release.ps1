@@ -30,7 +30,7 @@ if ($Stage -in 'all', 'stage') {
     if (Test-Path $stageDir) { Remove-Item $stageDir -Recurse -Force }
     $app = (New-Item -ItemType Directory -Force $app).FullName
     foreach ($f in 'kvmit.exe', 'kvmit-gui.exe') { Copy-Item (Join-Path $ExeDir $f) $app }
-    foreach ($f in 'README.md', 'LICENSE', 'CHANGELOG.md', 'THIRD_PARTY_NOTICES.md') { Copy-Item $f $app }
+    foreach ($f in 'README.md', 'LICENSE', 'CHANGELOG.md', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.html', 'THIRD_PARTY_FIRMWARE_LICENSES.txt') { Copy-Item $f $app }
     # the adapter firmware the app's Flash adapter... flashes; the app looks for a `firmware` folder next to itself
     Copy-Item 'firmware/release' (Join-Path $app 'firmware') -Recurse
     # 1. sign the executables first, so the MSI and the zip both carry signed binaries

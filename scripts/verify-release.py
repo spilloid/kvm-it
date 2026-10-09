@@ -4,7 +4,7 @@
   scripts/verify-release.py <dist-dir> <tag> [--no-msi] [--require-signed]
 
 Checks the hashes, the zip's exact contents and CRCs, that both executables are 64-bit Windows PE files with the
-right subsystem (kvmit.exe console, kvmit-gui.exe GUI), that the version stamp, README, VERSION and the
+right subsystem (kvmit.exe console, kvmit-gui.exe GUI), that the version stamp and the Windows version resource, README, VERSION and the
 CHANGELOG agree with the tag (STD-003 rule 1), and reports whether a signature blob is present. A signature blob is
 NOT proof the signature is valid: validity is checked by Get-AuthenticodeSignature in build-release.ps1 on Windows.
 """
@@ -27,6 +27,59 @@ def pe_info(data, name):
     dd = opt + (112 if magic == 0x20B else 96)          # data directories
     sec_off, sec_size = struct.unpack_from("<II", data, dd + 4 * 8)   # IMAGE_DIRECTORY_ENTRY_SECURITY
     return machine, subsystem, sec_size
+
+def pe_resources(data, name):
+    """The resource tree as {type id: [(name id, bytes)]}, read through the resource data directory like Windows does."""
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    nsec, optsize = struct.unpack_from("<H", data, pe + 6)[0], struct.unpack_from("<H", data, pe + 20)[0]
+    opt = pe + 24
+    dd = opt + (112 if struct.unpack_from("<H", data, opt)[0] == 0x20B else 96)
+    rsrc_rva, rsrc_size = struct.unpack_from("<II", data, dd + 2 * 8)   # IMAGE_DIRECTORY_ENTRY_RESOURCE
+    if not rsrc_rva or not rsrc_size:
+        die(f"{name}: no resource directory (icon and version information missing)")
+    sections = [struct.unpack_from("<IIII", data, opt + optsize + 40 * i + 8) for i in range(nsec)]
+    def off(rva):
+        for vsize, va, rawsize, raw in sections:
+            if va <= rva < va + max(vsize, rawsize):
+                return raw + rva - va
+        die(f"{name}: resource RVA {rva:#x} is outside every section")
+    base = off(rsrc_rva)
+    def entries(d):
+        named, ids = struct.unpack_from("<HH", data, base + d + 12)
+        for i in range(named + ids):
+            ident, target = struct.unpack_from("<II", data, base + d + 16 + 8 * i)
+            yield ident, target
+    tree = {}
+    for rtype, t in entries(0):
+        for rname, n in entries(t & 0x7FFFFFFF):
+            for _lang, leaf in entries(n & 0x7FFFFFFF):
+                rva, size = struct.unpack_from("<II", data, base + leaf)
+                tree.setdefault(rtype, []).append((rname, data[off(rva):off(rva) + size]))
+    return tree
+
+def check_resources(data, name, exe, ver):
+    """Windows shows these: the icon in Explorer and on the shortcut, the version in Properties > Details."""
+    tree = pe_resources(data, name)
+    if not tree.get(14) or not tree.get(3):                              # RT_GROUP_ICON, RT_ICON
+        die(f"{name}: no icon resource")
+    versions = tree.get(16, [])                                          # RT_VERSION
+    if len(versions) != 1:
+        die(f"{name}: expected one version resource, found {len(versions)}")
+    block = versions[0][1]
+    key = "VS_VERSION_INFO\0".encode("utf-16-le")
+    fixed = (6 + len(key) + 3) & ~3
+    if block[6:6 + len(key)] != key or struct.unpack_from("<I", block, fixed)[0] != 0xFEEF04BD:
+        die(f"{name}: malformed version resource")
+    want = tuple(int(x) for x in ver.split(".")) + (0,)
+    fms, fls, pms, pls = struct.unpack_from("<IIII", block, fixed + 8)
+    for label, ms, ls in (("file", fms, fls), ("product", pms, pls)):
+        if (ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF) != want:
+            die(f"{name}: {label} version {ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}, expected {ver}.0")
+    for field, value in (("ProductVersion", ver), ("FileVersion", ver), ("OriginalFilename", exe), ("ProductName", "kvm-it")):
+        m = re.search(re.escape(f"{field}\0".encode("utf-16-le")) + rb"(?:\0\0)?((?:[^\0].|\0[^\0])*?)\0\0", block, re.S)
+        got = m.group(1).decode("utf-16-le", "replace") if m else None
+        if got != value:
+            die(f"{name}: version string {field} is {got!r}, expected {value!r}")
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -64,7 +117,7 @@ def main():
     fw_files = sorted(str(p.relative_to(fw_dir)).replace("\\", "/") for p in fw_dir.rglob("*") if p.is_file())
     if not fw_files:
         die(f"{fw_dir} holds no firmware: the app's Flash adapter... would have nothing to flash")
-    expected = {f"kvmit/{n}" for n in ("kvmit.exe", "kvmit-gui.exe", "README.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md")}
+    expected = {f"kvmit/{n}" for n in ("kvmit.exe", "kvmit-gui.exe", "README.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_LICENSES.html", "THIRD_PARTY_FIRMWARE_LICENSES.txt")}
     expected |= {f"kvmit/firmware/{n}" for n in fw_files}
     zpath = dist / f"{base}.zip"
     signed = {}
@@ -105,8 +158,17 @@ def main():
                 die(f"{exe}: subsystem {subsystem}, expected {want_subsystem}")
             if ver.encode() not in data:
                 die(f"{exe}: the version {ver} is not stamped into the binary")
+            check_resources(data, exe, exe, ver)   # from desktop/crates/kvmit/build.rs
             signed[exe] = sec > 0
-            print(f"ok  {exe}: {len(data)} bytes, x64, subsystem {subsystem}, version {ver} stamped, signature blob: {'yes' if sec else 'NO'}")
+            print(f"ok  {exe}: {len(data)} bytes, x64, subsystem {subsystem}, version {ver} stamped, icon and version resource ok, signature blob: {'yes' if sec else 'NO'}")
+        for n in ("LICENSE", "THIRD_PARTY_NOTICES.md", "THIRD_PARTY_LICENSES.html", "THIRD_PARTY_FIRMWARE_LICENSES.txt"):
+            if z.read(f"kvmit/{n}").replace(b"\r\n", b"\n") != (fw_dir.parent.parent / n).read_bytes().replace(b"\r\n", b"\n"):
+                die(f"kvmit/{n} in the zip differs from the repository's {n}")
+        try:
+            subprocess.run([sys.executable, str(pathlib.Path(__file__).resolve().parent / "licenses.py"), "--check"], check=True)
+        except (subprocess.CalledProcessError, OSError):
+            die("THIRD_PARTY_LICENSES.html is stale or truncated (scripts/licenses.py --check)")
+        print("ok  licence files in the zip match the repository, and the listing is current")
         readme = z.read("kvmit/README.md").decode("utf-8", "replace")
         changelog = z.read("kvmit/CHANGELOG.md").decode("utf-8", "replace")
     if f"v{ver}" not in readme:
