@@ -12,14 +12,16 @@ import hashlib, pathlib, re, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / "THIRD_PARTY_LICENSES.html"
-STAMP = re.compile(r"<!-- inputs-sha256: ([0-9a-f]{64}) -->\n")
+STAMP = re.compile(r"<!-- inputs-sha256: ([0-9a-f]{64}) content-sha256: ([0-9a-f]{64}) -->\n")
+OLD_STAMP = re.compile(r"<!-- inputs-sha256: [0-9a-f]{64}[^>]*-->\n")
 MUST_NAME = ("btleplug", "eframe", "egui", "serialport", "espflash", "tokio")   # direct dependencies of the shipped app
 
 def inputs():
     d = ROOT / "desktop"
     files = [d / "Cargo.lock", d / "Cargo.toml", d / "about.toml", d / "about.hbs", ROOT / "scripts" / "rs.sh"]
-    files += sorted(d.glob("crates/*/Cargo.toml")) + sorted(p for p in (d / "vendor").rglob("*") if p.is_file())
-    return [p.relative_to(ROOT).as_posix() for p in files]
+    files += list(d.glob("crates/*/Cargo.toml")) + [p for p in (d / "vendor").rglob("*") if p.is_file()]
+    # sort the normalised strings, not the paths: Windows orders paths case-insensitively
+    return sorted(p.relative_to(ROOT).as_posix() for p in files)
 
 def inputs_hash():
     h = hashlib.sha256()
@@ -48,17 +50,22 @@ def main():
         sys.exit(2)
     if not OUT.exists():
         sys.exit(f"FAIL: {OUT.name} is missing: run scripts/rs.sh licenses")
-    text = OUT.read_text(encoding="utf-8")
-    m = STAMP.match(text)
+    text = OUT.read_text(encoding="utf-8").replace("\r\n", "\n")
+    content_hash = lambda body: hashlib.sha256(body.encode("utf-8")).hexdigest()
     if flag == "--stamp":
-        OUT.write_text(f"<!-- inputs-sha256: {inputs_hash()} -->\n" + (text[m.end():] if m else text), encoding="utf-8")
-        named, locked = check_content(text)
+        old = OLD_STAMP.match(text)
+        body = text[old.end():] if old else text
+        named, locked = check_content(body)
+        OUT.write_text(f"<!-- inputs-sha256: {inputs_hash()} content-sha256: {content_hash(body)} -->\n" + body, encoding="utf-8", newline="\n")
         print(f"stamped {OUT.name} (names {named} of {locked} locked crates)")
-    elif not m or m.group(1) != inputs_hash():
+        return
+    m = STAMP.match(text)
+    if not m or m.group(2) != content_hash(text[m.end():]):
+        sys.exit(f"FAIL: {OUT.name} was edited or truncated after it was generated: run scripts/rs.sh licenses")
+    if m.group(1) != inputs_hash():
         sys.exit(f"FAIL: {OUT.name} is stale (Cargo.lock, a manifest, desktop/vendor or the cargo-about setup changed): "
                  "run scripts/rs.sh licenses and commit it")
-    else:
-        named, locked = check_content(text)
-        print(f"ok  {OUT.name} is current and names {named} of {locked} locked crates")
+    named, locked = check_content(text)
+    print(f"ok  {OUT.name} is current and names {named} of {locked} locked crates")
 
 main()

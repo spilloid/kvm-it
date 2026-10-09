@@ -16,7 +16,8 @@ Polish ahead of 1.0 (the plan and the 1.0 checklist are in `docs/roadmap.md`).
   cargo-about from `Cargo.lock` (`scripts/rs.sh licenses`); CI fails if the lockfile changes without it.
 - **The adapter firmware's licences** (it ships in every package): `THIRD_PARTY_NOTICES.md` names ESP-IDF 5.5 (with FreeRTOS,
   NimBLE, Mbed TLS), esp_tinyusb, TinyUSB and led_strip, and the NimBLE files kvm-it patches; **`THIRD_PARTY_FIRMWARE_LICENSES.txt`** carries the licence
-  texts and notices of everything the firmware links, generated from its linker maps (CI fails if a build links something it does
+  texts and notices of everything the firmware links, down to the copyright headers of individual third-party source files,
+  generated from its linker maps (CI fails if a build links something it does
   not cover).
 
 ### Changed

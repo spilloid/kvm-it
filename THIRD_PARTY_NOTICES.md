@@ -40,7 +40,8 @@ and these components (versions from `firmware/dependencies.lock`):
 
 The full licence texts and notices of everything linked into the firmware (these components, the parts of ESP-IDF the
 image contains, Espressif's prebuilt Bluetooth, PHY and coexistence libraries, the Xtensa HAL and the toolchain's C library)
-are in **`THIRD_PARTY_FIRMWARE_LICENSES.txt`**, shipped next to this file and generated from the firmware's linker maps by `scripts/fw-licenses.py`
+are in **`THIRD_PARTY_FIRMWARE_LICENSES.txt`**, shipped next to this file and generated from the firmware's linker maps by `scripts/fw-licenses.py`,
+including the copyright header of every linked third-party source file
 (CI fails if a build links something it does not cover).
 
 ## iPXE and the Secure Boot shim: GNU GPL version 2, BSD, OpenSSL and EDK2 licences

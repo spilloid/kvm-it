@@ -228,7 +228,7 @@ Apache License
    limitations under the License.
 
 ----------------------------------------------------------------------------------------------------
-Applies to: FreeRTOS kernel (LICENSE.md)
+Applies to: FreeRTOS kernel (LICENSE.md); esp-idf/components/freertos/FreeRTOS-Kernel (LICENSE.md)
 ----------------------------------------------------------------------------------------------------
 
 MIT License
@@ -252,7 +252,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ----------------------------------------------------------------------------------------------------
-Applies to: Apache Mynewt NimBLE (Bluetooth LE host) (LICENSE)
+Applies to: Apache Mynewt NimBLE (Bluetooth LE host) (LICENSE); esp-idf/components/bt/host/nimble/nimble (LICENSE)
 ----------------------------------------------------------------------------------------------------
 
 Apache License
@@ -483,7 +483,7 @@ these files in later releases.  These files are:
     * babblesim/hw/mcu/nordic/nrf52_bsim/include/mcu/cmsis_nvic.h
 
 ----------------------------------------------------------------------------------------------------
-Applies to: Apache Mynewt NimBLE (Bluetooth LE host) (NOTICE)
+Applies to: Apache Mynewt NimBLE (Bluetooth LE host) (NOTICE); esp-idf/components/bt/host/nimble/nimble (NOTICE)
 ----------------------------------------------------------------------------------------------------
 
 Apache Mynewt NimBLE
@@ -497,7 +497,7 @@ Portions of this software were developed at
 Runtime Inc, copyright 2015.
 
 ----------------------------------------------------------------------------------------------------
-Applies to: Mbed TLS (LICENSE)
+Applies to: Mbed TLS (LICENSE); esp-idf/components/mbedtls/mbedtls (LICENSE)
 ----------------------------------------------------------------------------------------------------
 
 Mbed TLS files are provided under a dual [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html)
@@ -2043,7 +2043,7 @@ compiled with GCC and linked with these libraries may be distributed under terms
 notice is required. Listed for completeness.
 
 ----------------------------------------------------------------------------------------------------
-Applies to: TinyUSB (espressif/tinyusb) (LICENSE)
+Applies to: TinyUSB (espressif/tinyusb) (LICENSE); kvm-it/firmware/managed_components/espressif__tinyusb (LICENSE)
 ----------------------------------------------------------------------------------------------------
 
 The MIT License (MIT)
@@ -2067,3 +2067,899 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+====================================================================================================
+Notices from individual source files linked into the firmware (each header as written in the file)
+====================================================================================================
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/bt/host/nimble/nimble/nimble/host/services/gap/src/ble_svc_gap.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/services/gatt/src/ble_svc_gatt.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_att.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_att_clt.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_att_cmd.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_att_svr.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_gap.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_gattc.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_gatts.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_adv.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_atomic.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_cfg.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_conn.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_flow.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci_cmd.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci_evt.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci_util.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_id.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_log.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_mbuf.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_misc.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_mqueue.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_pvcy.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_startup.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_stop.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_l2cap.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_l2cap_sig.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_l2cap_sig_cmd.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_sm.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_sm_cmd.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_sm_sc.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_store.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_store_util.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_uuid.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/store/config/src/ble_store_config.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/util/src/addr.c, esp-idf/components/bt/host/nimble/nimble/nimble/transport/src/transport.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/endian.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/mem.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/nimble_port.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/os_mempool.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/os_msys_init.c, esp-idf/components/bt/host/nimble/nimble/porting/npl/freertos/src/nimble_port_freertos.c, esp-idf/components/bt/host/nimble/nimble/porting/npl/freertos/src/npl_os_freertos.c
+----------------------------------------------------------------------------------------------------
+
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_sm_alg.c
+----------------------------------------------------------------------------------------------------
+
+Copyright (c) 2015 Intel Corporation
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/bt/host/nimble/nimble/nimble/host/store/config/src/ble_store_nvs.c
+----------------------------------------------------------------------------------------------------
+
+Copyright 2015-2019 Espressif Systems (Shanghai) PTE LTD
+
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/os_mbuf.c
+----------------------------------------------------------------------------------------------------
+
+Software in this file is based heavily on code written in the FreeBSD source
+code repostiory.  While the code is written from scratch, it contains
+many of the ideas and logic flow in the original source, this is a
+derivative work, and the following license applies as well:
+
+Copyright (c) 1982, 1986, 1988, 1991, 1993
+ The Regents of the University of California.  All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+4. Neither the name of the University nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/esp_system/ubsan.c
+----------------------------------------------------------------------------------------------------
+
+Copyright (c) 2016, Linaro Limited
+Modified for HelenOS use by Jiří Zárevúcky.
+Adaptations for ESP-IDF Copyright (c) 2020 Espressif Systems (Shanghai) Co. Ltd.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+this list of conditions and the following disclaimer in the documentation
+and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/freertos/FreeRTOS-Kernel/list.c, esp-idf/components/freertos/FreeRTOS-Kernel/queue.c
+----------------------------------------------------------------------------------------------------
+
+FreeRTOS Kernel V10.5.1 (ESP-IDF SMP modified)
+Copyright (C) 2021 Amazon.com, Inc. or its affiliates.  All Rights Reserved.
+
+SPDX-FileCopyrightText: 2021 Amazon.com, Inc. or its affiliates
+
+SPDX-License-Identifier: MIT
+
+SPDX-FileContributor: 2023 Espressif Systems (Shanghai) CO LTD
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+https://www.FreeRTOS.org
+https://github.com/FreeRTOS
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c
+----------------------------------------------------------------------------------------------------
+
+FreeRTOS Kernel V10.5.1
+Copyright (C) 2015-2019 Cadence Design Systems, Inc.
+Copyright (C) 2021 Amazon.com, Inc. or its affiliates.  All Rights Reserved.
+
+SPDX-FileCopyrightText: 2015-2019 Cadence Design Systems, Inc
+SPDX-FileCopyrightText: 2021 Amazon.com, Inc. or its affiliates
+
+SPDX-License-Identifier: MIT
+
+SPDX-FileContributor: 2023-2024 Espressif Systems (Shanghai) CO LTD
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+https://www.FreeRTOS.org
+https://github.com/FreeRTOS
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/portasm.S
+----------------------------------------------------------------------------------------------------
+
+SPDX-FileCopyrightText: 2015-2019 Cadence Design Systems, Inc.
+
+SPDX-License-Identifier: MIT
+
+SPDX-FileContributor: 2016-2023 Espressif Systems (Shanghai) CO LTD
+
+[MIT, standard text]
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit
+persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/freertos/FreeRTOS-Kernel/stream_buffer.c
+----------------------------------------------------------------------------------------------------
+
+FreeRTOS Kernel V10.5.1 (ESP-IDF SMP modified)
+Copyright (C) 2021 Amazon.com, Inc. or its affiliates.  All Rights Reserved.
+
+SPDX-FileCopyrightText: 2021 Amazon.com, Inc. or its affiliates
+
+SPDX-License-Identifier: MIT
+
+SPDX-FileContributor: 2023-2024 Espressif Systems (Shanghai) CO LTD
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+https://www.FreeRTOS.org
+https://github.com/FreeRTOS
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/freertos/FreeRTOS-Kernel/tasks.c
+----------------------------------------------------------------------------------------------------
+
+FreeRTOS Kernel V10.5.1 (ESP-IDF SMP modified)
+Copyright (C) 2021 Amazon.com, Inc. or its affiliates.  All Rights Reserved.
+
+SPDX-FileCopyrightText: 2021 Amazon.com, Inc. or its affiliates
+
+SPDX-License-Identifier: MIT
+
+SPDX-FileContributor: 2023-2025 Espressif Systems (Shanghai) CO LTD
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+https://www.FreeRTOS.org
+https://github.com/FreeRTOS
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/heap/tlsf/tlsf.c
+----------------------------------------------------------------------------------------------------
+
+SPDX-FileCopyrightText: 2006-2016 Matthew Conte
+
+SPDX-License-Identifier: BSD-3-Clause
+
+[BSD-3-Clause, standard text]
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the
+following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following
+   disclaimer.
+2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following
+   disclaimer in the documentation and/or other materials provided with the distribution.
+3. Neither the name of the copyright holder nor the names of its contributors may be used to endorse or promote products
+   derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES,
+INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/aria.c
+----------------------------------------------------------------------------------------------------
+
+ARIA implementation
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/asn1parse.c
+----------------------------------------------------------------------------------------------------
+
+Generic ASN.1 parsing
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/asn1write.c
+----------------------------------------------------------------------------------------------------
+
+ASN.1 buffer writing functionality
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/bignum.c
+----------------------------------------------------------------------------------------------------
+
+Multi-precision integer library
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/bignum_core.c
+----------------------------------------------------------------------------------------------------
+
+Core bignum functions
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/ccm.c
+----------------------------------------------------------------------------------------------------
+
+NIST SP800-38C compliant CCM implementation
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/cipher.c
+----------------------------------------------------------------------------------------------------
+
+\file cipher.c
+
+\brief Generic cipher wrapper for Mbed TLS
+
+\author Adriaan de Jong <dejong@fox-it.com>
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/cipher_wrap.c
+----------------------------------------------------------------------------------------------------
+
+\file cipher_wrap.c
+
+\brief Generic cipher wrapper for Mbed TLS
+
+\author Adriaan de Jong <dejong@fox-it.com>
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/cmac.c
+----------------------------------------------------------------------------------------------------
+
+\file cmac.c
+
+\brief NIST SP800-38B compliant CMAC implementation for AES and 3DES
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/constant_time.c
+----------------------------------------------------------------------------------------------------
+
+Constant-time functions
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/ctr_drbg.c
+----------------------------------------------------------------------------------------------------
+
+CTR_DRBG implementation based on AES-256 (NIST SP 800-90)
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/ecdh.c
+----------------------------------------------------------------------------------------------------
+
+Elliptic curve Diffie-Hellman
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/ecdsa.c
+----------------------------------------------------------------------------------------------------
+
+Elliptic curve DSA
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/ecp.c
+----------------------------------------------------------------------------------------------------
+
+Elliptic curves over GF(p): generic functions
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/ecp_curves.c
+----------------------------------------------------------------------------------------------------
+
+Elliptic curves over GF(p): curve-specific data and functions
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/entropy.c
+----------------------------------------------------------------------------------------------------
+
+Entropy accumulator implementation
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/gcm.c
+----------------------------------------------------------------------------------------------------
+
+NIST SP800-38D compliant GCM implementation
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/hmac_drbg.c
+----------------------------------------------------------------------------------------------------
+
+HMAC_DRBG implementation (NIST SP 800-90)
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/md.c
+----------------------------------------------------------------------------------------------------
+
+\file md.c
+
+\brief Generic message digest wrapper for Mbed TLS
+
+\author Adriaan de Jong <dejong@fox-it.com>
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/md5.c
+----------------------------------------------------------------------------------------------------
+
+RFC 1321 compliant MD5 implementation
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/oid.c
+----------------------------------------------------------------------------------------------------
+
+\file oid.c
+
+\brief Object Identifier (OID) database
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/platform.c
+----------------------------------------------------------------------------------------------------
+
+Platform abstraction layer
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/platform_util.c
+----------------------------------------------------------------------------------------------------
+
+Common and shared functions used by multiple modules in the Mbed TLS
+library.
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/rsa.c
+----------------------------------------------------------------------------------------------------
+
+The RSA public-key cryptosystem
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/rsa_alt_helpers.c
+----------------------------------------------------------------------------------------------------
+
+Helper functions for the RSA module
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/sha1.c
+----------------------------------------------------------------------------------------------------
+
+FIPS-180-1 compliant SHA-1 implementation
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/sha256.c
+----------------------------------------------------------------------------------------------------
+
+FIPS-180-2 compliant SHA-256 implementation
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/sha512.c
+----------------------------------------------------------------------------------------------------
+
+FIPS-180-2 compliant SHA-384/512 implementation
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/port/aes/dma/esp_aes.c
+----------------------------------------------------------------------------------------------------
+
+\brief AES block cipher, ESP DMA hardware accelerated version
+Based on mbedTLS FIPS-197 compliant version.
+
+ Copyright (C) 2006-2015, ARM Limited, All Rights Reserved
+ Additions Copyright (C) 2016-2020, Espressif Systems (Shanghai) PTE Ltd
+ SPDX-License-Identifier: Apache-2.0
+
+ Licensed under the Apache License, Version 2.0 (the "License"); you may
+ not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/port/aes/esp_aes_common.c
+----------------------------------------------------------------------------------------------------
+
+AES block cipher, ESP hardware accelerated version, common
+Based on mbedTLS FIPS-197 compliant version.
+
+SPDX-FileCopyrightText: The Mbed TLS Contributors
+
+SPDX-License-Identifier: Apache-2.0
+
+SPDX-FileContributor: 2016-2024 Espressif Systems (Shanghai) CO LTD
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/port/aes/esp_aes_gcm.c
+----------------------------------------------------------------------------------------------------
+
+GCM block cipher, ESP DMA hardware accelerated version
+Based on mbedTLS FIPS-197 compliant version.
+
+SPDX-FileCopyrightText: The Mbed TLS Contributors
+
+SPDX-License-Identifier: Apache-2.0
+
+SPDX-FileContributor: 2016-2024 Espressif Systems (Shanghai) CO LTD
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/port/aes/esp_aes_xts.c
+----------------------------------------------------------------------------------------------------
+
+\brief AES block cipher, ESP32-S2 hardware accelerated version
+Based on mbedTLS FIPS-197 compliant version.
+
+ Copyright (C) 2006-2015, ARM Limited, All Rights Reserved
+ Additions Copyright (C) 2016-2020, Espressif Systems (Shanghai) PTE Ltd
+ SPDX-License-Identifier: Apache-2.0
+
+ Licensed under the Apache License, Version 2.0 (the "License"); you may
+ not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/port/bignum/esp_bignum.c
+----------------------------------------------------------------------------------------------------
+
+Multi-precision integer library
+ESP-IDF hardware accelerated parts based on mbedTLS implementation
+
+SPDX-FileCopyrightText: The Mbed TLS Contributors
+
+SPDX-License-Identifier: Apache-2.0
+
+SPDX-FileContributor: 2016-2024 Espressif Systems (Shanghai) CO LTD
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/port/sha/core/esp_sha1.c
+----------------------------------------------------------------------------------------------------
+
+SHA-1 implementation with hardware ESP support added.
+
+SPDX-FileCopyrightText: The Mbed TLS Contributors
+
+SPDX-License-Identifier: Apache-2.0
+
+SPDX-FileContributor: 2016-2025 Espressif Systems (Shanghai) CO LTD
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/port/sha/core/esp_sha256.c
+----------------------------------------------------------------------------------------------------
+
+SHA-256 implementation with hardware ESP support added.
+
+SPDX-FileCopyrightText: The Mbed TLS Contributors
+
+SPDX-License-Identifier: Apache-2.0
+
+SPDX-FileContributor: 2016-2025 Espressif Systems (Shanghai) CO LTD
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/port/sha/core/esp_sha512.c
+----------------------------------------------------------------------------------------------------
+
+SHA-512 implementation with hardware ESP support added.
+
+SPDX-FileCopyrightText: The Mbed TLS Contributors
+
+SPDX-License-Identifier: Apache-2.0
+
+SPDX-FileContributor: 2016-2025 Espressif Systems (Shanghai) CO LTD
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/xtensa/xtensa_context.S, esp-idf/components/xtensa/xtensa_intr_asm.S
+----------------------------------------------------------------------------------------------------
+
+SPDX-FileCopyrightText: 2015-2019 Cadence Design Systems, Inc.
+
+SPDX-License-Identifier: MIT
+
+SPDX-FileContributor: 2016-2022 Espressif Systems (Shanghai) CO LTD
+
+[MIT, standard text]
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit
+persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/xtensa/xtensa_intr.c
+----------------------------------------------------------------------------------------------------
+
+Copyright (c) 2015-2019 Cadence Design Systems, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/xtensa/xtensa_vectors.S
+----------------------------------------------------------------------------------------------------
+
+SPDX-FileCopyrightText: 2015-2019 Cadence Design Systems, Inc.
+
+SPDX-License-Identifier: MIT
+
+SPDX-FileContributor: 2016-2024 Espressif Systems (Shanghai) CO LTD
+
+[MIT, standard text]
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit
+persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+----------------------------------------------------------------------------------------------------
+Files: kvm-it/firmware/managed_components/espressif__tinyusb/src/class/hid/hid_device.c, kvm-it/firmware/managed_components/espressif__tinyusb/src/class/msc/msc_device.c, kvm-it/firmware/managed_components/espressif__tinyusb/src/device/usbd.c, kvm-it/firmware/managed_components/espressif__tinyusb/src/tusb.c
+----------------------------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2019 Ha Thach (tinyusb.org)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+This file is part of the TinyUSB stack.
+
+----------------------------------------------------------------------------------------------------
+Files: kvm-it/firmware/managed_components/espressif__tinyusb/src/common/tusb_fifo.c
+----------------------------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2019 Ha Thach (tinyusb.org)
+Copyright (c) 2020 Reinhard Panhuber - rework to unmasked pointers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+This file is part of the TinyUSB stack.
+
+----------------------------------------------------------------------------------------------------
+Files: kvm-it/firmware/managed_components/espressif__tinyusb/src/portable/synopsys/dwc2/dcd_dwc2.c
+----------------------------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2019 William D. Jones
+Copyright (c) 2019 Ha Thach (tinyusb.org)
+Copyright (c) 2020 Jan Duempelmann
+Copyright (c) 2020 Reinhard Panhuber
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+This file is part of the TinyUSB stack.
+
+----------------------------------------------------------------------------------------------------
+Files: kvm-it/firmware/managed_components/espressif__tinyusb/src/portable/synopsys/dwc2/dwc2_common.c
+----------------------------------------------------------------------------------------------------
+
+The MIT License (MIT)
+
+Copyright (c) 2024-2025 Ha Thach (tinyusb.org)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+This file is part of the TinyUSB stack.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build, test and flash the ESP32-S3 firmware using the pinned ESP-IDF container.
-# Usage: scripts/fw.sh {test|build|build-diag|licenses|flash|monitor|flash-monitor|shell|clean} [serial-port]
+# Usage: scripts/fw.sh {test|build|build-diag|flash|monitor|flash-monitor|shell|clean} [serial-port]
 set -euo pipefail
 
 IDF_IMAGE="${IDF_IMAGE:-docker.io/espressif/idf:v5.5}"
@@ -38,8 +38,6 @@ test)
             && build-host/test_logic'
     ;;
 build)         idf_run "idf.py set-target esp32s3 >/dev/null && idf.py build" ;;
-# THIRD_PARTY_FIRMWARE_LICENSES.txt from the linker maps of a fresh build (CI checks it with --check).
-licenses)      idf_run "idf.py set-target esp32s3 >/dev/null && idf.py build >/dev/null && python3 /project/scripts/fw-licenses.py" ;;
 # Radio diagnostics (sdkconfig.diag): separate build dir and sdkconfig so the release build is untouched.
 build-diag)    idf_run "idf.py -B build-diag -D SDKCONFIG=build-diag/sdkconfig \
                    -D SDKCONFIG_DEFAULTS='sdkconfig.defaults;sdkconfig.diag' set-target esp32s3 >/dev/null \

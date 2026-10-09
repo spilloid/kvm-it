@@ -689,3 +689,18 @@ version resource, plain-language Bluetooth errors, the generated licence listing
 | 5 | Med | A listing truncated after its stamp line passed the check | **Confirmed** (reproduced). The check (and `--stamp`) now requires the listing to name at least half the locked crates, including the app's direct dependencies |
 | 6 | Med | The version-resource check searched for byte strings anywhere in the exe: clearing the resource directory still passed | **Confirmed** (reproduced). `verify-release.py` now walks the PE resource directory, requires icon and group-icon resources, and checks `VS_FIXEDFILEINFO` and the `ProductVersion`, `FileVersion`, `OriginalFilename` and `ProductName` strings; tested against the built exes, a wrong version and a cleared directory |
 | 7 | Low | The packages' licence files were only checked by name (zip) or not at all (AppImage, dmg) | **Confirmed.** The zip, AppImage and dmg checks compare each licence file with the repository's and run the staleness check. **Not fixed:** the MSI's contents are not inspected; it is built from the same staged folder as the zip |
+
+**Round 32** (re-review of the round-31 fixes, `d5400d9..83ac3c4`): **NO SIGN-OFF**, six findings, each re-checked
+here. Round-31 findings 1, 2 resolved; 3-7 partly, as below.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | The licence-listing hash sorted `Path` objects, which order case-insensitively on Windows, so the Windows release check would reject a correct listing | **Confirmed.** Sorts the normalised relative strings |
+| 2 | High | Firmware coverage stopped at libraries: third-party notices inside ESP-IDF sources (TLSF's BSD-3-Clause, FreeRTOS's Amazon copyright, a BSD file in NimBLE) were missing; an unknown managed component fell back to ESP-IDF's licence | **Confirmed.** `fw-licenses.py` now traces every linked object to its source through both builds' `compile_commands.json` (an untraceable object is an error) and reproduces every non-Espressif header verbatim, with the licence files above it; SPDX-only headers get the standard text (BSD-3-Clause, MIT; any other identifier is an error). Only components inside ESP-IDF fall back to its licence |
+| 3 | Med | A listing cut after the serialport entry still passed (363/477 names) | **Confirmed** (reproduced). The stamp also records a hash of the content; any edit or truncation fails |
+| 4 | Med | The PE walk ignored `NumberOfRvaAndSizes`, the resource directory size, entry flags and section raw sizes, and took the PE32 path for any magic | **Confirmed.** All bounds-checked; directory/leaf flags enforced; unknown magic rejected. All four mutations (and a bad magic) now fail; the built exes pass |
+| 5 | Med | Version strings were found by regex, so a zero root `wLength`, a zero `wValueLength` or a renamed `StringFileInfo` still passed | **Confirmed.** `VS_VERSIONINFO` is parsed as nested records honouring every declared length; the three mutations now fail |
+| 6 | Low | The dmg check compared the staging folder, not the image | **Confirmed.** The macOS job mounts the finished .dmg and compares from it |
+
+Also fixed: CI's bundled-firmware check failed because the `licenses` subcommand had been added to `scripts/fw.sh`, a
+hashed firmware input; it is now `scripts/fw-licenses.sh` and `fw.sh` is unchanged.
