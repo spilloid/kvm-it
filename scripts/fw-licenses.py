@@ -142,8 +142,10 @@ def with_licence_text(h, src):
     if FULL_TEXT.search(h):
         return h
     for expr in re.findall(r"SPDX-License-Identifier:\s*(\S.*?)\s*$", h, re.M):
-        ids = re.split(r"\s+(?:OR|AND|WITH)\s+", expr.strip("() "))
-        if "Apache-2.0" in ids and " AND " not in expr:
+        ids, has_and = spdx_ids(expr)
+        if ids is None:
+            sys.exit(f"FAIL: {display(src)} is under {expr}: licence exceptions (WITH) are not handled by scripts/fw-licenses.py")
+        if "Apache-2.0" in ids and not has_and:
             continue
         missing = [i for i in ids if i not in SPDX_TEXTS and i != "Apache-2.0"]
         if missing:
@@ -155,20 +157,40 @@ LICENCE_FILE = re.compile(r"^(licen[cs]e|copying|notice)([._-].*)?$", re.I)
 COPYRIGHT = re.compile(r"copyright|spdx-filecopyrighttext|spdx-filecontributor", re.I)
 
 def header(path):
-    """The source file's leading comment block, without comment markers."""
-    text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").lstrip()
-    if text.startswith("/*"):
-        block = text[2:text.find("*/")] if "*/" in text else ""
-        lines = [re.sub(r"^\s*\*? ?", "", l) for l in block.split("\n")]
-    else:
-        lines = [re.sub(r"^\s*// ?", "", l) for l in text.split("\n")[:80] if l.strip().startswith("//")]
-    return "\n".join(l.rstrip() for l in lines).strip()
+    """Every comment before the first line of code (a description comment often comes before the copyright one),
+    without comment markers."""
+    text, lines = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n"), []
+    i = 0
+    while True:
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            j = len(text) if j < 0 else j
+            lines += [re.sub(r"^\s*\*? ?", "", l) for l in text[i + 2:j].split("\n")] + [""]
+            i = j + 2
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            j = len(text) if j < 0 else j
+            lines.append(text[i + 2:j].removeprefix(" "))
+            i = j
+        else:
+            break
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(l.rstrip() for l in lines)).strip()
+
+def spdx_ids(expr):
+    """Licence identifiers of an SPDX expression; (ids, has_and). WITH exceptions are not supported: an error."""
+    tokens = re.findall(r"\(|\)|[A-Za-z0-9.+:-]+", expr)
+    if "WITH" in tokens:
+        return None, False
+    return [t for t in tokens if t not in ("(", ")", "AND", "OR")], "AND" in tokens
 
 def espressif_only(h):
-    """Plain Espressif Apache-2.0 code, covered by ESP-IDF's licence."""
+    """Plain Espressif Apache-2.0 code, covered by ESP-IDF's licence: needs positive evidence (an Espressif copyright
+    line), and nothing but Apache-2.0 and Espressif in it."""
     ids = set(re.findall(r"SPDX-License-Identifier:\s*(\S.*?)\s*$", h, re.M))
     holders = [l for l in h.split("\n") if COPYRIGHT.search(l)]
-    return ids <= {"Apache-2.0"} and all("Espressif" in l for l in holders)
+    return bool(holders) and ids <= {"Apache-2.0"} and all("Espressif" in l for l in holders)
 
 def display(path):
     p = path.as_posix()
@@ -225,8 +247,10 @@ def generate():
         if src.is_relative_to(FW / "main"):
             continue   # kvm-it's own code (MIT, LICENSE)
         h = header(src)
-        if not h or espressif_only(h):
+        if espressif_only(h):
             continue
+        if not h:
+            h = "(this file carries no licence header; it is covered by its component's licence above)"
         notices.setdefault(with_licence_text(h, src), []).append(display(src))
         for lf in licence_files_above(src):
             texts.setdefault(text_of(lf), []).append((display(lf.parent), lf.name))

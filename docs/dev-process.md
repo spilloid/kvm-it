@@ -704,3 +704,15 @@ here. Round-31 findings 1, 2 resolved; 3-7 partly, as below.
 
 Also fixed: CI's bundled-firmware check failed because the `licenses` subcommand had been added to `scripts/fw.sh`, a
 hashed firmware input; it is now `scripts/fw-licenses.sh` and `fw.sh` is unchanged.
+
+**Round 33** (re-review of the round-32 fixes, `83ac3c4..f838d7d`): **NO SIGN-OFF**, five Mediums, each reproduced
+here. Round-32 findings 1, 3 and 6 resolved; the reviewer also confirmed all 441 linked objects trace to sources and the
+generator gives the committed file under both local and GitHub workspace paths.
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | Med | 13 Mbed TLS sources open with a description comment and only then the copyright comment; the extractor read the first comment only and, finding no copyright, classed them as Espressif | `header()` reads every comment before the first line of code; Espressif-only needs a positive Espressif copyright line; a file with no header is listed as such |
+| 2 | Med | SPDX expressions were split naively: `(MIT OR BSD-3-Clause) AND Apache-2.0` failed, `... WITH LLVM-exception` passed silently (neither occurs today) | Tokenised parsing; `WITH` is an explicit error |
+| 3 | Med | Data-directory reads were not bounded by `SizeOfOptionalHeader` | Bounded |
+| 4 | Med | Named and numeric resource entries were conflated | Entries are checked against the directory's named/ID counts; named ones are skipped, as Windows looks types up by number |
+| 5 | Med | The string table's key was ignored (a renamed table passed) and a valid two-language resource was rejected | Strings are read from the table named by a `VarFileInfo\Translation` pair, any number of tables allowed |

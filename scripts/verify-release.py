@@ -42,9 +42,9 @@ def pe_resources(data, name):
     if magic not in (0x10B, 0x20B):
         die(f"{name}: unknown optional header magic {magic:#x}")
     ndirs = u("<I", opt + (108 if magic == 0x20B else 92))[0]
-    if ndirs < 3:
-        die(f"{name}: the data directories stop before the resource entry")
     dd = opt + (112 if magic == 0x20B else 96)
+    if ndirs < 3 or dd + 3 * 8 > opt + optsize:
+        die(f"{name}: the data directories (count {ndirs}, optional header {optsize} bytes) stop before the resource entry")
     rsrc_rva, rsrc_size = u("<II", dd + 2 * 8)   # IMAGE_DIRECTORY_ENTRY_RESOURCE
     if not rsrc_rva or not rsrc_size:
         die(f"{name}: no resource directory (icon and version information missing)")
@@ -61,9 +61,15 @@ def pe_resources(data, name):
             die(f"{name}: resource entry at {off:#x} lies outside the {rsrc_size:#x}-byte resource directory")
         return base + off
     def entries(d, want_dir):
+        """The numeric-ID entries of a directory (named entries come first and are skipped: Windows finds RT_ICON,
+        RT_VERSION etc. by number)."""
         named, ids = u("<HH", inside(d, 16) + 12)
         for i in range(named + ids):
             ident, target = u("<II", inside(d + 16 + 8 * i, 8))
+            if bool(ident & 0x80000000) != (i < named):
+                die(f"{name}: resource entry {i} contradicts the directory's named/ID counts")
+            if i < named:
+                continue
             if bool(target & 0x80000000) != want_dir:
                 die(f"{name}: resource entry {ident:#x} is a {'leaf' if want_dir else 'directory'} where Windows expects the other")
             yield ident, target & 0x7FFFFFFF
@@ -122,10 +128,14 @@ def check_resources(data, name, exe, ver):
     for label, ms, ls in (("file", fms, fls), ("product", pms, pls)):
         if (ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF) != want:
             die(f"{name}: {label} version {ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}, expected {ver}.0")
-    tables = [t for k, _, ts in kids if k == "StringFileInfo" for t in ts]
-    if len(tables) != 1:
-        die(f"{name}: expected one StringFileInfo string table, found {len(tables)}")
-    strings = {k: v.decode("utf-16-le").rstrip("\0") for k, v, _ in tables[0][2]}
+    # Windows reads strings from the table named after a VarFileInfo\Translation pair (language, code page)
+    translations = [v for k, _, vs in kids if k == "VarFileInfo" for vk, v, _ in vs if vk == "Translation"]
+    pairs = [struct.unpack_from("<HH", t, i) for t in translations for i in range(0, len(t) - 3, 4)]
+    tables = {t[0].upper(): t for k, _, ts in kids if k == "StringFileInfo" for t in ts}
+    found = [tables[f"{lang:04X}{cp:04X}"] for lang, cp in pairs if f"{lang:04X}{cp:04X}" in tables]
+    if not found:
+        die(f"{name}: no StringFileInfo table matches a VarFileInfo Translation pair ({pairs}; tables {sorted(tables)})")
+    strings = {k: v.decode("utf-16-le").rstrip("\0") for k, v, _ in found[0][2]}
     for field, value in (("ProductVersion", ver), ("FileVersion", ver), ("OriginalFilename", exe), ("ProductName", "kvm-it")):
         if strings.get(field) != value:
             die(f"{name}: version string {field} is {strings.get(field)!r}, expected {value!r}")

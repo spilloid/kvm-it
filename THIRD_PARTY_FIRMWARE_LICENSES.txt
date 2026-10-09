@@ -2073,7 +2073,7 @@ Notices from individual source files linked into the firmware (each header as wr
 ====================================================================================================
 
 ----------------------------------------------------------------------------------------------------
-Files: esp-idf/components/bt/host/nimble/nimble/nimble/host/services/gap/src/ble_svc_gap.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/services/gatt/src/ble_svc_gatt.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_att.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_att_clt.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_att_cmd.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_att_svr.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_gap.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_gattc.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_gatts.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_adv.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_atomic.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_cfg.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_conn.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_flow.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci_cmd.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci_evt.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci_util.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_id.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_log.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_mbuf.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_misc.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_mqueue.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_pvcy.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_startup.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_stop.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_l2cap.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_l2cap_sig.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_l2cap_sig_cmd.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_sm.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_sm_cmd.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_sm_sc.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_store.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_store_util.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_uuid.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/store/config/src/ble_store_config.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/util/src/addr.c, esp-idf/components/bt/host/nimble/nimble/nimble/transport/src/transport.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/endian.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/mem.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/nimble_port.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/os_mempool.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/os_msys_init.c, esp-idf/components/bt/host/nimble/nimble/porting/npl/freertos/src/nimble_port_freertos.c, esp-idf/components/bt/host/nimble/nimble/porting/npl/freertos/src/npl_os_freertos.c
+Files: esp-idf/components/bt/host/nimble/nimble/nimble/host/services/gap/src/ble_svc_gap.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/services/gatt/src/ble_svc_gatt.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_att.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_att_clt.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_att_cmd.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_att_svr.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_gap.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_gatts.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_adv.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_atomic.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_cfg.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_conn.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_flow.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci_cmd.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci_evt.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_hci_util.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_id.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_log.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_mbuf.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_misc.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_mqueue.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_pvcy.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_startup.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_hs_stop.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_l2cap.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_l2cap_sig_cmd.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_sm_cmd.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_sm_sc.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_store.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_store_util.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_uuid.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/store/config/src/ble_store_config.c, esp-idf/components/bt/host/nimble/nimble/nimble/host/util/src/addr.c, esp-idf/components/bt/host/nimble/nimble/nimble/transport/src/transport.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/endian.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/mem.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/nimble_port.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/os_mempool.c, esp-idf/components/bt/host/nimble/nimble/porting/nimble/src/os_msys_init.c, esp-idf/components/bt/host/nimble/nimble/porting/npl/freertos/src/nimble_port_freertos.c, esp-idf/components/bt/host/nimble/nimble/porting/npl/freertos/src/npl_os_freertos.c
 ----------------------------------------------------------------------------------------------------
 
 Licensed to the Apache Software Foundation (ASF) under one
@@ -2094,6 +2094,145 @@ specific language governing permissions and limitations
 under the License.
 
 ----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_gattc.c
+----------------------------------------------------------------------------------------------------
+
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+
+GATT client - Generic Attribute Profile; client operations.
+
+Design overview:
+
+GATT client procedures are initiated by the application via function calls.
+Such functions return when either of the following happens:
+
+(1) The procedure completes (success or failure).
+(2) The procedure cannot proceed until a BLE peer responds.
+
+For (1), the result of the procedure if fully indicated by the function
+return code.
+For (2), the procedure result is indicated by an application-configured
+callback.  The callback is executed when the procedure completes.
+
+Notes on thread-safety:
+1. The ble_hs mutex must never be locked when an application callback is
+   executed.  A callback is free to initiate additional host procedures.
+2. The only resource protected by the mutex is the list of active procedures
+   (ble_gattc_procs).  Thread-safety is achieved by locking the mutex during
+   removal and insertion operations.  Procedure objects are only modified
+   while they are not in the list.  This is sufficient, as the host parent
+   task is the only task which inspects or modifies individual procedure
+   entries.  Tasks have the following permissions regarding procedure
+   entries:
+
+               | insert  | remove    | inspect   | modify
+   ------------+---------+-----------|-----------|---------
+   parent task | X       | X         | X         | X
+   other tasks | X       |           |           |
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_l2cap_sig.c
+----------------------------------------------------------------------------------------------------
+
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+
+L2CAP Signaling (channel ID = 5).
+
+Design overview:
+
+L2CAP sig procedures are initiated by the application via function calls.
+Such functions return when either of the following happens:
+
+(1) The procedure completes (success or failure).
+(2) The procedure cannot proceed until a BLE peer responds.
+
+For (1), the result of the procedure if fully indicated by the function
+return code.
+For (2), the procedure result is indicated by an application-configured
+callback.  The callback is executed when the procedure completes.
+
+Notes on thread-safety:
+1. The ble_hs mutex must never be locked when an application callback is
+   executed.  A callback is free to initiate additional host procedures.
+2. The only resource protected by the mutex is the list of active procedures
+   (ble_l2cap_sig_procs).  Thread-safety is achieved by locking the mutex
+   during removal and insertion operations.  Procedure objects are only
+   modified while they are not in the list.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_sm.c
+----------------------------------------------------------------------------------------------------
+
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+ http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+
+L2CAP Security Manager (channel ID = 6).
+
+Design overview:
+
+L2CAP sm procedures are initiated by the application via function calls.
+Such functions return when either of the following happens:
+
+(1) The procedure completes (success or failure).
+(2) The procedure cannot proceed until a BLE peer responds.
+
+For (1), the result of the procedure if fully indicated by the function
+return code.
+For (2), the procedure result is indicated by an application-configured
+callback.  The callback is executed when the procedure completes.
+
+Notes on thread-safety:
+1. The ble_hs mutex must never be locked when an application callback is
+   executed.  A callback is free to initiate additional host procedures.
+2. Keep the host mutex locked whenever:
+     o A proc entry is read from or written to.
+     o The proc list is read or modified.
+
+----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/bt/host/nimble/nimble/nimble/host/src/ble_sm_alg.c
 ----------------------------------------------------------------------------------------------------
 
@@ -2110,6 +2249,9 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
+
+These functions are adapted from the Intel Zephyr BLE security manager
+code.
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/bt/host/nimble/nimble/nimble/host/store/config/src/ble_store_nvs.c
@@ -2169,6 +2311,12 @@ HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
 LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
 OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 SUCH DAMAGE.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/esp_system/port/arch/xtensa/panic_handler_asm.S, esp-idf/components/nvs_flash/src/nvs_partition_lookup.cpp
+----------------------------------------------------------------------------------------------------
+
+(this file carries no licence header; it is covered by its component's licence above)
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/esp_system/ubsan.c
@@ -2278,19 +2426,26 @@ SPDX-License-Identifier: MIT
 
 SPDX-FileContributor: 2016-2023 Espressif Systems (Shanghai) CO LTD
 
-[MIT, standard text]
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
-rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit
-persons to whom the Software is furnished to do so, subject to the following conditions:
+Copyright (c) 2015-2019 Cadence Design Systems, Inc.
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
-Software.
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
-WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/freertos/FreeRTOS-Kernel/stream_buffer.c
@@ -2325,6 +2480,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 https://www.FreeRTOS.org
 https://github.com/FreeRTOS
 
+Standard includes.
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/freertos/FreeRTOS-Kernel/tasks.c
 ----------------------------------------------------------------------------------------------------
@@ -2357,6 +2514,8 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 https://www.FreeRTOS.org
 https://github.com/FreeRTOS
+
+Standard includes.
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/heap/tlsf/tlsf.c
@@ -2394,6 +2553,10 @@ ARIA implementation
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 
+This implementation is based on the following standards:
+[1] http://210.104.33.10/ARIA/doc/ARIA-specification-e.pdf
+[2] https://tools.ietf.org/html/rfc5794
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/asn1parse.c
 ----------------------------------------------------------------------------------------------------
@@ -2421,6 +2584,19 @@ Multi-precision integer library
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 
+ The following sources were referenced in the design of this Multi-precision
+ Integer library:
+
+ [1] Handbook of Applied Cryptography - 1997
+     Menezes, van Oorschot and Vanstone
+
+ [2] Multi-Precision Math
+     Tom St Denis
+     https://github.com/libtom/libtommath/blob/develop/tommath.pdf
+
+ [3] GNU Multi-Precision Arithmetic Library
+     https://gmplib.org/manual/index.html
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/bignum_core.c
 ----------------------------------------------------------------------------------------------------
@@ -2438,6 +2614,13 @@ NIST SP800-38C compliant CCM implementation
 
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+Definition of CCM:
+http://csrc.nist.gov/publications/nistpubs/800-38C/SP800-38C_updated-July20_2007.pdf
+RFC 3610 "Counter with CBC-MAC (CCM)"
+
+Related:
+RFC 5116 "An Interface and Algorithms for Authenticated Encryption"
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/cipher.c
@@ -2476,6 +2659,22 @@ Files: esp-idf/components/mbedtls/mbedtls/library/cmac.c
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 
+References:
+
+- NIST SP 800-38B Recommendation for Block Cipher Modes of Operation: The
+     CMAC Mode for Authentication
+  http://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-38b.pdf
+
+- RFC 4493 - The AES-CMAC Algorithm
+  https://tools.ietf.org/html/rfc4493
+
+- RFC 4615 - The Advanced Encryption Standard-Cipher-based Message
+     Authentication Code-Pseudo-Random Function-128 (AES-CMAC-PRF-128)
+     Algorithm for the Internet Key Exchange Protocol (IKE)
+  https://tools.ietf.org/html/rfc4615
+
+  Additional test vectors: ISO/IEC 9797-1
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/constant_time.c
 ----------------------------------------------------------------------------------------------------
@@ -2484,6 +2683,9 @@ Constant-time functions
 
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+The following functions are implemented without using comparison operators, as those
+might be translated to branches by some compilers on some platforms.
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/ctr_drbg.c
@@ -2494,6 +2696,10 @@ CTR_DRBG implementation based on AES-256 (NIST SP 800-90)
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 
+ The NIST SP 800-90 DRBGs are described in the following publication.
+
+ https://nvlpubs.nist.gov/nistpubs/Legacy/SP/nistspecialpublication800-90r.pdf
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/ecdh.c
 ----------------------------------------------------------------------------------------------------
@@ -2502,6 +2708,11 @@ Elliptic curve Diffie-Hellman
 
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+References:
+
+SEC1 https://www.secg.org/sec1-v2.pdf
+RFC 4492
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/ecdsa.c
@@ -2512,6 +2723,10 @@ Elliptic curve DSA
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 
+References:
+
+SEC1 https://www.secg.org/sec1-v2.pdf
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/ecp.c
 ----------------------------------------------------------------------------------------------------
@@ -2520,6 +2735,28 @@ Elliptic curves over GF(p): generic functions
 
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+References:
+
+SEC1 https://www.secg.org/sec1-v2.pdf
+GECC = Guide to Elliptic Curve Cryptography - Hankerson, Menezes, Vanstone
+FIPS 186-3 http://csrc.nist.gov/publications/fips/fips186-3/fips_186-3.pdf
+RFC 4492 for the related TLS structures and constants
+- https://www.rfc-editor.org/rfc/rfc4492
+RFC 7748 for the Curve448 and Curve25519 curve definitions
+- https://www.rfc-editor.org/rfc/rfc7748
+
+[Curve25519] https://cr.yp.to/ecdh/curve25519-20060209.pdf
+
+[2] CORON, Jean-S'ebastien. Resistance against differential power analysis
+    for elliptic curve cryptosystems. In : Cryptographic Hardware and
+    Embedded Systems. Springer Berlin Heidelberg, 1999. p. 292-302.
+    <http://link.springer.com/chapter/10.1007/3-540-48059-5_25>
+
+[3] HEDABOU, Mustapha, PINEL, Pierre, et B'EN'ETEAU, Lucien. A comb method to
+    render ECC resistant against Side Channel Attacks. IACR Cryptology
+    ePrint Archive, 2004, vol. 2004, p. 342.
+    <http://eprint.iacr.org/2004/342.pdf>
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/ecp_curves.c
@@ -2548,6 +2785,14 @@ NIST SP800-38D compliant GCM implementation
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 
+http://csrc.nist.gov/publications/nistpubs/800-38D/SP-800-38D.pdf
+
+See also:
+[MGV] http://csrc.nist.gov/groups/ST/toolkit/BCM/documents/proposedmodes/gcm/gcm-revised-spec.pdf
+
+We use the algorithm described as Shoup's method with 4-bit tables in
+[MGV] 4.1, pp. 12-13, to enhance speed without using too much memory.
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/hmac_drbg.c
 ----------------------------------------------------------------------------------------------------
@@ -2556,6 +2801,10 @@ HMAC_DRBG implementation (NIST SP 800-90)
 
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+ The NIST SP 800-90A DRBGs are described in the following publication.
+ http://csrc.nist.gov/publications/nistpubs/800-90A/SP800-90A.pdf
+ References below are based on rev. 1 (January 2012).
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/md.c
@@ -2578,6 +2827,10 @@ RFC 1321 compliant MD5 implementation
 
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+ The MD5 algorithm was designed by Ron Rivest in 1991.
+
+ http://www.ietf.org/rfc/rfc1321.txt
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/oid.c
@@ -2609,6 +2862,113 @@ library.
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 
+Ensure gmtime_r is available even with -std=c99; must be defined before
+mbedtls_config.h, which pulls in glibc's features.h. Harmless on other platforms
+except OpenBSD, where it stops us accessing explicit_bzero.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/psa_crypto.c, esp-idf/components/mbedtls/mbedtls/library/psa_crypto_slot_management.c
+----------------------------------------------------------------------------------------------------
+
+PSA crypto layer on top of Mbed TLS crypto
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/psa_crypto_aead.c
+----------------------------------------------------------------------------------------------------
+
+PSA AEAD entry points
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/psa_crypto_cipher.c
+----------------------------------------------------------------------------------------------------
+
+PSA cipher driver entry points
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/psa_crypto_client.c
+----------------------------------------------------------------------------------------------------
+
+PSA crypto client code
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/psa_crypto_driver_wrappers_no_static.c
+----------------------------------------------------------------------------------------------------
+
+Functions to delegate cryptographic operations to an available
+ and appropriate accelerator.
+ Warning: This file is now auto-generated.
+
+Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+BEGIN-common headers
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/psa_crypto_ecp.c
+----------------------------------------------------------------------------------------------------
+
+PSA ECP layer on top of Mbed TLS crypto
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/psa_crypto_hash.c, esp-idf/components/mbedtls/mbedtls/library/psa_util.c
+----------------------------------------------------------------------------------------------------
+
+PSA hashing layer on top of Mbed TLS software crypto
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/psa_crypto_mac.c
+----------------------------------------------------------------------------------------------------
+
+PSA MAC layer on top of Mbed TLS software crypto
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/psa_crypto_rsa.c
+----------------------------------------------------------------------------------------------------
+
+PSA RSA layer on top of Mbed TLS crypto
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/psa_crypto_storage.c
+----------------------------------------------------------------------------------------------------
+
+PSA persistent key storage
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/mbedtls/mbedtls/library/psa_its_file.c
+----------------------------------------------------------------------------------------------------
+
+PSA ITS simulator over stdio files.
+
+ Copyright The Mbed TLS Contributors
+ SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/rsa.c
 ----------------------------------------------------------------------------------------------------
@@ -2617,6 +2977,21 @@ The RSA public-key cryptosystem
 
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+ The following sources were referenced in the design of this implementation
+ of the RSA algorithm:
+
+ [1] A method for obtaining digital signatures and public-key cryptosystems
+     R Rivest, A Shamir, and L Adleman
+     http://people.csail.mit.edu/rivest/pubs.html#RSA78
+
+ [2] Handbook of Applied Cryptography - 1997, Chapter 8
+     Menezes, van Oorschot and Vanstone
+
+ [3] Malware Guard Extension: Using SGX to Conceal Cache Attacks
+     Michael Schwarz, Samuel Weiser, Daniel Gruss, Clémentine Maurice and
+     Stefan Mangard
+     https://arxiv.org/abs/1702.08719v2
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/rsa_alt_helpers.c
@@ -2636,6 +3011,10 @@ FIPS-180-1 compliant SHA-1 implementation
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 
+ The SHA-1 standard was published by NIST in 1993.
+
+ http://www.itl.nist.gov/fipspubs/fip180-1.htm
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/sha256.c
 ----------------------------------------------------------------------------------------------------
@@ -2645,6 +3024,10 @@ FIPS-180-2 compliant SHA-256 implementation
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
 
+ The SHA-256 Secure Hash Standard was published by NIST in 2002.
+
+ http://csrc.nist.gov/publications/fips/fips180-2/fips180-2.pdf
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/mbedtls/library/sha512.c
 ----------------------------------------------------------------------------------------------------
@@ -2653,6 +3036,10 @@ FIPS-180-2 compliant SHA-384/512 implementation
 
  Copyright The Mbed TLS Contributors
  SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-or-later
+
+ The SHA-512 Secure Hash Standard was published by NIST in 2002.
+
+ http://csrc.nist.gov/publications/fips/fips180-2/fips180-2.pdf
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/port/aes/dma/esp_aes.c
@@ -2677,6 +3064,11 @@ Based on mbedTLS FIPS-197 compliant version.
  See the License for the specific language governing permissions and
  limitations under the License.
 
+ The AES block cipher was designed by Vincent Rijmen and Joan Daemen.
+
+ http://csrc.nist.gov/encryption/aes/rijndael/Rijndael.pdf
+ http://csrc.nist.gov/publications/fips/fips197/fips-197.pdf
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/port/aes/esp_aes_common.c
 ----------------------------------------------------------------------------------------------------
@@ -2690,6 +3082,11 @@ SPDX-License-Identifier: Apache-2.0
 
 SPDX-FileContributor: 2016-2024 Espressif Systems (Shanghai) CO LTD
 
+ The AES block cipher was designed by Vincent Rijmen and Joan Daemen.
+
+ http://csrc.nist.gov/encryption/aes/rijndael/Rijndael.pdf
+ http://csrc.nist.gov/publications/fips/fips197/fips-197.pdf
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/port/aes/esp_aes_gcm.c
 ----------------------------------------------------------------------------------------------------
@@ -2702,6 +3099,11 @@ SPDX-FileCopyrightText: The Mbed TLS Contributors
 SPDX-License-Identifier: Apache-2.0
 
 SPDX-FileContributor: 2016-2024 Espressif Systems (Shanghai) CO LTD
+
+ The AES block cipher was designed by Vincent Rijmen and Joan Daemen.
+
+ http://csrc.nist.gov/encryption/aes/rijndael/Rijndael.pdf
+ http://csrc.nist.gov/publications/fips/fips197/fips-197.pdf
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/port/aes/esp_aes_xts.c
@@ -2725,6 +3127,16 @@ Based on mbedTLS FIPS-197 compliant version.
  WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  See the License for the specific language governing permissions and
  limitations under the License.
+
+ The AES block cipher was designed by Vincent Rijmen and Joan Daemen.
+
+ http://csrc.nist.gov/encryption/aes/rijndael/Rijndael.pdf
+ http://csrc.nist.gov/publications/fips/fips197/fips-197.pdf
+
+Below XTS implementation is copied aes.c of mbedtls library.
+When MBEDTLS_AES_ALT is defined mbedtls expects alternate
+definition of XTS functions to be available. Even if this
+could have been avoided, it is done for consistency reason.
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/port/bignum/esp_bignum.c
@@ -2751,6 +3163,10 @@ SPDX-License-Identifier: Apache-2.0
 
 SPDX-FileContributor: 2016-2025 Espressif Systems (Shanghai) CO LTD
 
+ The SHA-1 standard was published by NIST in 1993.
+
+ http://www.itl.nist.gov/fipspubs/fip180-1.htm
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/port/sha/core/esp_sha256.c
 ----------------------------------------------------------------------------------------------------
@@ -2762,6 +3178,10 @@ SPDX-FileCopyrightText: The Mbed TLS Contributors
 SPDX-License-Identifier: Apache-2.0
 
 SPDX-FileContributor: 2016-2025 Espressif Systems (Shanghai) CO LTD
+
+ The SHA-256 Secure Hash Standard was published by NIST in 2002.
+
+ http://csrc.nist.gov/publications/fips/fips180-2/fips180-2.pdf
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/mbedtls/port/sha/core/esp_sha512.c
@@ -2775,8 +3195,12 @@ SPDX-License-Identifier: Apache-2.0
 
 SPDX-FileContributor: 2016-2025 Espressif Systems (Shanghai) CO LTD
 
+ The SHA-512 Secure Hash Standard was published by NIST in 2002.
+
+ http://csrc.nist.gov/publications/fips/fips180-2/fips180-2.pdf
+
 ----------------------------------------------------------------------------------------------------
-Files: esp-idf/components/xtensa/xtensa_context.S, esp-idf/components/xtensa/xtensa_intr_asm.S
+Files: esp-idf/components/xtensa/xtensa_context.S
 ----------------------------------------------------------------------------------------------------
 
 SPDX-FileCopyrightText: 2015-2019 Cadence Design Systems, Inc.
@@ -2785,19 +3209,48 @@ SPDX-License-Identifier: MIT
 
 SPDX-FileContributor: 2016-2022 Espressif Systems (Shanghai) CO LTD
 
-[MIT, standard text]
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
-rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit
-persons to whom the Software is furnished to do so, subject to the following conditions:
+Copyright (c) 2015-2019 Cadence Design Systems, Inc.
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
-Software.
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
-WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+XTENSA CONTEXT SAVE AND RESTORE ROUTINES
+
+Low-level Call0 functions for handling generic context save and restore of
+registers not specifically addressed by the interrupt vectors and handlers.
+Those registers (not handled by these functions) are PC, PS, A0, A1 (SP).
+Except for the calls to RTOS functions, this code is generic to Xtensa.
+
+Note that in Call0 ABI, interrupt handlers are expected to preserve the callee-
+save regs (A12-A15), which is always the case if the handlers are coded in C.
+However A12, A13 are made available as scratch registers for interrupt dispatch
+code, so are presumed saved anyway, and are always restored even in Call0 ABI.
+Only A14, A15 are truly handled as callee-save regs.
+
+Because Xtensa is a configurable architecture, this port supports all user
+generated configurations (except restrictions stated in the release notes).
+This is accomplished by conditional compilation using macros and functions
+defined in the Xtensa HAL (hardware adaptation layer) for your configuration.
+Only the processor state included in your configuration is saved and restored,
+including any processor state added by user configuration options or TIE.
+
+Warn nicely if this file gets named with a lowercase .s instead of .S:
 
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/xtensa/xtensa_intr.c
@@ -2824,6 +3277,43 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+Xtensa-specific interrupt and exception functions for RTOS ports.
+Also see xtensa_intr_asm.S.
+
+----------------------------------------------------------------------------------------------------
+Files: esp-idf/components/xtensa/xtensa_intr_asm.S
+----------------------------------------------------------------------------------------------------
+
+SPDX-FileCopyrightText: 2015-2019 Cadence Design Systems, Inc.
+
+SPDX-License-Identifier: MIT
+
+SPDX-FileContributor: 2016-2022 Espressif Systems (Shanghai) CO LTD
+
+Copyright (c) 2015-2019 Cadence Design Systems, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+Xtensa interrupt handling data and assembly routines.
+Also see xtensa_intr.c and xtensa_vectors.S.
+
 ----------------------------------------------------------------------------------------------------
 Files: esp-idf/components/xtensa/xtensa_vectors.S
 ----------------------------------------------------------------------------------------------------
@@ -2834,19 +3324,93 @@ SPDX-License-Identifier: MIT
 
 SPDX-FileContributor: 2016-2024 Espressif Systems (Shanghai) CO LTD
 
-[MIT, standard text]
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the Software without restriction, including without limitation the
-rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit
-persons to whom the Software is furnished to do so, subject to the following conditions:
+Copyright (c) 2015-2019 Cadence Design Systems, Inc.
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the
-Software.
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
-WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+XTENSA VECTORS AND LOW LEVEL HANDLERS FOR AN RTOS
+
+Xtensa low level exception and interrupt vectors and handlers for an RTOS.
+
+Interrupt handlers and user exception handlers support interaction with
+the RTOS by calling XT_RTOS_INT_ENTER and XT_RTOS_INT_EXIT before and
+after user's specific interrupt handlers. These macros are defined in
+xtensa_<rtos>.h to call suitable functions in a specific RTOS.
+
+Users can install application-specific interrupt handlers for low and
+medium level interrupts, by calling xt_set_interrupt_handler(). These
+handlers can be written in C, and must obey C calling convention. The
+handler table is indexed by the interrupt number. Each handler may be
+provided with an argument.
+
+Note that the system timer interrupt is handled specially, and is
+dispatched to the RTOS-specific handler. This timer cannot be hooked
+by application code.
+
+Optional hooks are also provided to install a handler per level at
+run-time, made available by compiling this source file with
+'-DXT_INTEXC_HOOKS' (useful for automated testing).
+
+!!  This file is a template that usually needs to be modified to handle       !!
+!!  application specific interrupts. Search USER_EDIT for helpful comments    !!
+!!  on where to insert handlers and how to write them.                        !!
+
+Users can also install application-specific exception handlers in the
+same way, by calling xt_set_exception_handler(). One handler slot is
+provided for each exception type. Note that some exceptions are handled
+by the porting layer itself, and cannot be taken over by application
+code in this manner. These are the alloca, syscall, and coprocessor
+exceptions.
+
+The exception handlers can be written in C, and must follow C calling
+convention. Each handler is passed a pointer to an exception frame as
+its single argument. The exception frame is created on the stack, and
+holds the saved context of the thread that took the exception. If the
+handler returns, the context will be restored and the instruction that
+caused the exception will be retried. If the handler makes any changes
+to the saved state in the exception frame, the changes will be applied
+when restoring the context.
+
+Because Xtensa is a configurable architecture, this port supports all user
+generated configurations (except restrictions stated in the release notes).
+This is accomplished by conditional compilation using macros and functions
+defined in the Xtensa HAL (hardware adaptation layer) for your configuration.
+Only the relevant parts of this file will be included in your RTOS build.
+For example, this file provides interrupt vector templates for all types and
+all priority levels, but only the ones in your configuration are built.
+
+NOTES on the use of 'call0' for long jumps instead of 'j':
+1. This file should be assembled with the -mlongcalls option to xt-xcc.
+2. The -mlongcalls compiler option causes 'call0 dest' to be expanded to
+a sequence 'l32r a0, dest' 'callx0 a0' which works regardless of the
+distance from the call to the destination. The linker then relaxes
+it back to 'call0 dest' if it determines that dest is within range.
+This allows more flexibility in locating code without the performance
+overhead of the 'l32r' literal data load in cases where the destination
+is in range of 'call0'. There is an additional benefit in that 'call0'
+has a longer range than 'j' due to the target being word-aligned, so
+the 'l32r' sequence is less likely needed.
+3. The use of 'call0' with -mlongcalls requires that register a0 not be
+live at the time of the call, which is always the case for a function
+call but needs to be ensured if 'call0' is used as a jump in lieu of 'j'.
+4. This use of 'call0' is independent of the C function call ABI.
 
 ----------------------------------------------------------------------------------------------------
 Files: kvm-it/firmware/managed_components/espressif__tinyusb/src/class/hid/hid_device.c, kvm-it/firmware/managed_components/espressif__tinyusb/src/class/msc/msc_device.c, kvm-it/firmware/managed_components/espressif__tinyusb/src/device/usbd.c, kvm-it/firmware/managed_components/espressif__tinyusb/src/tusb.c
