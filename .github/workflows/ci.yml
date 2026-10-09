@@ -27,6 +27,8 @@ jobs:
           idf.py set-target esp32s3 && idf.py build
           idf.py -B build-diag -D SDKCONFIG=build-diag/sdkconfig \
             -D SDKCONFIG_DEFAULTS='sdkconfig.defaults;sdkconfig.diag' set-target esp32s3 build
+      - name: Firmware licence texts match what the build linked
+        run: python3 scripts/fw-licenses.py --check
   desktop:
     runs-on: ubuntu-latest
     steps:
@@ -35,6 +37,8 @@ jobs:
         run: |
           python3 scripts/fw-source-hash.py --check
           cd firmware/release && sha256sum -c SHA256SUMS
+      - name: Licence listing matches Cargo.lock
+        run: python3 scripts/licenses.py --check
       - name: Vectors are up to date
         run: python3 protocol/gen_vectors.py && git diff --exit-code protocol
       - name: Test, lint, cross-build (container)

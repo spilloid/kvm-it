@@ -49,7 +49,7 @@ the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what t
 
 **Hacking on it?** Building from source (that is where Rust and Docker live): [docs/developing.md](docs/developing.md).
 
-## Status: v0.4.7
+## Status: v0.4.8
 
 Labels are strict: **built** = compiles; **host-tested** = automated tests pass in CI/containers;
 **hardware-verified** = run on a physical board; **VM-verified** = run in a Windows 11 virtual machine on a Linux

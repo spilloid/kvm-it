@@ -5,6 +5,7 @@
 //! CoreBluetooth assigns the peripheral, stable on that Mac (so a saved id does not carry over to another Mac).
 //! Hardware-dependent; not unit-testable. Protocol logic lives in `client`.
 use crate::client::LinkIo;
+use crate::diag;
 use btleplug::api::{Central, CentralEvent, Manager as _, Peripheral as _, ScanFilter, WriteType};
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures::StreamExt;
@@ -50,12 +51,45 @@ pub struct Found {
     pub rssi: Option<i16>,
 }
 
-async fn adapter() -> Result<Adapter> {
-    let manager = Manager::new().await?;
-    match manager.adapters().await?.into_iter().next() {
-        Some(a) => Ok(a),
-        None => err("no Bluetooth adapter found (is Bluetooth enabled?)"),
+/// Replace a raw failure with the reason Bluetooth is unusable, when the platform can tell (see `diag`).
+fn explained(e: BackendError) -> BackendError {
+    #[cfg(target_os = "linux")]
+    return BackendError(diag::linux_explain(&e.0));
+    #[cfg(not(target_os = "linux"))]
+    e
+}
+
+/// Linux: the BlueZ session and default adapter, optionally powered on (as bluetoothctl would), with failures explained.
+#[cfg(target_os = "linux")]
+async fn bluez(power_on: bool) -> Result<(bluer::Session, bluer::Adapter)> {
+    async {
+        let session = bluer::Session::new().await?;
+        let adapter = session.default_adapter().await?;
+        if power_on {
+            adapter.set_powered(true).await?;
+        }
+        Ok((session, adapter))
     }
+    .await
+    .map_err(explained)
+}
+
+async fn adapter() -> Result<Adapter> {
+    let ad = async {
+        let manager = Manager::new().await?;
+        match manager.adapters().await?.into_iter().next() {
+            Some(a) => Ok(a),
+            None => err(diag::NO_ADAPTER),
+        }
+    }
+    .await
+    .map_err(explained)?;
+    // Windows/macOS: a radio that is off still lists an adapter, and scans would just find nothing.
+    #[cfg(not(target_os = "linux"))]
+    if matches!(ad.adapter_state().await, Ok(btleplug::api::CentralState::PoweredOff)) {
+        return err(diag::POWERED_OFF);
+    }
+    Ok(ad)
 }
 
 /// The id an adapter is known by on this platform (see the module comment).
@@ -86,9 +120,7 @@ async fn describe(p: &Peripheral) -> Option<Found> {
 /// not report the adapter on the development laptop although bluetoothctl did.
 #[cfg(target_os = "linux")]
 pub async fn scan(timeout: Duration) -> Result<Vec<Found>> {
-    let session = bluer::Session::new().await?;
-    let adapter = session.default_adapter().await?;
-    adapter.set_powered(true).await?;
+    let (_session, adapter) = bluez(true).await?;
     // BlueZ forgets unconnected devices quickly and the controller scans slowly while other devices are
     // connected, so poll its cache for the whole scan and remember every hit.
     let events = adapter.discover_devices().await?;
@@ -209,7 +241,9 @@ impl Connection {
 /// Connect to a bonded adapter by address and bridge its GATT characteristics to byte-frame channels.
 pub async fn connect(id: &str) -> Result<Connection> {
     let ad = adapter().await?;
-    let p = find(&ad, id, Duration::from_secs(20)).await?;
+    // Linux: a powered-off or blocked adapter shows up here as "not found"; say why. (Not checked up front: BlueZ's
+    // default adapter is not necessarily the one btleplug picked when a computer has two.)
+    let p = find(&ad, id, Duration::from_secs(20)).await.map_err(explained)?;
     p.connect().await?;
     #[cfg(windows)]
     let fast = request_fast_link(id).await;
@@ -271,9 +305,7 @@ pub async fn connect(id: &str) -> Result<Connection> {
 #[cfg(target_os = "linux")]
 pub async fn pair(id: &str) -> Result<()> {
     use bluer::agent::Agent;
-    let session = bluer::Session::new().await?;
-    let adapter = session.default_adapter().await?;
-    adapter.set_powered(true).await?;
+    let (session, adapter) = bluez(true).await?;
     let agent = Agent {
         request_confirmation: Some(Box::new(|_| Box::pin(async { Ok(()) }))),
         request_authorization: Some(Box::new(|_| Box::pin(async { Ok(()) }))),
@@ -431,8 +463,7 @@ pub async fn pair(_id: &str) -> Result<()> {
 /// Remove the OS-level bond (Linux). The adapter-side bond is erased with a 10 s BOOT hold.
 #[cfg(target_os = "linux")]
 pub async fn unpair(id: &str) -> Result<()> {
-    let session = bluer::Session::new().await?;
-    let adapter = session.default_adapter().await?;
+    let (_session, adapter) = bluez(false).await?;
     let addr: bluer::Address = id.parse().map_err(|_| BackendError(format!("bad address {id}")))?;
     adapter.remove_device(addr).await?;
     Ok(())

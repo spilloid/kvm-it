@@ -57,6 +57,8 @@ install -m 644 "$ICON" "$APPDIR/kvm-it.png"
 install -m 644 "$ICON" "$APPDIR/usr/share/icons/hicolor/256x256/apps/kvm-it.png"
 install -m 644 "$ROOT/LICENSE" "$APPDIR/usr/share/LICENSE"
 install -m 644 "$ROOT/THIRD_PARTY_NOTICES.md" "$APPDIR/usr/share/THIRD_PARTY_NOTICES.md"
+install -m 644 "$ROOT/THIRD_PARTY_LICENSES.html" "$APPDIR/usr/share/THIRD_PARTY_LICENSES.html"
+install -m 644 "$ROOT/THIRD_PARTY_FIRMWARE_LICENSES.txt" "$APPDIR/usr/share/THIRD_PARTY_FIRMWARE_LICENSES.txt"
 # the adapter firmware Flash adapter... writes: a `firmware` folder next to the executables
 cp -r "$ROOT/firmware/release" "$APPDIR/usr/bin/firmware"
 chmod -R u+rwX,go+rX,go-w "$APPDIR/usr/bin/firmware"

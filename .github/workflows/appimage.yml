@@ -63,6 +63,8 @@ jobs:
           case "$got" in *"$want"*) ;; *) echo "version mismatch (want $want)"; exit 1;; esac
           test -s squashfs-root/usr/bin/firmware/FIRMWARE.txt
           (cd ../firmware/release && diff -r . ../../dist-linux/squashfs-root/usr/bin/firmware)
+          python3 ../scripts/licenses.py --check
+          for f in LICENSE THIRD_PARTY_NOTICES.md THIRD_PARTY_LICENSES.html THIRD_PARTY_FIRMWARE_LICENSES.txt; do cmp "../$f" "squashfs-root/usr/share/$f"; done
           sha256sum --check --strict "$APP.sha256"
       - uses: actions/upload-artifact@v4
         with:

@@ -672,3 +672,65 @@ locationless card always stops the run.
 with no location" as stopping the run unconditionally; it is only a *remembered* one), fixed.
 
 **Round 30** (confirmation pass): **SIGN-OFF**, no remaining source-confirmed defect. Verification: `rs.sh test` (201 passed), `clippy`, `rs.sh macos` clean; host-tested only, no run against two physical adapters yet.
+
+## 2026-10-08 - 0.4.8 polish (`release/0.4.8`): review round 31 (Codex `gpt-6-astra`)
+
+The usual cross-model reviewer, read-only, high effort, over the uncommitted 0.4.8 diff on `d5400d9` (Windows icon and
+version resource, plain-language Bluetooth errors, the generated licence listing, the firmware notices, the roadmap).
+
+**Round 31**: **NO SIGN-OFF**, seven findings, each re-checked against the source here.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | `THIRD_PARTY_LICENSES.html` was not in the tree, yet every package copies it | **Confirmed** (generation was still queued). Generated with `scripts/rs.sh licenses` and committed |
+| 2 | High | Linux `connect()` powered BlueZ's *default* adapter, which need not be the one btleplug then uses: with a blocked internal `hci0` and a working USB `hci1`, connecting would fail where it used to work | **Confirmed.** The up-front check is gone; a failed `find` is explained instead. Found alongside: the rfkill diagnosis blamed any blocked radio, so with a working second radio it misattributed failures; it now applies only when *every* Bluetooth radio is blocked (test added) |
+| 3 | High | The firmware notices named TinyUSB, FreeRTOS etc. but did not reproduce their copyright and licence texts (MIT and Apache-2.0 require it; NimBLE has a NOTICE file) | **Confirmed.** New `scripts/fw-licenses.py` maps every archive in the app and bootloader linker maps to its licence files in the pinned ESP-IDF and managed components and writes `THIRD_PARTY_FIRMWARE_LICENSES.txt` (shipped in every package); an archive with no known source is an error, and the CI firmware job regenerates and compares it |
+| 4 | Med | The listing's freshness hash covered only `Cargo.lock` and the cargo-about config | **Confirmed.** It now also covers every manifest, `desktop/vendor` and the pinned cargo-about version |
+| 5 | Med | A listing truncated after its stamp line passed the check | **Confirmed** (reproduced). The check (and `--stamp`) now requires the listing to name at least half the locked crates, including the app's direct dependencies |
+| 6 | Med | The version-resource check searched for byte strings anywhere in the exe: clearing the resource directory still passed | **Confirmed** (reproduced). `verify-release.py` now walks the PE resource directory, requires icon and group-icon resources, and checks `VS_FIXEDFILEINFO` and the `ProductVersion`, `FileVersion`, `OriginalFilename` and `ProductName` strings; tested against the built exes, a wrong version and a cleared directory |
+| 7 | Low | The packages' licence files were only checked by name (zip) or not at all (AppImage, dmg) | **Confirmed.** The zip, AppImage and dmg checks compare each licence file with the repository's and run the staleness check. **Not fixed:** the MSI's contents are not inspected; it is built from the same staged folder as the zip |
+
+**Round 32** (re-review of the round-31 fixes, `d5400d9..83ac3c4`): **NO SIGN-OFF**, six findings, each re-checked
+here. Round-31 findings 1, 2 resolved; 3-7 partly, as below.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | The licence-listing hash sorted `Path` objects, which order case-insensitively on Windows, so the Windows release check would reject a correct listing | **Confirmed.** Sorts the normalised relative strings |
+| 2 | High | Firmware coverage stopped at libraries: third-party notices inside ESP-IDF sources (TLSF's BSD-3-Clause, FreeRTOS's Amazon copyright, a BSD file in NimBLE) were missing; an unknown managed component fell back to ESP-IDF's licence | **Confirmed.** `fw-licenses.py` now traces every linked object to its source through both builds' `compile_commands.json` (an untraceable object is an error) and reproduces every non-Espressif header verbatim, with the licence files above it; SPDX-only headers get the standard text (BSD-3-Clause, MIT; any other identifier is an error). Only components inside ESP-IDF fall back to its licence |
+| 3 | Med | A listing cut after the serialport entry still passed (363/477 names) | **Confirmed** (reproduced). The stamp also records a hash of the content; any edit or truncation fails |
+| 4 | Med | The PE walk ignored `NumberOfRvaAndSizes`, the resource directory size, entry flags and section raw sizes, and took the PE32 path for any magic | **Confirmed.** All bounds-checked; directory/leaf flags enforced; unknown magic rejected. All four mutations (and a bad magic) now fail; the built exes pass |
+| 5 | Med | Version strings were found by regex, so a zero root `wLength`, a zero `wValueLength` or a renamed `StringFileInfo` still passed | **Confirmed.** `VS_VERSIONINFO` is parsed as nested records honouring every declared length; the three mutations now fail |
+| 6 | Low | The dmg check compared the staging folder, not the image | **Confirmed.** The macOS job mounts the finished .dmg and compares from it |
+
+Also fixed: CI's bundled-firmware check failed because the `licenses` subcommand had been added to `scripts/fw.sh`, a
+hashed firmware input; it is now `scripts/fw-licenses.sh` and `fw.sh` is unchanged.
+
+**Round 33** (re-review of the round-32 fixes, `83ac3c4..f838d7d`): **NO SIGN-OFF**, five Mediums, each reproduced
+here. Round-32 findings 1, 3 and 6 resolved; the reviewer also confirmed all 441 linked objects trace to sources and the
+generator gives the committed file under both local and GitHub workspace paths.
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | Med | 13 Mbed TLS sources open with a description comment and only then the copyright comment; the extractor read the first comment only and, finding no copyright, classed them as Espressif | `header()` reads every comment before the first line of code; Espressif-only needs a positive Espressif copyright line; a file with no header is listed as such |
+| 2 | Med | SPDX expressions were split naively: `(MIT OR BSD-3-Clause) AND Apache-2.0` failed, `... WITH LLVM-exception` passed silently (neither occurs today) | Tokenised parsing; `WITH` is an explicit error |
+| 3 | Med | Data-directory reads were not bounded by `SizeOfOptionalHeader` | Bounded |
+| 4 | Med | Named and numeric resource entries were conflated | Entries are checked against the directory's named/ID counts; named ones are skipped, as Windows looks types up by number |
+| 5 | Med | The string table's key was ignored (a renamed table passed) and a valid two-language resource was rejected | Strings are read from the table named by a `VarFileInfo\Translation` pair, any number of tables allowed |
+
+**Round 34** (re-review of the round-33 fixes, `f838d7d..f44adcc`): **NO SIGN-OFF**, four Mediums, each reproduced.
+Round-33 fixes verified: per-file notices grew from 104 to 119 sources (the 13 Mbed TLS files and two headerless ones),
+none lost; the regenerated file matches.
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | Med | Named entries were skipped at every level, so a valid string-named icon group (`MAINICON`) was rejected | Only the type level is numeric-only |
+| 2 | Med | Only the first matching string table was checked; a second advertised language could carry a wrong version | Every table named by a Translation pair is checked |
+| 3 | Med | `pe_info` read the security directory without the directory-count and optional-header bounds, so a crafted header could fake a signature blob for `--require-signed` | Bounded; a directory pointing outside the file fails |
+| 4 | Med | A header with Apache boilerplate skipped the `WITH` check | Exceptions are rejected before the full-text shortcut (synthetic case; none in this build) |
+
+**Round 35** (re-review of the round-34 fixes, `f44adcc..2fb2568`): **SIGN-OFF**, no confirmed defect within scope.
+The prompt from this round on stated the tool's input domain (binaries our own CI builds and signs, plus licence
+generation). The reviewer verified all four round-34 fixes, ran 18 negative cases, confirmed both built executables
+pass, checked the signature-size detection against two real Authenticode-signed PEs (x64 and PE32), and regenerated the
+firmware licence file byte-for-byte. Rounds 32-34 drifted towards hand-mutated inputs the release check never sees; that
+observation is recorded in corporate-strategy (`state/products/kvm-it.md`) as an STD-001 intake candidate.

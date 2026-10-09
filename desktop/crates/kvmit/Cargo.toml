@@ -40,3 +40,7 @@ windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Libr
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-core-foundation = "0.3"
 objc2-core-graphics = "0.3"
+
+# Windows icon and version resource (build.rs); a no-op for other targets.
+[build-dependencies]
+embed-resource = "3"
