@@ -20,12 +20,19 @@ def pe_info(data, name):
     pe = struct.unpack_from("<I", data, 0x3C)[0]
     if data[pe:pe + 4] != b"PE\0\0":
         die(f"{name}: bad PE header")
-    machine = struct.unpack_from("<H", data, pe + 4)[0]
+    machine, optsize = struct.unpack_from("<H", data, pe + 4)[0], struct.unpack_from("<H", data, pe + 20)[0]
     opt = pe + 24
     magic = struct.unpack_from("<H", data, opt)[0]
+    if magic not in (0x10B, 0x20B):
+        die(f"{name}: unknown optional header magic {magic:#x}")
     subsystem = struct.unpack_from("<H", data, opt + 68)[0]
+    ndirs = struct.unpack_from("<I", data, opt + (108 if magic == 0x20B else 92))[0]
     dd = opt + (112 if magic == 0x20B else 96)          # data directories
-    sec_off, sec_size = struct.unpack_from("<II", data, dd + 4 * 8)   # IMAGE_DIRECTORY_ENTRY_SECURITY
+    sec_size = 0                                        # IMAGE_DIRECTORY_ENTRY_SECURITY (4), only if it really exists
+    if ndirs > 4 and dd + 5 * 8 <= opt + optsize:
+        sec_off, sec_size = struct.unpack_from("<II", data, dd + 4 * 8)
+        if sec_size and (sec_off < opt + optsize or sec_off + sec_size > len(data)):
+            die(f"{name}: the signature directory points outside the file")
     return machine, subsystem, sec_size
 
 def pe_resources(data, name):
@@ -60,21 +67,21 @@ def pe_resources(data, name):
         if off < 0 or off + size > rsrc_size:
             die(f"{name}: resource entry at {off:#x} lies outside the {rsrc_size:#x}-byte resource directory")
         return base + off
-    def entries(d, want_dir):
-        """The numeric-ID entries of a directory (named entries come first and are skipped: Windows finds RT_ICON,
-        RT_VERSION etc. by number)."""
+    def entries(d, want_dir, numeric_only=False):
+        """A directory's entries. At the type level only numeric IDs count (Windows finds RT_ICON, RT_VERSION etc. by
+        number); resource names below that may be strings (e.g. an icon group called MAINICON)."""
         named, ids = u("<HH", inside(d, 16) + 12)
         for i in range(named + ids):
             ident, target = u("<II", inside(d + 16 + 8 * i, 8))
             if bool(ident & 0x80000000) != (i < named):
                 die(f"{name}: resource entry {i} contradicts the directory's named/ID counts")
-            if i < named:
+            if i < named and numeric_only:
                 continue
             if bool(target & 0x80000000) != want_dir:
                 die(f"{name}: resource entry {ident:#x} is a {'leaf' if want_dir else 'directory'} where Windows expects the other")
             yield ident, target & 0x7FFFFFFF
     tree = {}
-    for rtype, t in entries(0, True):
+    for rtype, t in entries(0, True, numeric_only=True):
         for rname, n in entries(t, True):
             for _lang, leaf in entries(n, False):
                 rva, size = u("<II", inside(leaf, 16))
@@ -135,10 +142,11 @@ def check_resources(data, name, exe, ver):
     found = [tables[f"{lang:04X}{cp:04X}"] for lang, cp in pairs if f"{lang:04X}{cp:04X}" in tables]
     if not found:
         die(f"{name}: no StringFileInfo table matches a VarFileInfo Translation pair ({pairs}; tables {sorted(tables)})")
-    strings = {k: v.decode("utf-16-le").rstrip("\0") for k, v, _ in found[0][2]}
-    for field, value in (("ProductVersion", ver), ("FileVersion", ver), ("OriginalFilename", exe), ("ProductName", "kvm-it")):
-        if strings.get(field) != value:
-            die(f"{name}: version string {field} is {strings.get(field)!r}, expected {value!r}")
+    for table in found:   # every advertised language: each is what Windows shows to users of that language
+        strings = {k: v.decode("utf-16-le").rstrip("\0") for k, v, _ in table[2]}
+        for field, value in (("ProductVersion", ver), ("FileVersion", ver), ("OriginalFilename", exe), ("ProductName", "kvm-it")):
+            if strings.get(field) != value:
+                die(f"{name}: version string {field} in table {table[0]} is {strings.get(field)!r}, expected {value!r}")
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]

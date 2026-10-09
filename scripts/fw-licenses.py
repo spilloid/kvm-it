@@ -139,12 +139,14 @@ FULL_TEXT = re.compile(r"Redistribution and use|Permission is hereby granted|Lic
 def with_licence_text(h, src):
     """A header that names its licence only by SPDX identifier gets the standard text appended. Apache-2.0 alone (or as
     one choice) needs nothing: its full text is in this file already."""
+    exprs = re.findall(r"SPDX-License-Identifier:\s*(\S.*?)\s*$", h, re.M)
+    for expr in exprs:   # checked first, even when the header carries a full licence text
+        if spdx_ids(expr)[0] is None:
+            sys.exit(f"FAIL: {display(src)} is under {expr}: licence exceptions (WITH) are not handled by scripts/fw-licenses.py")
     if FULL_TEXT.search(h):
         return h
-    for expr in re.findall(r"SPDX-License-Identifier:\s*(\S.*?)\s*$", h, re.M):
+    for expr in exprs:
         ids, has_and = spdx_ids(expr)
-        if ids is None:
-            sys.exit(f"FAIL: {display(src)} is under {expr}: licence exceptions (WITH) are not handled by scripts/fw-licenses.py")
         if "Apache-2.0" in ids and not has_and:
             continue
         missing = [i for i in ids if i not in SPDX_TEXTS and i != "Apache-2.0"]

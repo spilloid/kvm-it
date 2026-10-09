@@ -716,3 +716,14 @@ generator gives the committed file under both local and GitHub workspace paths.
 | 3 | Med | Data-directory reads were not bounded by `SizeOfOptionalHeader` | Bounded |
 | 4 | Med | Named and numeric resource entries were conflated | Entries are checked against the directory's named/ID counts; named ones are skipped, as Windows looks types up by number |
 | 5 | Med | The string table's key was ignored (a renamed table passed) and a valid two-language resource was rejected | Strings are read from the table named by a `VarFileInfo\Translation` pair, any number of tables allowed |
+
+**Round 34** (re-review of the round-33 fixes, `f838d7d..f44adcc`): **NO SIGN-OFF**, four Mediums, each reproduced.
+Round-33 fixes verified: per-file notices grew from 104 to 119 sources (the 13 Mbed TLS files and two headerless ones),
+none lost; the regenerated file matches.
+
+| # | Sev | Finding | Fix |
+|---|---|---|---|
+| 1 | Med | Named entries were skipped at every level, so a valid string-named icon group (`MAINICON`) was rejected | Only the type level is numeric-only |
+| 2 | Med | Only the first matching string table was checked; a second advertised language could carry a wrong version | Every table named by a Translation pair is checked |
+| 3 | Med | `pe_info` read the security directory without the directory-count and optional-header bounds, so a crafted header could fake a signature blob for `--require-signed` | Bounded; a directory pointing outside the file fails |
+| 4 | Med | A header with Apache boilerplate skipped the `WITH` check | Exceptions are rejected before the full-text shortcut (synthetic case; none in this build) |
