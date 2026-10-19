@@ -13,7 +13,7 @@ HDMI capture card, and one app.
 ## Three steps
 
 1. **Get the parts.** An ESP32-S3 board with two USB-C ports (**COM** and **USB**) and a USB HDMI capture card. Details: [get started](docs/getting-started.md).
-2. **Install the app.** Download from [Releases](https://github.com/spilloid/kvm-it/releases): a signed `.msi`/`.zip` for **Windows 11**, an
+2. **Install the app.** Download from [Releases](https://github.com/spilloid/kvm-it/releases): a signed `.msi`/`.zip` for **Windows 11**, a `.dmg` for **macOS** (Apple silicon), an
    `.AppImage` for **Linux**. Double-click or `chmod +x`. That is the whole "dev environment": **no Rust, no Docker, no drivers, no DLLs to hunt down.**
 3. **Plug in.** In the app: **Adapter > Flash adapter…** (one click; the firmware is inside the app), pair once, and drive.
 
@@ -91,7 +91,7 @@ Read [docs/security.md](docs/security.md) before using it for anything you care 
 | `firmware/` | ESP-IDF project (ESP32-S3, TinyUSB HID, NimBLE) |
 | `protocol/` | [Wire protocol v1](protocol/SPEC.md) and generated golden vectors |
 | `desktop/` | Rust workspace: `kvmit` app (CLI + GUI) and its library crates |
-| `docs/` | The [docs site](https://spilloid.github.io/kvm-it/) source: UX and scripting, architecture, hardware, security, roadmap, review log |
+| `docs/` | The [docs site](https://spilloid.github.io/kvm-it/) source: UX and scripting, platform parity, architecture, hardware, security, roadmap, review log |
 | `scripts/` | Containerised build, test and flash helpers |
 
 ## License

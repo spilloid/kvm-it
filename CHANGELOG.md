@@ -35,6 +35,9 @@ Cross-platform parity audit (review round 36, `docs/platform-parity.md`). Deskto
   Checked by screenshot on Windows 11; Linux and macOS use the same layout code but have not been looked at.
 - Docs: the release chord is given as Ctrl+Option+Esc for Macs wherever Ctrl+Alt+Esc is named, and the docs say which
   platforms send Win/Cmd shortcuts to the target while captured (Windows, macOS with Accessibility; not Linux).
+- Docs: **`docs/platform-parity.md`**, every place Windows, Linux and macOS differ, how sure we are of each, and a dated
+  list of what to check on a real Linux box and Mac; the README install step lists the macOS `.dmg`, and getting-started
+  says how to run the command line on each platform.
 
 ## [0.4.8] - 2026-10-08 (polish ahead of 1.0; signed Secure Boot boot drive, VM-verified)
 

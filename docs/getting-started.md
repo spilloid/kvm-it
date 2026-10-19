@@ -88,7 +88,8 @@ held down. More in [scripts and replay](ux.md).
 
 <img src="assets/screenshots/06-scripts.png" alt="The Scripts popup with a preview" width="49%"> <img src="assets/screenshots/07-run-log.png" alt="The run log strip after a dry run" width="49%">
 
-Everything is also on the command line:
+Everything is also on the command line. Windows: `kvmit` (on PATH after the installer, or beside `kvmit-gui.exe` in the zip). Linux:
+`./kvm-it-X.Y.Z-x86_64.AppImage cli <command>`. macOS: `/Applications/kvm-it.app/Contents/MacOS/kvmit <command>`.
 
 ```bash
 kvmit scan

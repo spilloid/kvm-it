@@ -44,7 +44,8 @@ The picture is the window. A single top bar holds everything else:
   again) or after 15 s, and never hide the adapter-link error, which has its own line. *Type* keeps your text until the run
   has actually started, and flags characters the US layout cannot type before you click.
 - The chips and buttons are exposed to screen readers and UI Automation by name.
-
+- The same window, words and safety on Windows, Linux and macOS; every place they differ, and how sure we are, is in
+  [platform parity](platform-parity.md).
 <img src="assets/screenshots/01-overview.png" alt="The window: chips and buttons along the top, the picture filling the rest" style="max-width:100%">
 
 The script library, with a script's preview, variables and the Run / Dry run / Abort buttons; and the run log strip that
