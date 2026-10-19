@@ -16,6 +16,9 @@ Cross-platform parity audit (review round 36, `docs/platform-parity.md`). Deskto
   "Access is denied": on Linux, joining the `dialout` group; on Windows, macOS and Linux, a port another program (a serial
   monitor, another flasher) is holding. getting-started.md now tells Linux users about `dialout` before they flash, and the
   hardware guide no longer says the flasher is Linux and Windows only.
+- **macOS: recording finds an ffmpeg installed with Homebrew or MacPorts.** An app opened from Finder or the Dock does not
+  get the shell's PATH, so `brew install ffmpeg` was reported as "ffmpeg was not found"; `/opt/homebrew/bin`,
+  `/usr/local/bin` and `/opt/local/bin` are now tried when ffmpeg is not on PATH. Host-tested only; not run on a Mac.
 
 ## [0.4.8] - 2026-10-08 (polish ahead of 1.0; signed Secure Boot boot drive, VM-verified)
 

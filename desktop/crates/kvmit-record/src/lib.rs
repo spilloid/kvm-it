@@ -20,7 +20,7 @@ mod recorder;
 
 pub use args::{build_args, AudioBackend, AudioInput, Format, Settings};
 pub use audio::{list_audio_devices, AudioDevice};
-pub use recorder::{
+pub use recorder::{default_ffmpeg, 
     check_ffmpeg, poll_record, Canceller, Finished, PollHandle, PushOutcome, RecordError, Recorder,
 };
 
