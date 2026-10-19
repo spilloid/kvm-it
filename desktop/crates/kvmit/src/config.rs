@@ -57,12 +57,20 @@ impl Config {
         }
     }
     pub fn script_dir(&self) -> PathBuf {
-        self.script_dir
-            .clone()
-            .unwrap_or_else(|| dirs::document_dir().unwrap_or_else(|| PathBuf::from(".")).join("kvm-it").join("scripts"))
+        self.script_dir.clone().unwrap_or_else(|| default_script_dir(dirs::document_dir(), dirs::home_dir()))
     }
 }
 
+/// `<Documents>/kvm-it/scripts` on every platform. Linux reports a Documents folder only when `xdg-user-dirs` has set one up
+/// (minimal and server installs often have none); the folder then is `~/Documents/kvm-it/scripts` as documented, never a
+/// path relative to wherever the app was started from.
+fn default_script_dir(documents: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
+    documents
+        .or_else(|| home.map(|h| h.join("Documents")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("kvm-it")
+        .join("scripts")
+}
 
 /// Windows: opening (or renaming onto) the config at the instant another `kvmit` process renames its new copy over it fails
 /// with "Access is denied" (os error 5) while the replaced file is pending deletion; reproduced by
@@ -105,6 +113,15 @@ fn base_for_update(read: std::io::Result<String>, current: &Config) -> Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_scripts_folder_is_never_relative_to_the_working_directory_when_a_home_exists() {
+        let home = PathBuf::from("/home/tech");
+        assert_eq!(default_script_dir(Some(PathBuf::from("/home/tech/Dokumente")), Some(home.clone())), PathBuf::from("/home/tech/Dokumente/kvm-it/scripts"));
+        // Linux without xdg-user-dirs: dirs::document_dir() is None
+        assert_eq!(default_script_dir(None, Some(home)), PathBuf::from("/home/tech/Documents/kvm-it/scripts"));
+        assert!(default_script_dir(None, None).is_relative(), "only with no home at all");
+    }
 
     #[test]
     fn an_unreadable_config_is_never_replaced_with_defaults() {

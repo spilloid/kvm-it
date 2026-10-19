@@ -10,6 +10,8 @@ Cross-platform parity audit (review round 36, `docs/platform-parity.md`). Deskto
   "not found"); the reader then used defaults, and its next save wrote them over everyone's settings. Reads now retry for up
   to 100 ms, and an unreadable file is never replaced with defaults. Found by running the test suite natively on Windows
   (4 failures in 60 runs before, 0 in 120 after); CI runs the tests on Linux and macOS only.
+- **Linux: the scripts folder is `~/Documents/kvm-it/scripts` as documented**, also on systems without `xdg-user-dirs`
+  (minimal and server installs), where it used to be `kvm-it/scripts` under whatever folder the app was started from.
 
 ## [0.4.8] - 2026-10-08 (polish ahead of 1.0; signed Secure Boot boot drive, VM-verified)
 
