@@ -36,13 +36,13 @@ impl Config {
         self.update_at(&config_path(), f)
     }
     fn update_at(&mut self, p: &Path, f: impl Fn(&mut Config)) {
-        let mut fresh = Config::load_from(p);
+        let mut fresh = base_for_update(read_config(p), self);
         f(&mut fresh);
         fresh.save_to(p);
         f(self);
     }
     fn load_from(p: &Path) -> Config {
-        std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        read_config(p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
     /// Write a temp file unique to this save and rename it over the config: several `kvmit` processes (one per
     /// adapter) may save at once, and a torn file would make `load` silently fall back to defaults.
@@ -52,7 +52,7 @@ impl Config {
         }
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let tmp = p.with_extension(format!("json.{}.{}.tmp", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
-        if std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap_or_default()).is_err() || std::fs::rename(&tmp, p).is_err() {
+        if std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap_or_default()).is_err() || retry_while_replaced(|| std::fs::rename(&tmp, p)).is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
     }
@@ -63,9 +63,58 @@ impl Config {
     }
 }
 
+
+/// Windows: opening (or renaming onto) the config at the instant another `kvmit` process renames its new copy over it fails
+/// with "Access is denied" (os error 5) while the replaced file is pending deletion; reproduced by
+/// `concurrent_saves_never_leave_a_torn_file` on Windows 11 (CI never runs the tests on Windows). The same test also saw a
+/// read report "not found" for an instant during the swap, which `update` would take for "no config yet". Both last
+/// microseconds, so retry briefly. The limits are wall-clock time, not a retry count: Windows rounds short sleeps up to its
+/// ~15.6 ms timer tick, so a count multiplied that into seconds per read under contention. Worst case per call: 100 ms
+/// (a genuinely missing file costs 20 ms once, on first run). Elsewhere a rename is atomic for readers and both errors are
+/// returned at once.
+fn retry_while_replaced<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    use std::io::ErrorKind::{NotFound, PermissionDenied};
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    loop {
+        let waited = start.elapsed();
+        match op() {
+            Err(e) if cfg!(windows) && e.kind() == PermissionDenied && waited < Duration::from_millis(100) => {}
+            Err(e) if cfg!(windows) && e.kind() == NotFound && waited < Duration::from_millis(20) => {}
+            r => return r,
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn read_config(p: &Path) -> std::io::Result<String> {
+    retry_while_replaced(|| std::fs::read_to_string(p))
+}
+
+/// What an update starts from: the file's current settings; defaults when there is no file yet (or it is not valid JSON,
+/// which the save then replaces); and this process's own copy when the file exists but could not be read, so a read
+/// failure can never write defaults over everyone's settings.
+fn base_for_update(read: std::io::Result<String>, current: &Config) -> Config {
+    match read {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
+        Err(_) => current.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unreadable_config_is_never_replaced_with_defaults() {
+        let mine = Config { last_device: Some("AA:BB".into()), theme: crate::theme::ThemeChoice::Dark, ..Default::default() };
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(base_for_update(Err(denied), &mine), mine, "unreadable: keep this process's settings");
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(base_for_update(Err(missing), &mine), Config::default(), "no file yet");
+        assert_eq!(base_for_update(Ok("{\"last_device\":\"CC\"}".into()), &mine).last_device.as_deref(), Some("CC"), "the file wins");
+    }
 
     #[test]
     fn round_trips_and_ignores_unknown_fields() {
@@ -117,7 +166,7 @@ mod tests {
                 std::thread::yield_now();
             }
             for _ in 0..500 {
-                let body = std::fs::read_to_string(&p).expect("config readable during saves");
+                let body = read_config(&p).expect("config readable during saves");
                 assert!(serde_json::from_str::<Config>(&body).is_ok(), "torn config: {body:?}");
             }
         });
