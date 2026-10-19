@@ -217,7 +217,7 @@ impl RecordUi {
         }
         let mut clicked = false;
         ui.add_enabled_ui(block.is_none(), |ui| {
-            let r = ui.button("● Start recording");
+            let r = ui.button("⏺ Start recording");
             let r = match block {
                 Some(why) => r.on_disabled_hover_text(why),
                 None => r,

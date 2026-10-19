@@ -27,6 +27,12 @@ Cross-platform parity audit (review round 36, `docs/platform-parity.md`). Deskto
   does not support, so the hidden pointer could wander onto other windows and a click there ended capture. It now asks for
   a confined pointer first and a locked one second, so each platform keeps the strongest grab it supports (no change on
   Windows or macOS). From winit's source and a unit test; **not yet run on an X11 or Wayland desktop.**
+- **A narrow window no longer mangles the top bar.** Below about 1000 px wide (at 150 % scaling) the Record button
+  wrapped one letter per line and the bar could fill the whole window; buttons now move to the next row whole, a long
+  notice wraps with its dismiss button inside the window, and the window has a minimum size (640x400 points).
+  The Record button's dot and the notice's dismiss cross were missing from the app's fonts and showed as empty boxes on
+  every platform; they are now drawn with glyphs the fonts have, and a test checks every non-ASCII character the UI prints.
+  Checked by screenshot on Windows 11; Linux and macOS use the same layout code but have not been looked at.
 - Docs: the release chord is given as Ctrl+Option+Esc for Macs wherever Ctrl+Alt+Esc is named, and the docs say which
   platforms send Win/Cmd shortcuts to the target while captured (Windows, macOS with Accessibility; not Linux).
 
