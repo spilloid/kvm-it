@@ -17,7 +17,8 @@ double-click it. That adds **kvm-it** to your Start menu. Prefer no installer? G
 `kvmit-gui.exe`. It is one self-contained program that uses only what Windows already has.
 
 **Linux:** download `kvm-it-X.Y.Z-x86_64.AppImage`, `chmod +x` it, run it. It wants BlueZ and the desktop libraries any
-normal distro (Debian 12 / Ubuntu 22.04 or newer) already has.
+normal distro (Debian 12 / Ubuntu 22.04 or newer) already has. To flash the adapter your user must be allowed to use serial
+ports: `sudo usermod -aG dialout $USER` (`uucp` on Arch), then log out and back in (the app says so if it is missing).
 
 **macOS (Apple silicon):** download `kvm-it-X.Y.Z-macos-arm64.dmg`, open it and drag **kvm-it** to
 Applications. It is not notarized yet, so the first time macOS blocks it: open *System Settings > Privacy & Security* and

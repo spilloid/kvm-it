@@ -538,3 +538,15 @@ fn macos_twin_ports_collapse_to_the_callout_device() {
     let linux = vec![port("/dev/ttyACM0")];
     assert_eq!(prefer_callout_ports(linux.clone()).len(), 1);
 }
+
+#[test]
+fn a_port_that_will_not_open_says_what_to_do_on_each_platform() {
+    use serialport::ErrorKind::{Io, NoDevice, Unknown};
+    let denied = Io(std::io::ErrorKind::PermissionDenied);
+    assert!(open_hint(denied, "linux").unwrap().contains("dialout"), "Linux: the serial group");
+    assert!(!open_hint(denied, "macos").unwrap().contains("dialout"), "macOS has no dialout group");
+    assert!(open_hint(NoDevice, "windows").unwrap().contains("another program"), "Windows: Access is denied = port in use");
+    assert!(open_hint(NoDevice, "macos").unwrap().contains("Another program"));
+    assert!(open_hint(NoDevice, "linux").unwrap().contains("Another program"));
+    assert_eq!(open_hint(Unknown, "linux"), None, "no guess for an unknown error");
+}

@@ -12,6 +12,10 @@ Cross-platform parity audit (review round 36, `docs/platform-parity.md`). Deskto
   (4 failures in 60 runs before, 0 in 120 after); CI runs the tests on Linux and macOS only.
 - **Linux: the scripts folder is `~/Documents/kvm-it/scripts` as documented**, also on systems without `xdg-user-dirs`
   (minimal and server installs), where it used to be `kvm-it/scripts` under whatever folder the app was started from.
+- **Flashing: a COM port that will not open is explained** on every platform, instead of a bare "Permission denied" or
+  "Access is denied": on Linux, joining the `dialout` group; on Windows, macOS and Linux, a port another program (a serial
+  monitor, another flasher) is holding. getting-started.md now tells Linux users about `dialout` before they flash, and the
+  hardware guide no longer says the flasher is Linux and Windows only.
 
 ## [0.4.8] - 2026-10-08 (polish ahead of 1.0; signed Secure Boot boot drive, VM-verified)
 
