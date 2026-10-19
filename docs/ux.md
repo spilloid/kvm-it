@@ -30,7 +30,10 @@ The picture is the window. A single top bar holds everything else:
   hover (no adapter, a script running, text the layout cannot type).
 - **Keys**, **Type**, **Scripts**: buttons that open popups (chords the OS would swallow; typing a string, masked
   if secret; the script library, variables, preview, run and dry run). Popups stay open until you click outside.
-- While input is captured only the *Input* chip is live: every key belongs to the target. The mouse wheel is forwarded in
+- While input is captured only the *Input* chip is live: every key belongs to the target. The chip names the release chord as
+  the keyboard labels it (Ctrl+Alt+Esc; Ctrl+Option+Esc on macOS). Where the controller's OS keeps its own shortcuts (Linux always;
+  Windows if the keyboard grab cannot start; macOS without the Accessibility permission) the first capture says so once and
+  points at *Keys*. The mouse wheel is forwarded in
   notches: pixel deltas (touchpads) are accumulated and sent as whole notches, line deltas as they are.
 - **Record…** opens the recording popup (GIF, or WebM with optional sound; off by default, with a no-redaction warning). While recording it becomes a red **REC** chip, always live, one click to stop.
 - **Theme** cycles auto (follows the system), light, dark; the choice is remembered. Status colours are chosen per mode and held to WCAG AA contrast (4.5:1) by tests.

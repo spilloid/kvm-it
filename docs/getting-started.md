@@ -71,8 +71,9 @@ broken, grey is idle.
 
 <img src="assets/screenshots/tour-capture.png" alt="Input captured: a red frame around the picture, and the red chip saying Ctrl+Alt+Esc to release" style="max-width:100%">
 
-**Getting out:** press **Ctrl+Alt+Esc**. That chord is never sent to the target, so it can never get stuck over there. On Windows, keys your
-PC would normally keep for itself (Win, Alt+Tab, Ctrl+Esc, Alt+F4) go to the target too while you are captured.
+**Getting out:** press **Ctrl+Alt+Esc** (on a Mac the same keys, labelled **Ctrl+Option+Esc**). That chord is never sent to the target, so it can never get stuck over there. On Windows, and on macOS once kvm-it is allowed under *Accessibility*, keys your
+PC would normally keep for itself (Win, Alt+Tab, Ctrl+Esc, Alt+F4; Cmd+Tab, Cmd+Space on a Mac) go to the target too while you are captured. On
+Linux your desktop keeps its own shortcuts (Super, Alt+Tab): send those from **Keys**; the app reminds you the first time you capture.
 
 **Keys** sends the chords your PC would swallow: Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and friends. (Ctrl+Alt+Del and Win+L cannot be
 intercepted by any program on Windows, so this is how you send them.)

@@ -19,6 +19,16 @@ Cross-platform parity audit (review round 36, `docs/platform-parity.md`). Deskto
 - **macOS: recording finds an ffmpeg installed with Homebrew or MacPorts.** An app opened from Finder or the Dock does not
   get the shell's PATH, so `brew install ffmpeg` was reported as "ffmpeg was not found"; `/opt/homebrew/bin`,
   `/usr/local/bin` and `/opt/local/bin` are now tried when ffmpeg is not on PATH. Host-tested only; not run on a Mac.
+- **Input capture says the same things on every platform.** On macOS, a keyboard grab that stopped mid-capture was
+  reported as "Windows stopped routing keys"; it now names macOS. Starting capture without a keyboard grab now explains
+  itself once on Linux (your desktop keeps Super, Alt+Tab: use *Keys*) and on Windows when the grab helper cannot start, as
+  macOS already did for the Accessibility permission.
+- **Linux (X11): the pointer stays in the window while captured.** The app asked only for a *locked* pointer, which X11
+  does not support, so the hidden pointer could wander onto other windows and a click there ended capture. It now asks for
+  a confined pointer first and a locked one second, so each platform keeps the strongest grab it supports (no change on
+  Windows or macOS). From winit's source and a unit test; **not yet run on an X11 or Wayland desktop.**
+- Docs: the release chord is given as Ctrl+Option+Esc for Macs wherever Ctrl+Alt+Esc is named, and the docs say which
+  platforms send Win/Cmd shortcuts to the target while captured (Windows, macOS with Accessibility; not Linux).
 
 ## [0.4.8] - 2026-10-08 (polish ahead of 1.0; signed Secure Boot boot drive, VM-verified)
 

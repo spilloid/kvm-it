@@ -510,10 +510,8 @@ impl App {
             move || ctx.request_repaint() // keyboard events arrive off-thread: wake the GUI to forward (and release) promptly
         });
         if self.grab.is_none() && !self.grab_hint_shown {
-            if let Some(h) = crate::syskeys::unavailable_hint() {
-                self.grab_hint_shown = true; // once per run: it is advice, not an error
-                self.set_notice(h);
-            }
+            self.grab_hint_shown = true; // once per run: it is advice, not an error
+            self.set_notice(crate::syskeys::unavailable_hint());
         }
         debug_log(&format!("capture begins (OS keyboard grab: {})", if self.grab.is_some() { "on" } else { "off" }));
         // Captured keys must reach the target only: a focused local widget would otherwise take Enter/Space.
@@ -522,7 +520,9 @@ impl App {
                 m.surrender_focus(id);
             }
         });
-        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
+        for grab in crate::syskeys::CAPTURE_POINTER_GRABS {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(grab));
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
     }
 
@@ -573,7 +573,7 @@ impl App {
             // guessing which keys are down: continuing on egui's keys could leave a forwarded modifier stuck.
             if hooked && grab_should_have_swallowed(ev) {
                 debug_log("capture ends: the keyboard grab is no longer swallowing keys");
-                self.set_notice("Keyboard capture ended: Windows stopped routing keys through kvm-it's keyboard grab. Click the picture to capture again.");
+                self.set_notice(crate::syskeys::grab_lost_notice(crate::syskeys::THIS_OS));
                 self.released_this_frame = true;
                 self.end_capture(ctx);
                 return;
