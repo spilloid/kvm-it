@@ -521,12 +521,7 @@ impl App {
             self.set_notice(crate::syskeys::unavailable_hint());
         }
         debug_log(&format!("capture begins (OS keyboard grab: {})", if self.grab.is_some() { "on" } else { "off" }));
-        // Captured keys must reach the target only: a focused local widget would otherwise take Enter/Space.
-        ctx.memory_mut(|m| {
-            if let Some(id) = m.focused() {
-                m.surrender_focus(id);
-            }
-        });
+        release_local_ui(ctx);
         for grab in crate::syskeys::CAPTURE_POINTER_GRABS {
             ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(grab));
         }
@@ -1409,7 +1404,18 @@ fn indicator(ui: &mut egui::Ui, h: Health, text: impl Into<String>) -> egui::Res
         .inner
 }
 
-/// A popup under `anchor` that stays open until you click outside it (these hold forms, not one-shot menu items).
+/// Captured input must reach the target only: a focused local widget would otherwise take Enter/Space, and an open popup
+/// (capture can start from the Video popup's own button) would take clicks, since egui still sees them and a popup's
+/// controls stay enabled whatever its anchor's state.
+fn release_local_ui(ctx: &egui::Context) {
+    ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    egui::Popup::close_all(ctx);
+}
+
 /// The amber notice line under the bar, with its dismiss button. The text wraps and the button follows it, so a long notice
 /// (macOS's Accessibility advice is ~250 characters) never runs off the window with its dismiss button. True when dismissed.
 fn notice_row(ui: &mut egui::Ui, text: &str) -> bool {
@@ -1425,6 +1431,7 @@ fn notice_row(ui: &mut egui::Ui, text: &str) -> bool {
 /// window. Logical points; checked by screenshot on Windows at 150 % scaling (docs/platform-parity.md).
 pub const MIN_WINDOW: [f32; 2] = [640.0, 400.0];
 
+/// A popup under `anchor` that stays open until you click outside it (these hold forms, not one-shot menu items).
 fn popup(anchor: &egui::Response, width: f32, add_contents: impl FnOnce(&mut egui::Ui)) {
     egui::Popup::menu(anchor).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(width).show(add_contents);
 }
@@ -1583,5 +1590,68 @@ mod tests {
         assert!(!grab_should_have_swallowed(&key(egui::Key::A, true, true)), "auto-repeat of a key held before capture");
         assert!(!grab_should_have_swallowed(&key(egui::Key::A, false, false)), "a release passes through legitimately");
         assert!(!grab_should_have_swallowed(&egui::Event::PointerGone), "not a key at all");
+    }
+
+    /// Round 37 (astra's open question): moving `popup()` out of `add_enabled_ui(idle_ui, ..)` changed nothing. egui 0.32's
+    /// `Popup::show` draws in its own `Area`, a root `Ui` that never inherits the anchor's enabled state, so an open popup's
+    /// controls were live during capture before the move too (its button cannot be clicked to open it while disabled).
+    #[test]
+    fn a_popups_controls_do_not_inherit_the_anchors_enabled_state() {
+        let enabled_inside = |disabled_parent: bool| {
+            let ctx = egui::Context::default();
+            let seen = std::cell::Cell::new(None);
+            for _ in 0..2 {
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let body = |ui: &mut egui::Ui| {
+                            let r = ui.button("anchor");
+                            egui::Popup::open_id(ctx, egui::Popup::default_response_id(&r));
+                            popup(&r, 100.0, |ui| seen.set(Some(ui.is_enabled())));
+                        };
+                        if disabled_parent {
+                            ui.add_enabled_ui(false, body);
+                        } else {
+                            body(ui);
+                        }
+                    });
+                });
+            }
+            seen.get().expect("the popup was shown")
+        };
+        assert!(enabled_inside(true), "inside a disabled group (before the move)");
+        assert!(enabled_inside(false), "outside it (after the move)");
+    }
+
+    /// The Video popup has its own "Capture keyboard & mouse" button: a click inside a popup does not close it, so it stayed
+    /// open over the picture during capture with its controls live (see the test above), and egui still sees the captured
+    /// clicks. Starting capture closes every popup.
+    #[test]
+    fn capture_started_from_inside_a_popup_closes_it() {
+        let ctx = egui::Context::default();
+        let shown = std::cell::Cell::new(false);
+        let frame = |start_capture: bool| {
+            shown.set(false);
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let r = ui.button("Video");
+                    popup(&r, 100.0, |_| {
+                        shown.set(true);
+                        if start_capture {
+                            release_local_ui(ctx); // what begin_capture does, from the popup's Capture button
+                        }
+                    });
+                });
+            });
+            shown.get()
+        };
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let r = ui.button("Video");
+                egui::Popup::open_id(ctx, egui::Popup::default_response_id(&r));
+            });
+        });
+        assert!(frame(false), "open");
+        assert!(frame(true), "the frame the Capture button is clicked");
+        assert!(!frame(false), "closed from the next frame on");
     }
 }

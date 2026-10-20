@@ -29,6 +29,9 @@ Cross-platform parity audit (review round 36, `docs/platform-parity.md`). Deskto
   does not support, so the hidden pointer could wander onto other windows and a click there ended capture. It now asks for
   a confined pointer first and a locked one second, so each platform keeps the strongest grab it supports (no change on
   Windows or macOS). From winit's source and a unit test; **not yet run on an X11 or Wayland desktop.**
+- **Capture started from the Video popup closes the popup.** Its *Capture keyboard & mouse* button left the popup open over
+  the picture, and clicks meant for the target also worked its controls (egui sees captured clicks, and a popup's
+  controls stay enabled during capture). Starting capture now closes any open popup. Headless test; all platforms.
 - **A narrow window no longer mangles the top bar.** Below about 1000 px wide (at 150 % scaling) the Record button
   wrapped one letter per line and the bar could fill the whole window; buttons now move to the next row whole, a long
   notice wraps with its dismiss button inside the window, and the window has a minimum size (640x400 points).
