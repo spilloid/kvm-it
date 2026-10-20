@@ -145,6 +145,14 @@ fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime")
 }
 
+/// Record a setting for later runs. A settings file that cannot be read is left alone (`Config::update`); the command
+/// itself still goes ahead, so this is a warning, not an error.
+fn save_settings(cfg: &Config, f: impl Fn(&mut Config)) {
+    if let Err(e) = cfg.clone().update(f) {
+        eprintln!("warning: {e}");
+    }
+}
+
 fn real_main(cli: Cli) -> R<()> {
     let cfg = Config::load();
     match cli.cmd.unwrap_or(Cmd::Gui) {
@@ -163,7 +171,7 @@ fn real_main(cli: Cli) -> R<()> {
             let id = session::resolve(cli.device, None).await?;
             println!("pairing with {id} (the adapter must be in its pairing window: first 15 s after plug-in, or BOOT short press)…");
             backend::pair(&id).await?;
-            cfg.clone().update(|c| c.last_device = Some(id.clone()));
+            save_settings(&cfg, |c| c.last_device = Some(id.clone()));
             let (dev, conn) = session::connect(&id).await?;
             println!("paired and connected: {} (firmware {}.{}.{})", dev.info().name, dev.info().fw[0], dev.info().fw[1], dev.info().fw[2]);
             dev.shutdown().await;
@@ -176,7 +184,7 @@ fn real_main(cli: Cli) -> R<()> {
         Cmd::Unpair => rt().block_on(async {
             let id = session::resolve(cli.device, cfg.last_device.clone()).await?;
             backend::unpair(&id).await?;
-            cfg.clone().update(|c| c.last_device = None);
+            save_settings(&cfg, |c| c.last_device = None);
             println!("removed pairing for {id}. To erase the adapter's side too, hold BOOT for 10 s.");
             Ok(())
         }),
@@ -388,7 +396,7 @@ fn with_device<T>(id: Option<String>, cfg: Config, f: impl FnOnce(&tokio::runtim
     let (dev, conn) = rt.block_on(session::connect(&id))?;
     // skip a no-op save: several `kvmit` processes (one per adapter) may be running
     if cfg.last_device.as_deref() != Some(id.as_str()) {
-        cfg.clone().update(|c| c.last_device = Some(id.clone()));
+        save_settings(&cfg, |c| c.last_device = Some(id.clone()));
     }
     let out = f(&rt, &dev);
     rt.block_on(async {

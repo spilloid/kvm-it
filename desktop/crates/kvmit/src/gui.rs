@@ -220,6 +220,13 @@ impl App {
         *self.notice.lock().unwrap() = s.into();
     }
 
+    /// Change a setting; when the settings file could not be read (and so was left alone), say so in the notice line.
+    fn cfg_update(&mut self, f: impl Fn(&mut Config)) {
+        if let Err(e) = self.cfg.update(f) {
+            self.set_notice(e);
+        }
+    }
+
     /// Connect and keep reconnecting until superseded (generation counter) or the app exits.
     fn start_link(&mut self, id: String, ctx: egui::Context, pair_first: bool) {
         // Register the attempt synchronously, in the same step that supersedes any earlier one: the generation bump and the
@@ -231,7 +238,7 @@ impl App {
             *l = Link::Connecting(id.clone());
             g
         };
-        self.cfg.update(|c| c.last_device = Some(id.clone()));
+        self.cfg_update(|c| c.last_device = Some(id.clone()));
         let (link, gen_ref, status, notice) = (self.link.clone(), self.link_gen.clone(), self.status.clone(), self.notice.clone());
         // Registered here, before the task is spawned, and held until the first connection attempt has resolved (Connected
         // published, or failed): from the first click until then the flasher cannot open, so no cancel can find a pairing, or the
@@ -345,7 +352,7 @@ impl App {
         if let Link::Connected { dev, .. } = previous {
             self.rt.spawn(async move { dev.shutdown().await });
         }
-        self.cfg.update(|c| c.last_device = None);
+        self.cfg_update(|c| c.last_device = None);
     }
 
     fn device(&self) -> Option<Device> {
@@ -465,7 +472,7 @@ impl App {
                 if !d.path.starts_with(kvmit_video::DEMO_PREFIX) {
                     // the synthetic demo source is never the remembered card
                     let (path, key) = (d.path.clone(), d.key.clone());
-                    self.cfg.update(|c| {
+                    self.cfg_update(|c| {
                         c.last_video = Some(path.clone());
                         c.last_video_key = Some(key.clone());
                     });
@@ -915,7 +922,7 @@ impl eframe::App for App {
                 let r = ui.add_enabled(idle_ui, egui::Button::new(self.cfg.theme.label()));
                 if r.on_hover_text("Click to cycle: follow the system, light, dark").clicked() {
                     let theme = self.cfg.theme.next();
-                    self.cfg.update(|c| c.theme = theme);
+                    self.cfg_update(|c| c.theme = theme);
                     ctx.set_theme(theme.preference());
                 }
             });

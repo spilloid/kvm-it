@@ -32,14 +32,24 @@ impl Config {
     /// Change settings: `f` is applied to the file's current contents (not this possibly stale copy), which are saved,
     /// and then to this copy, so newer settings saved by another `kvmit` process (one per adapter, or the GUI) survive.
     /// Not locked: two updates at the same instant can still race, but only over one read and one write.
-    pub fn update(&mut self, f: impl Fn(&mut Config)) {
+    ///
+    /// When the file exists but cannot be read (still unreadable after the Windows retry), nothing is saved: this copy may
+    /// hold defaults (its own load failed) or settings older than the file's, and saving it would replace what is on disk.
+    /// The change then applies to this run only, and the returned message says so, for the caller to show.
+    pub fn update(&mut self, f: impl Fn(&mut Config)) -> Result<(), String> {
         self.update_at(&config_path(), f)
     }
-    fn update_at(&mut self, p: &Path, f: impl Fn(&mut Config)) {
-        let mut fresh = base_for_update(read_config(p), self);
+    fn update_at(&mut self, p: &Path, f: impl Fn(&mut Config)) -> Result<(), String> {
+        self.update_with(read_config(p), p, f)
+    }
+    fn update_with(&mut self, read: std::io::Result<String>, p: &Path, f: impl Fn(&mut Config)) -> Result<(), String> {
+        f(self);
+        let mut fresh = base_for_update(read).map_err(|e| {
+            format!("Settings not saved: {} could not be read ({e}). The change lasts until kvm-it closes.", p.display())
+        })?;
         f(&mut fresh);
         fresh.save_to(p);
-        f(self);
+        Ok(())
     }
     fn load_from(p: &Path) -> Config {
         read_config(p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
@@ -100,13 +110,13 @@ fn read_config(p: &Path) -> std::io::Result<String> {
 }
 
 /// What an update starts from: the file's current settings; defaults when there is no file yet (or it is not valid JSON,
-/// which the save then replaces); and this process's own copy when the file exists but could not be read, so a read
-/// failure can never write defaults over everyone's settings.
-fn base_for_update(read: std::io::Result<String>, current: &Config) -> Config {
+/// which the save then replaces). Any other read error is returned: the file's settings are unknown, so the update must not
+/// save (see [`Config::update`]).
+fn base_for_update(read: std::io::Result<String>) -> std::io::Result<Config> {
     match read {
-        Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
-        Err(_) => current.clone(),
+        Ok(s) => Ok(serde_json::from_str(&s).unwrap_or_default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+        Err(e) => Err(e),
     }
 }
 
@@ -124,13 +134,12 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_config_is_never_replaced_with_defaults() {
-        let mine = Config { last_device: Some("AA:BB".into()), theme: crate::theme::ThemeChoice::Dark, ..Default::default() };
+    fn an_unreadable_config_gives_no_base_to_save_from() {
         let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-        assert_eq!(base_for_update(Err(denied), &mine), mine, "unreadable: keep this process's settings");
+        assert!(base_for_update(Err(denied)).is_err(), "unreadable: the file's settings are unknown");
         let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
-        assert_eq!(base_for_update(Err(missing), &mine), Config::default(), "no file yet");
-        assert_eq!(base_for_update(Ok("{\"last_device\":\"CC\"}".into()), &mine).last_device.as_deref(), Some("CC"), "the file wins");
+        assert_eq!(base_for_update(Err(missing)).unwrap(), Config::default(), "no file yet");
+        assert_eq!(base_for_update(Ok("{\"last_device\":\"CC\"}".into())).unwrap().last_device.as_deref(), Some("CC"), "the file wins");
     }
 
     #[test]
@@ -200,11 +209,26 @@ mod tests {
         gui.save_to(&p);
         // another process (a CLI run) records its adapter after the GUI loaded its copy
         Config { last_device: Some("AA:BB".into()), ..Default::default() }.save_to(&p);
-        gui.update_at(&p, |c| c.theme = crate::theme::ThemeChoice::Dark);
+        gui.update_at(&p, |c| c.theme = crate::theme::ThemeChoice::Dark).unwrap();
         let on_disk = Config::load_from(&p);
         assert_eq!(on_disk.last_device.as_deref(), Some("AA:BB"));
         assert_eq!(on_disk.theme, crate::theme::ThemeChoice::Dark);
         assert_eq!(gui.theme, crate::theme::ThemeChoice::Dark);
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn an_update_after_a_failed_read_leaves_the_saved_settings_alone() {
+        let p = temp_config("unread");
+        let saved = Config { last_device: Some("AA:BB".into()), last_video_key: Some("Cam @ usb-1".into()), ..Default::default() };
+        saved.save_to(&p);
+        // this process's own load failed too (or predates another process's save), so its copy holds defaults
+        let mut gui = Config::default();
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let err = gui.update_with(Err(denied), &p, |c| c.theme = crate::theme::ThemeChoice::Dark).unwrap_err();
+        assert!(err.starts_with("Settings not saved"), "the caller is told: {err}");
+        assert_eq!(Config::load_from(&p), saved, "a copy that was never read from the file must not replace it");
+        assert_eq!(gui.theme, crate::theme::ThemeChoice::Dark, "the change still applies to this run");
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 }

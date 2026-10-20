@@ -8,7 +8,8 @@ Cross-platform parity audit (review round 36, `docs/platform-parity.md`). Deskto
 - **Windows: settings could be reset when two kvm-it processes saved at once** (the GUI and a `kvmit run`, or several runs).
   On Windows, reading the settings file at the instant another process replaced it failed ("Access is denied", or briefly
   "not found"); the reader then used defaults, and its next save wrote them over everyone's settings. Reads now retry for up
-  to 100 ms, and an unreadable file is never replaced with defaults. Found by running the test suite natively on Windows
+  to 100 ms; a settings file that still cannot be read is left as it is, the change lasts until the app closes, and the app
+  (or `kvmit`, as a warning) says the setting was not saved. Found by running the test suite natively on Windows
   (4 failures in 60 runs before, 0 in 120 after); CI runs the tests on Linux and macOS only.
 - **Linux: the scripts folder is `~/Documents/kvm-it/scripts` as documented**, also on systems without `xdg-user-dirs`
   (minimal and server installs), where it used to be `kvm-it/scripts` under whatever folder the app was started from.
