@@ -61,6 +61,11 @@ self-test types into the machine it is plugged into.
   CI never runs the tests or clippy on Windows: run `cargo test --workspace` and `cargo clippy --workspace --all-targets`
   natively on Windows before a release.
 
+- 2026-10-19 (astra round 37, known residual, Low): the Unix ffmpeg lookup accepts a candidate with *any* execute bit, so a
+  file only another user or group may run (mode 0641, owned by us) still counts and can hide a usable Homebrew copy. A
+  libc `access(X_OK)` fix (d2bfbd9) was reverted because a new direct dependency needs `scripts/rs.sh licenses` rerun, which
+  the dev box could not do. Redo it with the licence listing regenerated.
+
 - 2026-10-08 (0.4.8): the signed Secure Boot boot drive (PR #15) is **VM-verified only** and its image has not been
   flashed to a real adapter; real PCs are issue #40. The plain-language Bluetooth errors are host-tested on Linux and
   macOS (only Windows' no-adapter case ran on real hardware); the Linux scan/pair/unpair BlueZ setup was refactored into
