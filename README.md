@@ -23,7 +23,7 @@ HDMI capture card, and one app.
 
 - **See and drive the target in one window.** Click the picture and your keyboard and mouse belong to the target; **Ctrl+Alt+Esc** (**Ctrl+Option+Esc** on a Mac) gives
   them back (that chord is never sent). It works from the BIOS splash onward: if the target takes a USB keyboard, kvm-it can drive it.
-- **The keys your PC would swallow.** One-click Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more; on Windows and macOS, the rest go to the target too while captured (Linux: use the Keys button for them).
+- **The keys your PC would swallow.** One-click Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more; on Windows, and on macOS once kvm-it is allowed under *Privacy & Security > Accessibility*, the rest go to the target too while captured (Linux, or a Mac without that permission: use the Keys button for them).
 - **Zero-step reconnect.** Pair once. Move the cables to the next machine and the app reconnects by itself.
 - **Replayable setup scripts.** Native TOML or imported DuckyScript: text, keys, chords, delays, and *wait-for-the-screen* steps, so one slow
   install screen does not wreck everything after it. Preview and dry-run before anything is typed; abort leaves nothing held down.
