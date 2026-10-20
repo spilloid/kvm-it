@@ -13,7 +13,7 @@ HDMI capture card, and one app.
 ## Three steps
 
 1. **Get the parts.** An ESP32-S3 board with two USB-C ports (**COM** and **USB**) and a USB HDMI capture card. Details: [get started](docs/getting-started.md).
-2. **Install the app.** Download from [Releases](https://github.com/spilloid/kvm-it/releases): a signed `.msi`/`.zip` for **Windows 11**, an
+2. **Install the app.** Download from [Releases](https://github.com/spilloid/kvm-it/releases): a signed `.msi`/`.zip` for **Windows 11**, a `.dmg` for **macOS** (Apple silicon), an
    `.AppImage` for **Linux**. Double-click or `chmod +x`. That is the whole "dev environment": **no Rust, no Docker, no drivers, no DLLs to hunt down.**
 3. **Plug in.** In the app: **Adapter > Flash adapter…** (one click; the firmware is inside the app), pair once, and drive.
 
@@ -21,9 +21,9 @@ HDMI capture card, and one app.
 
 ## What you get
 
-- **See and drive the target in one window.** Click the picture and your keyboard and mouse belong to the target; **Ctrl+Alt+Esc** gives
+- **See and drive the target in one window.** Click the picture and your keyboard and mouse belong to the target; **Ctrl+Alt+Esc** (**Ctrl+Option+Esc** on a Mac) gives
   them back (that chord is never sent). It works from the BIOS splash onward: if the target takes a USB keyboard, kvm-it can drive it.
-- **The keys your PC would swallow.** One-click Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more; on Windows, the rest go to the target too.
+- **The keys your PC would swallow.** One-click Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more; on Windows, and on macOS once kvm-it is allowed under *Privacy & Security > Accessibility*, the rest go to the target too while captured (Linux, or a Mac without that permission: use the Keys button for them).
 - **Zero-step reconnect.** Pair once. Move the cables to the next machine and the app reconnects by itself.
 - **Replayable setup scripts.** Native TOML or imported DuckyScript: text, keys, chords, delays, and *wait-for-the-screen* steps, so one slow
   install screen does not wreck everything after it. Preview and dry-run before anything is typed; abort leaves nothing held down.
@@ -91,7 +91,7 @@ Read [docs/security.md](docs/security.md) before using it for anything you care 
 | `firmware/` | ESP-IDF project (ESP32-S3, TinyUSB HID, NimBLE) |
 | `protocol/` | [Wire protocol v1](protocol/SPEC.md) and generated golden vectors |
 | `desktop/` | Rust workspace: `kvmit` app (CLI + GUI) and its library crates |
-| `docs/` | The [docs site](https://spilloid.github.io/kvm-it/) source: UX and scripting, architecture, hardware, security, roadmap, review log |
+| `docs/` | The [docs site](https://spilloid.github.io/kvm-it/) source: UX and scripting, platform parity, architecture, hardware, security, roadmap, review log |
 | `scripts/` | Containerised build, test and flash helpers |
 
 ## License

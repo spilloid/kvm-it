@@ -734,3 +734,63 @@ generation). The reviewer verified all four round-34 fixes, ran 18 negative case
 pass, checked the signature-size detection against two real Authenticode-signed PEs (x64 and PE32), and regenerated the
 firmware licence file byte-for-byte. Rounds 32-34 drifted towards hand-mutated inputs the release check never sees; that
 observation is recorded in corporate-strategy (`state/products/kvm-it.md`) as an STD-001 intake candidate.
+
+## 2026-10-19 - Cross-platform UX parity audit (`audit/cross-platform-ux`): review round 36 (Claude Opus 5.5, audit)
+
+- Asked: the same experience on Windows, Linux and macOS. Audit every platform-conditional path against `ux.md`, build a parity
+  matrix, fix clear inconsistencies, grade the tests for cross-platform confidence.
+- Environment: one Windows 11 PC (native Rust 1.99.1 GNU toolchain; no podman, no WSL, no Mac, no Linux box). Nothing was flashed
+  or connected to hardware. Linux and macOS findings are from source (kvm-it and the pinned winit 0.30.13, egui-winit 0.32.3,
+  serialport 4.10.1, dirs 6 sources) and unit tests.
+- Verified by running (Windows 11): `cargo test --workspace` natively, the first time the tests ever ran on Windows (203 pass
+  before, 214 after, 1 ignored); `cargo clippy --workspace --all-targets -D warnings` for the Windows and `aarch64-apple-darwin`
+  targets (the Linux target cannot be checked from Windows: `libdbus-sys` needs the Linux dbus package); the GUI with the demo
+  source, captured at 150 % scaling at four window sizes before and after.
+- Not run: anything on Linux or macOS, any hardware, the astra review (the Codex CLI is not installed on this PC). **The
+  cross-model review is owed before this branch merges.**
+- Matrix and the dated re-verify list: `docs/platform-parity.md`.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | Windows: reading `config.json` while another process renames a new copy over it fails with "Access is denied" (os error 5) and, briefly, "not found"; `update_at` then saved defaults over every setting (round 24's lost-update fix did not hold on Windows) | **Reproduced**: `concurrent_saves_never_leave_a_torn_file` failed 4/60 runs natively. Windows-only bounded retry (100 ms denied, 20 ms not found, wall-clock capped) and an update never starts from defaults unless the file is missing. 0/120 after. `ec9f051` |
+| 2 | Med | Windows-only code is never linted: clippy on the Windows target fails (`manual_checked_division`, `mf.rs`) | **Reproduced** (rustc 1.99.1; the pinned 1.99.0 was not tried). Fixed, same behaviour. `2321227` |
+| 3 | Med | STD-008: below ~1000 px wide the Record button wrapped one letter per line; at 640x420 the bar filled the window; no minimum window size | **Reproduced** by screenshot. Bar text no longer wraps, Record and Keys/Type/Scripts/Theme are direct widgets so whole buttons move rows, the notice wraps (headless layout test), minimum 640x400 points. Re-captured: two clean rows at the minimum. `0f3570c` |
+| 4 | Med | `●` and `✕` are missing from egui's bundled fonts: empty boxes on every OS | **Reproduced** (headless glyph test failed, and visible in the screenshot). Replaced with `⏺` / `🗙`; the test now checks every non-ASCII character in the GUI's string literals. `0f3570c` |
+| 5 | Med | Linux/X11: only `CursorGrab::Locked` was requested; winit returns NotSupported on X11 and egui only logs it, so the hidden pointer could leave the window while captured | **Confirmed in winit's source**; not run on X11. Request Confined then Locked (strongest per platform; Windows unchanged, macOS still Locked). `938c732` |
+| 6 | Med | A grab that stopped mid-capture said "Windows stopped routing keys" on macOS too | **Confirmed** by reading. Per-OS text, tested for all three. `938c732` |
+| 7 | Med | Capture without an OS grab was explained only on macOS; Linux (never a grab) and Windows (helper failed) said nothing while the desktop kept Super/Win and Alt+Tab | **Confirmed**. One hint per OS, once per run, pointing at Keys; all tested on every OS. `938c732` |
+| 8 | Med | macOS: a Finder-launched app never sees Homebrew's PATH, so an installed ffmpeg was "not found" | **Confirmed** (launchd PATH). Fallback to Homebrew/MacPorts dirs on macOS only; pure, tested; not run on a Mac. `a293e70` |
+| 9 | Low | Flashing: "Permission denied" (Linux, not in `dialout`) and "Access is denied" (Windows, port in use) shown raw; `dialout` documented only for firmware developers | **Confirmed** against serialport's errno mapping. Plain hints per OS, tested; getting-started and hardware.md updated. `291c3ac` |
+| 10 | Low | Linux without `xdg-user-dirs`: the scripts folder was relative to the working directory | **Confirmed** against dirs-sys. Falls back to `~/Documents`, tested. `66a37ad` |
+| 11 | Low | Docs named only Ctrl+Alt+Esc (macOS shows Ctrl+Option+Esc), said keys go to the target "on Windows" only, omitted the `.dmg` from the README's install step, the flasher's macOS support and how to reach the CLI on Linux/macOS | **Confirmed.** Fixed with the commits above and the parity page |
+
+Written up, not fixed (need another OS or a product decision; see the parity page): no visible start-up error on Linux/macOS
+from a launcher; Linux capture cards the user cannot open are silently left out of the list; Super+key cannot be sent on
+Linux; macOS adapter ids are per-Mac UUIDs while the multi-adapter docs show addresses; pointer speed per OS unmeasured.
+
+Also chased: one full `kvmit` test run took 337 s mid-audit. It did not recur in 150+ runs on the branch (worst 2.6 s; main's
+worst 1.2 s, with 6/31 runs failing on finding 1). The first version of the finding-1 retry was count-based (110 retries of a
+2 ms sleep, which Windows rounds up to ~15.6 ms), so the concurrency test's 500 reads could stretch to minutes under contention;
+the likely cause, though not proven. The retry is now capped by wall-clock time (100 ms worst per read).
+
+Test-suite grade for cross-platform confidence: **C**. Pure logic is well tested and macOS runs it natively, but a green CI run
+never runs a test or a lint on Windows (findings 1-2), never starts the GUI or checks its layout on any OS (3-4), tests only the
+host's branch of `cfg!`-selected logic, and smoke-tests packages with `--version` only. Platform glue (hooks, event taps, WinRT,
+CoreBluetooth, BlueZ, MF/AVF/V4L2) is untestable without hardware by design and rests on the maintainer passes.
+
+## 2026-10-19 - Cross-platform UX parity audit (`audit/cross-platform-ux`, PR #42): review round 37 (Codex `gpt-6-astra`)
+
+The cross-model review owed by round 36: read-only, high effort, static (no commands run) over the round-36 diff.
+**Ship after fixes**, three findings and one open question, test grade C. Each was re-checked here, reproduced before
+fixing where a test could run on this PC (STD-001), and the fix chosen here. Same Windows 11 PC, rustc 1.99.1.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Med | Round 36's config fix still saved from an unverified copy: after a read that failed past the retry, `update` saved this process's own copy, which holds defaults when its own load failed (or settings older than the file's) | **Reproduced**: a new test with a saved file, a default in-memory copy and a denied read found the file replaced (`last_device` gone). An unresolved read error now saves nothing; the change applies to this run and `update` returns a message, shown in the GUI's notice line and as a `kvmit` warning. The CHANGELOG no longer claims more than that. `c03c5cd` |
+| 2 | Low | ffmpeg discovery took any regular file, so a non-executable `ffmpeg` on PATH or in the first fallback directory hid a working one | **Confirmed** by reading. Unix candidates now need an execute bit (Windows has none); the search continues past unusable files. The permission test is `cfg(unix)`, so it runs in CI (Linux, macOS) and was only compiled here (clippy, `aarch64-apple-darwin`); a pure test covers continuing the search. `1bdfa72` |
+| 3 | Low | README said Win/Cmd shortcuts reach the target on macOS without naming the Accessibility permission | **Confirmed**; the README now says "once kvm-it is allowed under Privacy & Security > Accessibility", as getting-started does. `ce010d3` |
+| Q | - | Does moving `popup()` out of `add_enabled_ui(idle_ui, ..)` leave open popups usable during capture? | **Not a regression**: egui 0.32.3's `Popup::show` draws in its own `Area`, a root `Ui` that never inherits the anchor's enabled state (read in its source; a headless test shows the popup's `Ui` is enabled both inside and outside a disabled group). **But a real, older defect**: capture can start from the Video popup's own *Capture keyboard & mouse* button, a click inside a popup does not close it, and egui still sees captured clicks, so its controls stayed live over the picture. Reproduced headless (the popup stayed open the frame after); `begin_capture` now closes every popup. `ad7cb02` |
+
+Verified by running (Windows 11): `cargo test --workspace` (219 pass, 1 ignored; 214 before, plus five new tests),
+`cargo clippy --workspace --all-targets -D warnings` for the Windows and `aarch64-apple-darwin` targets. Not run: anything on
+Linux or macOS (the `cfg(unix)` ffmpeg test included), the GUI by hand (the popup fix is covered headless only), any hardware.

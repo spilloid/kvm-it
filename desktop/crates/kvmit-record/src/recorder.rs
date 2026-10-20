@@ -58,9 +58,46 @@ impl fmt::Display for RecordError {
 impl std::error::Error for RecordError {}
 
 fn ffmpeg_program(s: &Settings) -> PathBuf {
-    s.ffmpeg_path
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("ffmpeg"))
+    s.ffmpeg_path.clone().unwrap_or_else(default_ffmpeg)
+}
+
+/// The ffmpeg to run when none is given: `ffmpeg` from PATH, else (macOS) the usual Homebrew and MacPorts locations. An app
+/// started from Finder or the Dock gets launchd's PATH (`/usr/bin:/bin:/usr/sbin:/sbin`), which never includes them, so an
+/// ffmpeg the user installed with `brew` was reported as missing. Windows and Linux GUI apps inherit the user's PATH.
+pub fn default_ffmpeg() -> PathBuf {
+    pick_ffmpeg(std::env::consts::OS, std::env::var_os("PATH"), runnable)
+}
+
+/// A file this process could run: on Unix, a regular file with an execute bit set. `is_file` alone took a leftover
+/// non-executable `ffmpeg` (say, early on PATH) for an installed one and stopped looking, hiding a working Homebrew copy.
+/// Windows has no execute bit: any file counts.
+fn runnable(p: &Path) -> bool {
+    std::fs::metadata(p).is_ok_and(|m| m.is_file() && has_exec_bit(&m))
+}
+
+#[cfg(unix)]
+fn has_exec_bit(m: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    m.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn has_exec_bit(_: &std::fs::Metadata) -> bool {
+    true
+}
+
+fn pick_ffmpeg(os: &str, path: Option<std::ffi::OsString>, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    let exe = if os == "windows" { "ffmpeg.exe" } else { "ffmpeg" };
+    let on_path = path.is_some_and(|p| std::env::split_paths(&p).any(|d| exists(&d.join(exe))));
+    if !on_path && os == "macos" {
+        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
+            let p = Path::new(dir).join(exe);
+            if exists(&p) {
+                return p;
+            }
+        }
+    }
+    PathBuf::from("ffmpeg")
 }
 
 /// Pick `dir/kvmit-<stamp>[-N].<ext>` and reserve it with a hidden marker (`.<name>.reserved`, made with `create_new`, so two
@@ -683,6 +720,63 @@ where
         cancel: cancel_flag,
         thread: Some(thread),
     })
+}
+
+#[cfg(test)]
+mod ffmpeg_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn a_finder_launched_mac_app_still_finds_a_homebrew_ffmpeg() {
+        let launchd = Some(std::ffi::OsString::from("/usr/bin:/bin:/usr/sbin:/sbin"));
+        let brew = |p: &Path| p == Path::new("/opt/homebrew/bin/ffmpeg");
+        assert_eq!(pick_ffmpeg("macos", launchd.clone(), brew), PathBuf::from("/opt/homebrew/bin/ffmpeg"));
+        let intel_brew = |p: &Path| p == Path::new("/usr/local/bin/ffmpeg");
+        assert_eq!(pick_ffmpeg("macos", launchd.clone(), intel_brew), PathBuf::from("/usr/local/bin/ffmpeg"));
+        assert_eq!(pick_ffmpeg("macos", launchd, |_| false), PathBuf::from("ffmpeg"), "not installed: the plain name, so the error says so");
+    }
+
+    #[test]
+    fn ffmpeg_on_path_is_used_by_name_everywhere() {
+        let path = Some(std::ffi::OsString::from(if cfg!(windows) { "C:\\tools\\ffmpeg\\bin" } else { "/usr/local/bin" }));
+        let exe = if cfg!(windows) { "C:\\tools\\ffmpeg\\bin\\ffmpeg.exe" } else { "/usr/local/bin/ffmpeg" };
+        let os = std::env::consts::OS;
+        assert_eq!(pick_ffmpeg(os, path, |p| p == Path::new(exe)), PathBuf::from("ffmpeg"));
+        assert_eq!(pick_ffmpeg("linux", None, |_| true), PathBuf::from("ffmpeg"), "no Homebrew guessing off macOS");
+    }
+
+    #[test]
+    fn an_unusable_ffmpeg_does_not_stop_the_search() {
+        // a non-executable copy on PATH and in the first fallback; only the MacPorts one can run
+        let launchd = Some(std::ffi::OsString::from("/usr/bin:/bin"));
+        let usable = |p: &Path| p == Path::new("/opt/local/bin/ffmpeg");
+        assert_eq!(pick_ffmpeg("macos", launchd, usable), PathBuf::from("/opt/local/bin/ffmpeg"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_without_an_execute_bit_is_not_runnable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("kvmit-ffmpeg-exec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("ffmpeg");
+        std::fs::write(&p, "#!/bin/sh
+").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(p.is_file() && !runnable(&p), "a regular file, but not one that can run");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(runnable(&p));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_regular_file_counts_and_a_missing_one_or_a_folder_does_not() {
+        let exe = std::env::current_exe().unwrap();
+        assert!(runnable(&exe), "this test binary can run");
+        assert!(!runnable(&exe.with_file_name("no-such-ffmpeg")));
+        assert!(!runnable(exe.parent().unwrap()), "a folder never counts");
+    }
 }
 
 #[cfg(test)]

@@ -32,17 +32,27 @@ impl Config {
     /// Change settings: `f` is applied to the file's current contents (not this possibly stale copy), which are saved,
     /// and then to this copy, so newer settings saved by another `kvmit` process (one per adapter, or the GUI) survive.
     /// Not locked: two updates at the same instant can still race, but only over one read and one write.
-    pub fn update(&mut self, f: impl Fn(&mut Config)) {
+    ///
+    /// When the file exists but cannot be read (still unreadable after the Windows retry), nothing is saved: this copy may
+    /// hold defaults (its own load failed) or settings older than the file's, and saving it would replace what is on disk.
+    /// The change then applies to this run only, and the returned message says so, for the caller to show.
+    pub fn update(&mut self, f: impl Fn(&mut Config)) -> Result<(), String> {
         self.update_at(&config_path(), f)
     }
-    fn update_at(&mut self, p: &Path, f: impl Fn(&mut Config)) {
-        let mut fresh = Config::load_from(p);
+    fn update_at(&mut self, p: &Path, f: impl Fn(&mut Config)) -> Result<(), String> {
+        self.update_with(read_config(p), p, f)
+    }
+    fn update_with(&mut self, read: std::io::Result<String>, p: &Path, f: impl Fn(&mut Config)) -> Result<(), String> {
+        f(self);
+        let mut fresh = base_for_update(read).map_err(|e| {
+            format!("Settings not saved: {} could not be read ({e}). The change lasts until kvm-it closes.", p.display())
+        })?;
         f(&mut fresh);
         fresh.save_to(p);
-        f(self);
+        Ok(())
     }
     fn load_from(p: &Path) -> Config {
-        std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        read_config(p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
     /// Write a temp file unique to this save and rename it over the config: several `kvmit` processes (one per
     /// adapter) may save at once, and a torn file would make `load` silently fall back to defaults.
@@ -52,20 +62,85 @@ impl Config {
         }
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let tmp = p.with_extension(format!("json.{}.{}.tmp", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
-        if std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap_or_default()).is_err() || std::fs::rename(&tmp, p).is_err() {
+        if std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap_or_default()).is_err() || retry_while_replaced(|| std::fs::rename(&tmp, p)).is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
     }
     pub fn script_dir(&self) -> PathBuf {
-        self.script_dir
-            .clone()
-            .unwrap_or_else(|| dirs::document_dir().unwrap_or_else(|| PathBuf::from(".")).join("kvm-it").join("scripts"))
+        self.script_dir.clone().unwrap_or_else(|| default_script_dir(dirs::document_dir(), dirs::home_dir()))
+    }
+}
+
+/// `<Documents>/kvm-it/scripts` on every platform. Linux reports a Documents folder only when `xdg-user-dirs` has set one up
+/// (minimal and server installs often have none); the folder then is `~/Documents/kvm-it/scripts` as documented, never a
+/// path relative to wherever the app was started from.
+fn default_script_dir(documents: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
+    documents
+        .or_else(|| home.map(|h| h.join("Documents")))
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("kvm-it")
+        .join("scripts")
+}
+
+/// Windows: opening (or renaming onto) the config at the instant another `kvmit` process renames its new copy over it fails
+/// with "Access is denied" (os error 5) while the replaced file is pending deletion; reproduced by
+/// `concurrent_saves_never_leave_a_torn_file` on Windows 11 (CI never runs the tests on Windows). The same test also saw a
+/// read report "not found" for an instant during the swap, which `update` would take for "no config yet". Both last
+/// microseconds, so retry briefly. The limits are wall-clock time, not a retry count: Windows rounds short sleeps up to its
+/// ~15.6 ms timer tick, so a count multiplied that into seconds per read under contention. Worst case per call: 100 ms
+/// (a genuinely missing file costs 20 ms once, on first run). Elsewhere a rename is atomic for readers and both errors are
+/// returned at once.
+fn retry_while_replaced<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    use std::io::ErrorKind::{NotFound, PermissionDenied};
+    use std::time::{Duration, Instant};
+    let start = Instant::now();
+    loop {
+        let waited = start.elapsed();
+        match op() {
+            Err(e) if cfg!(windows) && e.kind() == PermissionDenied && waited < Duration::from_millis(100) => {}
+            Err(e) if cfg!(windows) && e.kind() == NotFound && waited < Duration::from_millis(20) => {}
+            r => return r,
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn read_config(p: &Path) -> std::io::Result<String> {
+    retry_while_replaced(|| std::fs::read_to_string(p))
+}
+
+/// What an update starts from: the file's current settings; defaults when there is no file yet (or it is not valid JSON,
+/// which the save then replaces). Any other read error is returned: the file's settings are unknown, so the update must not
+/// save (see [`Config::update`]).
+fn base_for_update(read: std::io::Result<String>) -> std::io::Result<Config> {
+    match read {
+        Ok(s) => Ok(serde_json::from_str(&s).unwrap_or_default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
+        Err(e) => Err(e),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_scripts_folder_is_never_relative_to_the_working_directory_when_a_home_exists() {
+        let home = PathBuf::from("/home/tech");
+        assert_eq!(default_script_dir(Some(PathBuf::from("/home/tech/Dokumente")), Some(home.clone())), PathBuf::from("/home/tech/Dokumente/kvm-it/scripts"));
+        // Linux without xdg-user-dirs: dirs::document_dir() is None
+        assert_eq!(default_script_dir(None, Some(home)), PathBuf::from("/home/tech/Documents/kvm-it/scripts"));
+        assert!(default_script_dir(None, None).is_relative(), "only with no home at all");
+    }
+
+    #[test]
+    fn an_unreadable_config_gives_no_base_to_save_from() {
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(base_for_update(Err(denied)).is_err(), "unreadable: the file's settings are unknown");
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(base_for_update(Err(missing)).unwrap(), Config::default(), "no file yet");
+        assert_eq!(base_for_update(Ok("{\"last_device\":\"CC\"}".into())).unwrap().last_device.as_deref(), Some("CC"), "the file wins");
+    }
 
     #[test]
     fn round_trips_and_ignores_unknown_fields() {
@@ -117,7 +192,7 @@ mod tests {
                 std::thread::yield_now();
             }
             for _ in 0..500 {
-                let body = std::fs::read_to_string(&p).expect("config readable during saves");
+                let body = read_config(&p).expect("config readable during saves");
                 assert!(serde_json::from_str::<Config>(&body).is_ok(), "torn config: {body:?}");
             }
         });
@@ -134,11 +209,26 @@ mod tests {
         gui.save_to(&p);
         // another process (a CLI run) records its adapter after the GUI loaded its copy
         Config { last_device: Some("AA:BB".into()), ..Default::default() }.save_to(&p);
-        gui.update_at(&p, |c| c.theme = crate::theme::ThemeChoice::Dark);
+        gui.update_at(&p, |c| c.theme = crate::theme::ThemeChoice::Dark).unwrap();
         let on_disk = Config::load_from(&p);
         assert_eq!(on_disk.last_device.as_deref(), Some("AA:BB"));
         assert_eq!(on_disk.theme, crate::theme::ThemeChoice::Dark);
         assert_eq!(gui.theme, crate::theme::ThemeChoice::Dark);
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn an_update_after_a_failed_read_leaves_the_saved_settings_alone() {
+        let p = temp_config("unread");
+        let saved = Config { last_device: Some("AA:BB".into()), last_video_key: Some("Cam @ usb-1".into()), ..Default::default() };
+        saved.save_to(&p);
+        // this process's own load failed too (or predates another process's save), so its copy holds defaults
+        let mut gui = Config::default();
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let err = gui.update_with(Err(denied), &p, |c| c.theme = crate::theme::ThemeChoice::Dark).unwrap_err();
+        assert!(err.starts_with("Settings not saved"), "the caller is told: {err}");
+        assert_eq!(Config::load_from(&p), saved, "a copy that was never read from the file must not replace it");
+        assert_eq!(gui.theme, crate::theme::ThemeChoice::Dark, "the change still applies to this run");
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 }

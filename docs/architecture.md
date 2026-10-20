@@ -103,7 +103,7 @@ Mode scoring (closest to 1080p, penalise < 25 fps, prefer MJPEG) is shared by bo
 
 ### Input capture
 
-Relative motion while captured with cursor grab/hide; the release chord (Ctrl+Alt+Esc) is consumed by the app and
+Relative motion while captured with cursor grab/hide (Confined then Locked, so each platform keeps the strongest grab winit gives it: Locked on macOS and Wayland, Confined on X11, clipped on Windows); the release chord (Ctrl+Alt+Esc) is consumed by the app and
 never forwarded; release-all is sent on capture exit, focus loss, BLE reconnect and app close.
 
 **Windows keyboard grab (`syskeys.rs`).** The keys an OS keeps for itself (Win, Alt+Tab, ...) never reach a normal

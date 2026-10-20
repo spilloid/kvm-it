@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+Cross-platform parity audit (review round 36, `docs/platform-parity.md`). Desktop only; no firmware or protocol change.
+
+### Fixed
+- **Windows: settings could be reset when two kvm-it processes saved at once** (the GUI and a `kvmit run`, or several runs).
+  On Windows, reading the settings file at the instant another process replaced it failed ("Access is denied", or briefly
+  "not found"); the reader then used defaults, and its next save wrote them over everyone's settings. Reads now retry for up
+  to 100 ms; a settings file that still cannot be read is left as it is, the change lasts until the app closes, and the app
+  (or `kvmit`, as a warning) says the setting was not saved. Found by running the test suite natively on Windows
+  (4 failures in 60 runs before, 0 in 120 after); CI runs the tests on Linux and macOS only.
+- **Linux: the scripts folder is `~/Documents/kvm-it/scripts` as documented**, also on systems without `xdg-user-dirs`
+  (minimal and server installs), where it used to be `kvm-it/scripts` under whatever folder the app was started from.
+- **Flashing: a COM port that will not open is explained** on every platform, instead of a bare "Permission denied" or
+  "Access is denied": on Linux, joining the `dialout` group; on Windows, macOS and Linux, a port another program (a serial
+  monitor, another flasher) is holding. getting-started.md now tells Linux users about `dialout` before they flash, and the
+  hardware guide no longer says the flasher is Linux and Windows only.
+- **macOS: recording finds an ffmpeg installed with Homebrew or MacPorts.** An app opened from Finder or the Dock does not
+  get the shell's PATH, so `brew install ffmpeg` was reported as "ffmpeg was not found"; `/opt/homebrew/bin`,
+  `/usr/local/bin` and `/opt/local/bin` are now tried when ffmpeg is not on PATH; a file named ffmpeg that is not executable
+  is skipped, so it cannot hide a working copy further on. Host-tested only; not run on a Mac.
+- **Input capture says the same things on every platform.** On macOS, a keyboard grab that stopped mid-capture was
+  reported as "Windows stopped routing keys"; it now names macOS. Starting capture without a keyboard grab now explains
+  itself once on Linux (your desktop keeps Super, Alt+Tab: use *Keys*) and on Windows when the grab helper cannot start, as
+  macOS already did for the Accessibility permission.
+- **Linux (X11): the pointer stays in the window while captured.** The app asked only for a *locked* pointer, which X11
+  does not support, so the hidden pointer could wander onto other windows and a click there ended capture. It now asks for
+  a confined pointer first and a locked one second, so each platform keeps the strongest grab it supports (no change on
+  Windows or macOS). From winit's source and a unit test; **not yet run on an X11 or Wayland desktop.**
+- **Capture started from the Video popup closes the popup.** Its *Capture keyboard & mouse* button left the popup open over
+  the picture, and clicks meant for the target also worked its controls (egui sees captured clicks, and a popup's
+  controls stay enabled during capture). Starting capture now closes any open popup. Headless test; all platforms.
+- **A narrow window no longer mangles the top bar.** Below about 1000 px wide (at 150 % scaling) the Record button
+  wrapped one letter per line and the bar could fill the whole window; buttons now move to the next row whole, a long
+  notice wraps with its dismiss button inside the window, and the window has a minimum size (640x400 points).
+  The Record button's dot and the notice's dismiss cross were missing from the app's fonts and showed as empty boxes on
+  every platform; they are now drawn with glyphs the fonts have, and a test checks every non-ASCII character the UI prints.
+  Checked by screenshot on Windows 11; Linux and macOS use the same layout code but have not been looked at.
+- Docs: the release chord is given as Ctrl+Option+Esc for Macs wherever Ctrl+Alt+Esc is named, and the docs say which
+  platforms send Win/Cmd shortcuts to the target while captured (Windows, macOS with Accessibility; not Linux).
+- Docs: **`docs/platform-parity.md`**, every place Windows, Linux and macOS differ, how sure we are of each, and a dated
+  list of what to check on a real Linux box and Mac; the README install step lists the macOS `.dmg`, and getting-started
+  says how to run the command line on each platform.
+
 ## [0.4.8] - 2026-10-08 (polish ahead of 1.0; signed Secure Boot boot drive, VM-verified)
 
 Polish ahead of 1.0 (the plan and the 1.0 checklist are in `docs/roadmap.md`). Desktop, CI and docs, plus a new

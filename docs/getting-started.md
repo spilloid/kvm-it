@@ -17,7 +17,8 @@ double-click it. That adds **kvm-it** to your Start menu. Prefer no installer? G
 `kvmit-gui.exe`. It is one self-contained program that uses only what Windows already has.
 
 **Linux:** download `kvm-it-X.Y.Z-x86_64.AppImage`, `chmod +x` it, run it. It wants BlueZ and the desktop libraries any
-normal distro (Debian 12 / Ubuntu 22.04 or newer) already has.
+normal distro (Debian 12 / Ubuntu 22.04 or newer) already has. To flash the adapter your user must be allowed to use serial
+ports: `sudo usermod -aG dialout $USER` (`uucp` on Arch), then log out and back in (the app says so if it is missing).
 
 **macOS (Apple silicon):** download `kvm-it-X.Y.Z-macos-arm64.dmg`, open it and drag **kvm-it** to
 Applications. It is not notarized yet, so the first time macOS blocks it: open *System Settings > Privacy & Security* and
@@ -70,8 +71,9 @@ broken, grey is idle.
 
 <img src="assets/screenshots/tour-capture.png" alt="Input captured: a red frame around the picture, and the red chip saying Ctrl+Alt+Esc to release" style="max-width:100%">
 
-**Getting out:** press **Ctrl+Alt+Esc**. That chord is never sent to the target, so it can never get stuck over there. On Windows, keys your
-PC would normally keep for itself (Win, Alt+Tab, Ctrl+Esc, Alt+F4) go to the target too while you are captured.
+**Getting out:** press **Ctrl+Alt+Esc** (on a Mac the same keys, labelled **Ctrl+Option+Esc**). That chord is never sent to the target, so it can never get stuck over there. On Windows, and on macOS once kvm-it is allowed under *Accessibility*, keys your
+PC would normally keep for itself (Win, Alt+Tab, Ctrl+Esc, Alt+F4; Cmd+Tab, Cmd+Space on a Mac) go to the target too while you are captured. On
+Linux your desktop keeps its own shortcuts (Super, Alt+Tab): send those from **Keys**; the app reminds you the first time you capture.
 
 **Keys** sends the chords your PC would swallow: Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and friends. (Ctrl+Alt+Del and Win+L cannot be
 intercepted by any program on Windows, so this is how you send them.)
@@ -86,7 +88,8 @@ held down. More in [scripts and replay](ux.md).
 
 <img src="assets/screenshots/06-scripts.png" alt="The Scripts popup with a preview" width="49%"> <img src="assets/screenshots/07-run-log.png" alt="The run log strip after a dry run" width="49%">
 
-Everything is also on the command line:
+Everything is also on the command line. Windows: `kvmit` (on PATH after the installer, or beside `kvmit-gui.exe` in the zip). Linux:
+`./kvm-it-X.Y.Z-x86_64.AppImage cli <command>`. macOS: `/Applications/kvm-it.app/Contents/MacOS/kvmit <command>`.
 
 ```bash
 kvmit scan

@@ -300,8 +300,64 @@ pub fn mac_modifier_down(code: u16, flags: u64) -> Option<bool> {
     mac_modifier(code).map(|(_, bit)| flags & bit != 0)
 }
 
+/// The controller's desktop OS, for wording that differs per platform. The texts are pure functions of it, so every
+/// platform's wording is unit-tested on every platform (CI runs the tests on Linux and macOS only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Windows,
+    MacOs,
+    /// Linux and any other Unix desktop (no OS-level grab).
+    Linux,
+}
+
+pub const THIS_OS: Os = if cfg!(windows) {
+    Os::Windows
+} else if cfg!(target_os = "macos") {
+    Os::MacOs
+} else {
+    Os::Linux
+};
+
+/// The release chord as `os`'s keyboards label it (the same physical keys everywhere: Option is Alt).
+pub const fn release_chord(os: Os) -> &'static str {
+    match os {
+        Os::MacOs => "Ctrl+Option+Esc",
+        Os::Windows | Os::Linux => "Ctrl+Alt+Esc",
+    }
+}
+
 /// The release chord as this platform's keyboard labels it.
-pub const RELEASE_CHORD: &str = if cfg!(target_os = "macos") { "Ctrl+Option+Esc" } else { "Ctrl+Alt+Esc" };
+pub const RELEASE_CHORD: &str = release_chord(THIS_OS);
+
+pub const MAC_ACCESSIBILITY_HINT: &str = "macOS is keeping Cmd+Tab, Cmd+Space, Cmd+Q and similar shortcuts for itself: allow kvm-it in System Settings > Privacy & Security > Accessibility, then capture again so they go to the target. Until then use the Keys menu for them.";
+pub const WINDOWS_NO_GRAB_HINT: &str = "kvm-it's keyboard grab could not start, so Windows is keeping Win, Alt+Tab, Alt+F4 and similar shortcuts for itself while input is captured. Use the Keys menu for them; capturing again retries the grab.";
+pub const LINUX_NO_GRAB_HINT: &str = "On Linux your desktop keeps Super, Alt+Tab and its other shortcuts for itself while input is captured (kvm-it has no keyboard grab here). Use the Keys menu for them.";
+
+/// Why there is no OS-level grab, for the GUI to show once per run when capture starts without one. Every platform says so:
+/// without a grab the controller's own desktop acts on its shortcuts, and the user should know where to send them from.
+pub fn no_grab_hint(os: Os) -> &'static str {
+    match os {
+        Os::Windows => WINDOWS_NO_GRAB_HINT,
+        Os::MacOs => MAC_ACCESSIBILITY_HINT,
+        Os::Linux => LINUX_NO_GRAB_HINT,
+    }
+}
+
+/// Shown when keys reach the window although the grab should have swallowed them (the grab lost control mid-capture).
+pub fn grab_lost_notice(os: Os) -> &'static str {
+    match os {
+        Os::Windows => "Keyboard capture ended: Windows stopped routing keys through kvm-it's keyboard grab. Click the picture to capture again.",
+        Os::MacOs => "Keyboard capture ended: macOS stopped routing keys through kvm-it's keyboard grab. Click the picture to capture again.",
+        // No grab on Linux, so this cannot happen there; worded neutrally all the same.
+        Os::Linux => "Keyboard capture ended: the keyboard grab stopped receiving keys. Click the picture to capture again.",
+    }
+}
+
+/// The pointer grab requests to send when capture starts, in order. winit 0.30 supports a different mode per platform:
+/// Windows treats both as "clip to the window"; macOS supports only Locked; X11 supports only Confined (Locked fails, and
+/// egui only logs that, which left the pointer free to leave the window on X11); Wayland supports both and a later
+/// request replaces an earlier one. Asking for Confined and then Locked ends with the strongest grab each one has.
+pub const CAPTURE_POINTER_GRABS: [egui::CursorGrab; 2] = [egui::CursorGrab::Confined, egui::CursorGrab::Locked];
 
 #[cfg(windows)]
 mod imp {
@@ -831,11 +887,6 @@ mod imp {
     pub fn run_helper_if_requested() -> bool {
         false
     }
-
-    /// Why there is no OS-level grab, for the GUI to show once.
-    pub fn unavailable_hint() -> Option<&'static str> {
-        Some("macOS is keeping Cmd+Tab, Cmd+Space, Cmd+Q and similar shortcuts for itself: allow kvm-it in System Settings > Privacy & Security > Accessibility, then capture again so they go to the target. Until then use the Keys menu for them.")
-    }
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -855,18 +906,12 @@ mod imp {
     pub fn run_helper_if_requested() -> bool {
         false
     }
-    /// No OS-level grab here; egui's key events are used, which is fine on Linux desktops.
-    pub fn unavailable_hint() -> Option<&'static str> {
-        None
-    }
 }
 
-#[cfg(windows)]
-pub fn unavailable_hint() -> Option<&'static str> {
-    None
+/// Why capture started without an OS-level grab on this platform (see `no_grab_hint`).
+pub fn unavailable_hint() -> &'static str {
+    no_grab_hint(THIS_OS)
 }
-#[cfg(not(windows))]
-pub use imp::unavailable_hint;
 pub use imp::{run_helper_if_requested, Grab};
 
 #[cfg(test)]
@@ -1079,5 +1124,52 @@ mod tests {
         assert_eq!(t.on_key(ext(0x2A), false), Action::Swallow(None));
         // a real left shift still works
         assert_eq!(t.on_key(plain(0x2A), true), Action::Swallow(Some(Event::Down(Key::LEFT_SHIFT))));
+    }
+}
+
+#[cfg(test)]
+mod platform_text_tests {
+    use super::*;
+    const ALL: [Os; 3] = [Os::Windows, Os::MacOs, Os::Linux];
+
+    #[test]
+    fn each_platform_names_the_release_chord_its_keyboard_shows() {
+        assert_eq!(release_chord(Os::MacOs), "Ctrl+Option+Esc");
+        assert_eq!(release_chord(Os::Windows), "Ctrl+Alt+Esc");
+        assert_eq!(release_chord(Os::Linux), "Ctrl+Alt+Esc");
+        for os in ALL {
+            assert!(crate::uistate::captured_text(os).contains(release_chord(os)), "{os:?}: the chip names the chord");
+        }
+        assert_eq!(RELEASE_CHORD, release_chord(THIS_OS));
+    }
+
+    #[test]
+    fn capture_without_a_grab_is_explained_on_every_platform() {
+        for os in ALL {
+            let h = no_grab_hint(os);
+            assert!(h.contains("Keys menu"), "{os:?}: says where to send the swallowed shortcuts from");
+        }
+        assert!(no_grab_hint(Os::MacOs).contains("Accessibility"));
+        assert!(no_grab_hint(Os::Linux).contains("Super"));
+        assert!(no_grab_hint(Os::Windows).contains("Win"));
+        assert_eq!(unavailable_hint(), no_grab_hint(THIS_OS));
+    }
+
+    #[test]
+    fn a_lost_grab_names_the_right_operating_system() {
+        assert!(grab_lost_notice(Os::Windows).contains("Windows"));
+        assert!(grab_lost_notice(Os::MacOs).contains("macOS"));
+        assert!(!grab_lost_notice(Os::MacOs).contains("Windows"), "the macOS text used to blame Windows");
+        assert!(!grab_lost_notice(Os::Linux).contains("Windows"));
+        for os in ALL {
+            assert!(grab_lost_notice(os).contains("capture again"));
+        }
+    }
+
+    #[test]
+    fn the_pointer_grab_ends_on_the_strongest_mode_each_platform_supports() {
+        // winit 0.30: X11 refuses Locked, macOS refuses Confined; the last accepted request wins. Confined must come first
+        // so X11 keeps it, and Locked last so macOS and Wayland end locked.
+        assert_eq!(CAPTURE_POINTER_GRABS, [egui::CursorGrab::Confined, egui::CursorGrab::Locked]);
     }
 }

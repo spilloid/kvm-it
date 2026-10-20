@@ -91,7 +91,7 @@ If `usermod` reports the group is missing, `getent group dialout` shows whether 
 
 ### Flash from the app (0.3.0)
 
-The controller can flash the adapter itself, on Linux and Windows, with no ESP-IDF install:
+The controller can flash the adapter itself, on Linux, Windows and macOS, with no ESP-IDF install (Linux: your user must be in `dialout`, above):
 
 <img src="assets/screenshots/09-flash.png" alt="The Flash adapter window: the firmware folder, 'Firmware OK: 3 parts', the adapter's COM port selected, the erase-everything option unticked and the Flash adapter button" style="max-width:100%">
 
