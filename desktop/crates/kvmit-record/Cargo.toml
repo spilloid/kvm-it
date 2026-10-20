@@ -7,3 +7,6 @@ license.workspace = true
 
 [dependencies]
 kvmit-video = { path = "../kvmit-video" }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

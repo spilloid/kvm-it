@@ -2349,6 +2349,7 @@ name = "kvmit-record"
 version = "0.4.8"
 dependencies = [
  "kvmit-video",
+ "libc",
 ]
 
 [[package]]
