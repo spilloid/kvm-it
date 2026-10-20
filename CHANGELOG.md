@@ -19,7 +19,8 @@ Cross-platform parity audit (review round 36, `docs/platform-parity.md`). Deskto
   hardware guide no longer says the flasher is Linux and Windows only.
 - **macOS: recording finds an ffmpeg installed with Homebrew or MacPorts.** An app opened from Finder or the Dock does not
   get the shell's PATH, so `brew install ffmpeg` was reported as "ffmpeg was not found"; `/opt/homebrew/bin`,
-  `/usr/local/bin` and `/opt/local/bin` are now tried when ffmpeg is not on PATH. Host-tested only; not run on a Mac.
+  `/usr/local/bin` and `/opt/local/bin` are now tried when ffmpeg is not on PATH; a file named ffmpeg that is not executable
+  is skipped, so it cannot hide a working copy further on. Host-tested only; not run on a Mac.
 - **Input capture says the same things on every platform.** On macOS, a keyboard grab that stopped mid-capture was
   reported as "Windows stopped routing keys"; it now names macOS. Starting capture without a keyboard grab now explains
   itself once on Linux (your desktop keeps Super, Alt+Tab: use *Keys*) and on Windows when the grab helper cannot start, as
