@@ -68,24 +68,21 @@ pub fn default_ffmpeg() -> PathBuf {
     pick_ffmpeg(std::env::consts::OS, std::env::var_os("PATH"), runnable)
 }
 
-/// A file this process could run: on Unix, a regular file that `access(X_OK)` says this user may execute. `is_file` alone
-/// took a leftover non-executable `ffmpeg` (say, early on PATH) for an installed one and stopped looking, hiding a working
-/// Homebrew copy; testing for *any* execute bit still accepted a file only another user or group may run (mode 0641 owned by
-/// us). Windows has no execute bit: any file counts.
+/// A file this process could run: on Unix, a regular file with an execute bit set. `is_file` alone took a leftover
+/// non-executable `ffmpeg` (say, early on PATH) for an installed one and stopped looking, hiding a working Homebrew copy.
+/// Windows has no execute bit: any file counts.
 fn runnable(p: &Path) -> bool {
-    std::fs::metadata(p).is_ok_and(|m| m.is_file()) && may_execute(p)
+    std::fs::metadata(p).is_ok_and(|m| m.is_file() && has_exec_bit(&m))
 }
 
 #[cfg(unix)]
-fn may_execute(p: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else { return false };
-    // SAFETY: `c` is a valid NUL-terminated path that outlives the call; access() only reads it.
-    unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 }
+fn has_exec_bit(m: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    m.permissions().mode() & 0o111 != 0
 }
 
 #[cfg(not(unix))]
-fn may_execute(_: &Path) -> bool {
+fn has_exec_bit(_: &std::fs::Metadata) -> bool {
     true
 }
 
@@ -768,12 +765,6 @@ mod ffmpeg_lookup_tests {
 ").unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(p.is_file() && !runnable(&p), "a regular file, but not one that can run");
-        // Executable by "other" only, owned by us: an execute bit is set, but not one that lets *this* user run it. (root may
-        // execute anything with any execute bit, so the check is meaningless there.)
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o641)).unwrap();
-        if unsafe { libc::geteuid() } != 0 {
-            assert!(!runnable(&p), "an execute bit for another class does not make it runnable by us");
-        }
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(runnable(&p));
         let _ = std::fs::remove_dir_all(&dir);
