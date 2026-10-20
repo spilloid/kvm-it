@@ -777,3 +777,20 @@ Test-suite grade for cross-platform confidence: **C**. Pure logic is well tested
 never runs a test or a lint on Windows (findings 1-2), never starts the GUI or checks its layout on any OS (3-4), tests only the
 host's branch of `cfg!`-selected logic, and smoke-tests packages with `--version` only. Platform glue (hooks, event taps, WinRT,
 CoreBluetooth, BlueZ, MF/AVF/V4L2) is untestable without hardware by design and rests on the maintainer passes.
+
+## 2026-10-19 - Cross-platform UX parity audit (`audit/cross-platform-ux`, PR #42): review round 37 (Codex `gpt-6-astra`)
+
+The cross-model review owed by round 36: read-only, high effort, static (no commands run) over the round-36 diff.
+**Ship after fixes**, three findings and one open question, test grade C. Each was re-checked here, reproduced before
+fixing where a test could run on this PC (STD-001), and the fix chosen here. Same Windows 11 PC, rustc 1.99.1.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Med | Round 36's config fix still saved from an unverified copy: after a read that failed past the retry, `update` saved this process's own copy, which holds defaults when its own load failed (or settings older than the file's) | **Reproduced**: a new test with a saved file, a default in-memory copy and a denied read found the file replaced (`last_device` gone). An unresolved read error now saves nothing; the change applies to this run and `update` returns a message, shown in the GUI's notice line and as a `kvmit` warning. The CHANGELOG no longer claims more than that. `c03c5cd` |
+| 2 | Low | ffmpeg discovery took any regular file, so a non-executable `ffmpeg` on PATH or in the first fallback directory hid a working one | **Confirmed** by reading. Unix candidates now need an execute bit (Windows has none); the search continues past unusable files. The permission test is `cfg(unix)`, so it runs in CI (Linux, macOS) and was only compiled here (clippy, `aarch64-apple-darwin`); a pure test covers continuing the search. `1bdfa72` |
+| 3 | Low | README said Win/Cmd shortcuts reach the target on macOS without naming the Accessibility permission | **Confirmed**; the README now says "once kvm-it is allowed under Privacy & Security > Accessibility", as getting-started does. `ce010d3` |
+| Q | - | Does moving `popup()` out of `add_enabled_ui(idle_ui, ..)` leave open popups usable during capture? | **Not a regression**: egui 0.32.3's `Popup::show` draws in its own `Area`, a root `Ui` that never inherits the anchor's enabled state (read in its source; a headless test shows the popup's `Ui` is enabled both inside and outside a disabled group). **But a real, older defect**: capture can start from the Video popup's own *Capture keyboard & mouse* button, a click inside a popup does not close it, and egui still sees captured clicks, so its controls stayed live over the picture. Reproduced headless (the popup stayed open the frame after); `begin_capture` now closes every popup. `ad7cb02` |
+
+Verified by running (Windows 11): `cargo test --workspace` (219 pass, 1 ignored; 214 before, plus five new tests),
+`cargo clippy --workspace --all-targets -D warnings` for the Windows and `aarch64-apple-darwin` targets. Not run: anything on
+Linux or macOS (the `cfg(unix)` ffmpeg test included), the GUI by hand (the popup fix is covered headless only), any hardware.
