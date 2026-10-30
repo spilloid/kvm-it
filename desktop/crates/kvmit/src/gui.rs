@@ -220,6 +220,13 @@ impl App {
         *self.notice.lock().unwrap() = s.into();
     }
 
+    /// Change a setting; when the settings file could not be read (and so was left alone), say so in the notice line.
+    fn cfg_update(&mut self, f: impl Fn(&mut Config)) {
+        if let Err(e) = self.cfg.update(f) {
+            self.set_notice(e);
+        }
+    }
+
     /// Connect and keep reconnecting until superseded (generation counter) or the app exits.
     fn start_link(&mut self, id: String, ctx: egui::Context, pair_first: bool) {
         // Register the attempt synchronously, in the same step that supersedes any earlier one: the generation bump and the
@@ -231,7 +238,7 @@ impl App {
             *l = Link::Connecting(id.clone());
             g
         };
-        self.cfg.update(|c| c.last_device = Some(id.clone()));
+        self.cfg_update(|c| c.last_device = Some(id.clone()));
         let (link, gen_ref, status, notice) = (self.link.clone(), self.link_gen.clone(), self.status.clone(), self.notice.clone());
         // Registered here, before the task is spawned, and held until the first connection attempt has resolved (Connected
         // published, or failed): from the first click until then the flasher cannot open, so no cancel can find a pairing, or the
@@ -345,7 +352,7 @@ impl App {
         if let Link::Connected { dev, .. } = previous {
             self.rt.spawn(async move { dev.shutdown().await });
         }
-        self.cfg.update(|c| c.last_device = None);
+        self.cfg_update(|c| c.last_device = None);
     }
 
     fn device(&self) -> Option<Device> {
@@ -465,7 +472,7 @@ impl App {
                 if !d.path.starts_with(kvmit_video::DEMO_PREFIX) {
                     // the synthetic demo source is never the remembered card
                     let (path, key) = (d.path.clone(), d.key.clone());
-                    self.cfg.update(|c| {
+                    self.cfg_update(|c| {
                         c.last_video = Some(path.clone());
                         c.last_video_key = Some(key.clone());
                     });
@@ -510,19 +517,14 @@ impl App {
             move || ctx.request_repaint() // keyboard events arrive off-thread: wake the GUI to forward (and release) promptly
         });
         if self.grab.is_none() && !self.grab_hint_shown {
-            if let Some(h) = crate::syskeys::unavailable_hint() {
-                self.grab_hint_shown = true; // once per run: it is advice, not an error
-                self.set_notice(h);
-            }
+            self.grab_hint_shown = true; // once per run: it is advice, not an error
+            self.set_notice(crate::syskeys::unavailable_hint());
         }
         debug_log(&format!("capture begins (OS keyboard grab: {})", if self.grab.is_some() { "on" } else { "off" }));
-        // Captured keys must reach the target only: a focused local widget would otherwise take Enter/Space.
-        ctx.memory_mut(|m| {
-            if let Some(id) = m.focused() {
-                m.surrender_focus(id);
-            }
-        });
-        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
+        release_local_ui(ctx);
+        for grab in crate::syskeys::CAPTURE_POINTER_GRABS {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(grab));
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
     }
 
@@ -573,7 +575,7 @@ impl App {
             // guessing which keys are down: continuing on egui's keys could leave a forwarded modifier stuck.
             if hooked && grab_should_have_swallowed(ev) {
                 debug_log("capture ends: the keyboard grab is no longer swallowing keys");
-                self.set_notice("Keyboard capture ended: Windows stopped routing keys through kvm-it's keyboard grab. Click the picture to capture again.");
+                self.set_notice(crate::syskeys::grab_lost_notice(crate::syskeys::THIS_OS));
                 self.released_this_frame = true;
                 self.end_capture(ctx);
                 return;
@@ -837,6 +839,9 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("bar").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
+                // Chips and buttons keep their text on one line and move to the next row whole; letting egui wrap their text
+                // stacked "Record" one letter per line in a narrow window (STD-008).
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 ui.add_enabled_ui(idle_ui, |ui| {
                     let kind = match &link {
                         Link::Connected { name, .. } => LinkKind::Connected(name),
@@ -880,51 +885,45 @@ impl eframe::App for App {
 
                 // Recording stays stoppable while input is captured, like the Input chip: one click, always live.
                 if let Some(el) = self.rec.elapsed() {
-                    let r = chip(ui, Health::Bad, format!("● REC {} — click to stop", crate::rec_ui::format_elapsed(el)));
+                    let r = chip(ui, Health::Bad, format!("⏺ REC {} — click to stop", crate::rec_ui::format_elapsed(el)));
                     if r.clicked() {
                         self.rec.begin_stop(); // the file is finished off the GUI thread
                     }
                 } else if self.rec.is_finishing() {
                     chip(ui, Health::Working, "Finishing the recording…");
                 } else {
-                    ui.add_enabled_ui(idle_ui, |ui| {
-                        let block = crate::rec_ui::record_block_reason(has_video, self.rec.is_finishing());
-                        let r = ui.button("● Record…");
-                        popup(&r, 400.0, |ui| {
-                            if self.rec.popup_body(ui, block, self.video_blank) {
-                                let cap = self.capture.clone();
-                                match self.rec.start(move || cap.lock().ok()?.as_ref()?.latest()) {
-                                    Ok(()) => self.notice.lock().unwrap().clear(),
-                                    Err(e) => self.set_notice(format!("Cannot record: {e}")),
-                                }
+                    // Direct widgets (not inside add_enabled_ui): a wrapped row moves only direct widgets to the next line; a
+                    // nested group ran off the window edge instead (STD-008).
+                    let block = crate::rec_ui::record_block_reason(has_video, self.rec.is_finishing());
+                    let r = ui.add_enabled(idle_ui, egui::Button::new("⏺ Record…"));
+                    popup(&r, 400.0, |ui| {
+                        if self.rec.popup_body(ui, block, self.video_blank) {
+                            let cap = self.capture.clone();
+                            match self.rec.start(move || cap.lock().ok()?.as_ref()?.latest()) {
+                                Ok(()) => self.notice.lock().unwrap().clear(),
+                                Err(e) => self.set_notice(format!("Cannot record: {e}")),
                             }
-                        });
+                        }
                     });
                 }
 
                 ui.separator();
-                ui.add_enabled_ui(idle_ui, |ui| {
-                    let r = ui.button("Keys…");
-                    popup(&r, 360.0, |ui| self.keys_ui(ui));
-                    let r = ui.button("Type…");
-                    popup(&r, 340.0, |ui| self.text_ui(ui, ctx));
-                    let r = ui.button(if running { "Scripts…  (running)" } else { "Scripts…" });
-                    popup(&r, 460.0, |ui| self.scripts_ui(ui, ctx));
-                    if ui.button(self.cfg.theme.label()).on_hover_text("Click to cycle: follow the system, light, dark").clicked() {
-                        let theme = self.cfg.theme.next();
-                        self.cfg.update(|c| c.theme = theme);
-                        ctx.set_theme(theme.preference());
-                    }
-                });
+                let r = ui.add_enabled(idle_ui, egui::Button::new("Keys…"));
+                popup(&r, 360.0, |ui| self.keys_ui(ui));
+                let r = ui.add_enabled(idle_ui, egui::Button::new("Type…"));
+                popup(&r, 340.0, |ui| self.text_ui(ui, ctx));
+                let r = ui.add_enabled(idle_ui, egui::Button::new(if running { "Scripts…  (running)" } else { "Scripts…" }));
+                popup(&r, 460.0, |ui| self.scripts_ui(ui, ctx));
+                let r = ui.add_enabled(idle_ui, egui::Button::new(self.cfg.theme.label()));
+                if r.on_hover_text("Click to cycle: follow the system, light, dark").clicked() {
+                    let theme = self.cfg.theme.next();
+                    self.cfg_update(|c| c.theme = theme);
+                    ctx.set_theme(theme.preference());
+                }
             });
             let n = self.notice.lock().unwrap().clone();
-            if !n.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, &n);
-                    if ui.small_button("✕").on_hover_text("Dismiss").clicked() {
-                        self.notice.lock().unwrap().clear();
-                    }
-                });
+            if !n.is_empty() && notice_row(ui, &n) {
+                self.notice.lock().unwrap().clear();
             }
             if let Link::Failed(e) = &link {
                 ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, format!("Adapter link: {e}"));
@@ -1405,6 +1404,33 @@ fn indicator(ui: &mut egui::Ui, h: Health, text: impl Into<String>) -> egui::Res
         .inner
 }
 
+/// Captured input must reach the target only: a focused local widget would otherwise take Enter/Space, and an open popup
+/// (capture can start from the Video popup's own button) would take clicks, since egui still sees them and a popup's
+/// controls stay enabled whatever its anchor's state.
+fn release_local_ui(ctx: &egui::Context) {
+    ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    egui::Popup::close_all(ctx);
+}
+
+/// The amber notice line under the bar, with its dismiss button. The text wraps and the button follows it, so a long notice
+/// (macOS's Accessibility advice is ~250 characters) never runs off the window with its dismiss button. True when dismissed.
+fn notice_row(ui: &mut egui::Ui, text: &str) -> bool {
+    let color = theme::palette(ui.visuals().dark_mode).warn_text;
+    ui.horizontal_wrapped(|ui| {
+        ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
+        ui.small_button("🗙").on_hover_text("Dismiss").clicked()
+    })
+    .inner
+}
+
+/// The smallest window the layout is checked at (STD-008): the top bar fits in a few rows and the picture keeps most of the
+/// window. Logical points; checked by screenshot on Windows at 150 % scaling (docs/platform-parity.md).
+pub const MIN_WINDOW: [f32; 2] = [640.0, 400.0];
+
 /// A popup under `anchor` that stays open until you click outside it (these hold forms, not one-shot menu items).
 fn popup(anchor: &egui::Response, width: f32, add_contents: impl FnOnce(&mut egui::Ui)) {
     egui::Popup::menu(anchor).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(width).show(add_contents);
@@ -1445,7 +1471,7 @@ pub fn window_title() -> String {
 pub fn run_gui() -> eframe::Result<()> {
     let opts = eframe::NativeOptions {
         viewport: {
-            let v = egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_title(window_title());
+            let v = egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_min_inner_size(MIN_WINDOW).with_title(window_title());
             match app_icon() {
                 Some(icon) => v.with_icon(icon),
                 None => v,
@@ -1474,6 +1500,83 @@ mod tests {
         assert_eq!(selection_after_rescan(Some("/dev/video0"), &[]), 0, "no devices at all");
     }
 
+    /// Every non-ASCII character inside a string literal of the GUI sources, comments skipped (rough, but string literals in
+    /// these files never contain `//`-prefixed text that matters here).
+    fn ui_literal_glyphs() -> std::collections::BTreeSet<char> {
+        let sources = [
+            include_str!("gui.rs"),
+            include_str!("uistate.rs"),
+            include_str!("rec_ui.rs"),
+            include_str!("flashwiz.rs"),
+            include_str!("video_state.rs"),
+            include_str!("theme.rs"),
+            include_str!("syskeys.rs"),
+        ];
+        let mut out = std::collections::BTreeSet::new();
+        for src in sources {
+            for line in src.lines() {
+                let t = line.trim_start();
+                if t.starts_with("//") {
+                    continue;
+                }
+                let mut in_str = false;
+                let mut prev = ' ';
+                for c in line.chars() {
+                    if c == '"' && prev != '\\' {
+                        in_str = !in_str;
+                    } else if in_str && !c.is_ascii() {
+                        out.insert(c);
+                    }
+                    prev = c;
+                }
+            }
+        }
+        out
+    }
+
+    /// The app uses egui's bundled fonts on every platform (no system fonts), so a character they lack is drawn as an empty
+    /// box on Windows, Linux and macOS alike. Checked headless: no window or GPU needed.
+    #[test]
+    fn every_glyph_the_ui_prints_exists_in_the_bundled_fonts() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let glyphs = ui_literal_glyphs();
+        assert!(glyphs.contains(&'—'), "the scan finds UI text ({glyphs:?})");
+        let missing: Vec<char> = ctx.fonts(|f| {
+            glyphs.iter().copied().filter(|c| !f.has_glyph(&egui::FontId::proportional(14.0), *c)).collect()
+        });
+        assert!(missing.is_empty(), "drawn as empty boxes: {:?}", missing.iter().map(|c| format!("{c} U+{:04X}", *c as u32)).collect::<Vec<_>>());
+    }
+
+    /// Lays `f` out headless in a top panel of a `MIN_WINDOW`-wide screen and returns the widest right edge any widget reached.
+    fn widest_edge_at_min_width(f: impl Fn(&mut egui::Ui)) -> f32 {
+        let ctx = egui::Context::default();
+        let input = || egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]))),
+            ..Default::default()
+        };
+        let mut edge = 0.0f32;
+        for _ in 0..2 {
+            // two passes: egui sizes some widgets from the previous frame
+            let _ = ctx.run(input(), |ctx| {
+                egui::TopBottomPanel::top("t").show(ctx, |ui| {
+                    f(ui);
+                    edge = ui.min_rect().max.x;
+                });
+            });
+        }
+        edge
+    }
+
+    #[test]
+    fn a_long_notice_wraps_and_keeps_its_dismiss_button_inside_the_smallest_window() {
+        let long = crate::syskeys::MAC_ACCESSIBILITY_HINT.repeat(2);
+        let edge = widest_edge_at_min_width(|ui| {
+            notice_row(ui, &long);
+        });
+        assert!(edge <= MIN_WINDOW[0], "notice reaches x={edge}, window is {} wide", MIN_WINDOW[0]);
+    }
+
     #[test]
     fn the_window_title_carries_the_build_version() {
         let t = window_title();
@@ -1487,5 +1590,68 @@ mod tests {
         assert!(!grab_should_have_swallowed(&key(egui::Key::A, true, true)), "auto-repeat of a key held before capture");
         assert!(!grab_should_have_swallowed(&key(egui::Key::A, false, false)), "a release passes through legitimately");
         assert!(!grab_should_have_swallowed(&egui::Event::PointerGone), "not a key at all");
+    }
+
+    /// Round 37 (astra's open question): moving `popup()` out of `add_enabled_ui(idle_ui, ..)` changed nothing. egui 0.32's
+    /// `Popup::show` draws in its own `Area`, a root `Ui` that never inherits the anchor's enabled state, so an open popup's
+    /// controls were live during capture before the move too (its button cannot be clicked to open it while disabled).
+    #[test]
+    fn a_popups_controls_do_not_inherit_the_anchors_enabled_state() {
+        let enabled_inside = |disabled_parent: bool| {
+            let ctx = egui::Context::default();
+            let seen = std::cell::Cell::new(None);
+            for _ in 0..2 {
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let body = |ui: &mut egui::Ui| {
+                            let r = ui.button("anchor");
+                            egui::Popup::open_id(ctx, egui::Popup::default_response_id(&r));
+                            popup(&r, 100.0, |ui| seen.set(Some(ui.is_enabled())));
+                        };
+                        if disabled_parent {
+                            ui.add_enabled_ui(false, body);
+                        } else {
+                            body(ui);
+                        }
+                    });
+                });
+            }
+            seen.get().expect("the popup was shown")
+        };
+        assert!(enabled_inside(true), "inside a disabled group (before the move)");
+        assert!(enabled_inside(false), "outside it (after the move)");
+    }
+
+    /// The Video popup has its own "Capture keyboard & mouse" button: a click inside a popup does not close it, so it stayed
+    /// open over the picture during capture with its controls live (see the test above), and egui still sees the captured
+    /// clicks. Starting capture closes every popup.
+    #[test]
+    fn capture_started_from_inside_a_popup_closes_it() {
+        let ctx = egui::Context::default();
+        let shown = std::cell::Cell::new(false);
+        let frame = |start_capture: bool| {
+            shown.set(false);
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let r = ui.button("Video");
+                    popup(&r, 100.0, |_| {
+                        shown.set(true);
+                        if start_capture {
+                            release_local_ui(ctx); // what begin_capture does, from the popup's Capture button
+                        }
+                    });
+                });
+            });
+            shown.get()
+        };
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let r = ui.button("Video");
+                egui::Popup::open_id(ctx, egui::Popup::default_response_id(&r));
+            });
+        });
+        assert!(frame(false), "open");
+        assert!(frame(true), "the frame the Capture button is clicked");
+        assert!(!frame(false), "closed from the next frame on");
     }
 }

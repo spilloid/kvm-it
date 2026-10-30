@@ -112,7 +112,7 @@ fn pick_mode(reader: &IMFSourceReader) -> Result<(Mode, IMFMediaType), CaptureEr
         let (Ok(size), Ok(rate)) = (unsafe { t.GetUINT64(&MF_MT_FRAME_SIZE) }, unsafe { t.GetUINT64(&MF_MT_FRAME_RATE) }) else { continue };
         let (width, height) = ((size >> 32) as u32, size as u32);
         let (num, den) = ((rate >> 32) as u32, rate as u32);
-        let fps = if den == 0 { 30 } else { num / den };
+        let fps = num.checked_div(den).unwrap_or(30);
         let mode = Mode { width, height, fps, mjpeg };
         let score = mode_score(width, height, fps, mjpeg);
         if best.as_ref().is_none_or(|(b, _, _)| score < *b) {

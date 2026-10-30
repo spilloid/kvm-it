@@ -80,7 +80,14 @@ pub struct InputChip {
 }
 
 /// The captured-input chip, naming this platform's release chord.
-const CAPTURED_TEXT: &str = if cfg!(target_os = "macos") { "INPUT CAPTURED — Ctrl+Option+Esc to release" } else { "INPUT CAPTURED — Ctrl+Alt+Esc to release" };
+const CAPTURED_TEXT: &str = captured_text(crate::syskeys::THIS_OS);
+
+pub const fn captured_text(os: crate::syskeys::Os) -> &'static str {
+    match os {
+        crate::syskeys::Os::MacOs => "INPUT CAPTURED — Ctrl+Option+Esc to release",
+        crate::syskeys::Os::Windows | crate::syskeys::Os::Linux => "INPUT CAPTURED — Ctrl+Alt+Esc to release",
+    }
+}
 
 pub fn input_chip(capturing: bool, block: Option<&'static str>) -> InputChip {
     if capturing {

@@ -532,6 +532,24 @@ pub fn list_ports() -> Vec<PortInfo> {
     v
 }
 
+/// What to do about a COM port that would not open, in plain language, for the platform `os` (`std::env::consts::OS`).
+/// serialport reports a port another program holds as `NoDevice` everywhere (Windows: "Access is denied", Linux/macOS: busy),
+/// and a Linux user outside the serial group as `PermissionDenied`. `None`: no better advice than the raw error.
+pub fn open_hint(kind: serialport::ErrorKind, os: &str) -> Option<&'static str> {
+    use serialport::ErrorKind::{Io, NoDevice};
+    match (kind, os) {
+        (Io(std::io::ErrorKind::PermissionDenied), "linux") => Some(
+            "This user may not use serial ports: add it to the `dialout` group (`uucp` on Arch) with `sudo usermod -aG dialout $USER`, then log out and back in",
+        ),
+        (Io(std::io::ErrorKind::PermissionDenied), _) => Some("This user may not open the port: check its permissions"),
+        (NoDevice, "windows") => Some(
+            "Windows refuses a COM port that another program has open: close any serial monitor, flashing tool or other kvm-it using it (or replug the board) and try again",
+        ),
+        (NoDevice, _) => Some("Another program has the port open, or the board was just unplugged: close any serial monitor or flashing tool using it (or replug the board) and try again"),
+        _ => None,
+    }
+}
+
 /// macOS lists every serial device twice: `/dev/cu.X` (call-out) and `/dev/tty.X` (dial-in, which blocks opening until the
 /// line's carrier is up). Keep the `cu.` one, so one board is one port and flashing never hangs on open.
 pub fn prefer_callout_ports(ports: Vec<PortInfo>) -> Vec<PortInfo> {
@@ -638,7 +656,10 @@ pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut d
     let serial = serialport::new(&expected.name, 115_200)
         .flow_control(serialport::FlowControl::None)
         .open_native()
-        .map_err(|e| fail(&format!("could not open {}", expected.name), &e))?;
+        .map_err(|e| match open_hint(e.kind(), std::env::consts::OS) {
+            Some(hint) => FlashError(format!("could not open {}: {e}. {hint}", expected.name)),
+            None => fail(&format!("could not open {}", expected.name), &e),
+        })?;
     let usb = serialport::UsbPortInfo { vid: expected.vid, pid: expected.pid, serial_number: expected.serial.clone(), manufacturer: None, product: None };
     let baud = opts.baud.unwrap_or(460_800);
     let conn = Connection::new(serial, usb, ResetAfterOperation::HardReset, ResetBeforeOperation::DefaultReset, 115_200);

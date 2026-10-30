@@ -186,11 +186,11 @@ fn run_text(prog: &str, args: &[&str], stderr: bool) -> Option<String> {
 }
 
 /// Audio inputs on this machine. Empty (not an error) when the tools are absent. Linux: `pactl`, falling back
-/// to `ffmpeg -sources pulse`. Windows: ffmpeg's dshow listing. Other platforms: empty.
+/// to `ffmpeg -sources pulse`. Windows: ffmpeg's dshow listing. macOS: ffmpeg's AVFoundation listing. Other platforms: empty.
 pub fn list_audio_devices(ffmpeg: Option<&std::path::Path>) -> Vec<AudioDevice> {
     let ff = ffmpeg
         .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "ffmpeg".into());
+        .unwrap_or_else(|| crate::default_ffmpeg().to_string_lossy().into_owned());
     if cfg!(windows) {
         run_text(
             &ff,
