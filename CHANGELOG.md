@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-10-30 (cross-platform UX audit)
+
 Cross-platform parity audit (review round 36, `docs/platform-parity.md`). Desktop only; no firmware or protocol change.
 
 ### Fixed
