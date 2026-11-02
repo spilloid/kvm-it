@@ -888,3 +888,30 @@ NETWORK" and typed nothing.
 Not verified: any capture card or adapter (QEMU's keyboard is not USB HID; a screendump is not HDMI); any screen after the
 network screen (the VM has no network by design); Autopilot or tenant screens; other resolutions, themes or builds. The
 reference images are not committed (screenshots of Microsoft's UI); `examples/oobe/README.md` says how to make them.
+
+## 2026-11-02 - Rounds 39-40 (`21a5c48..bbb9315`): review round 41 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. Round-39 fixes judged complete: frozen-after-settling retries, the post-approval boundary,
+invented successor transitions (new checkpoints), visit-scoped attempts, nested-event scrubbing, overlap-merged scrubbing.
+Partial or new: 3 High, 6 Medium. Every finding was confirmed here. The fix was chosen here.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | A frame first seen inside the latency window could count once the window passed (a capture freezing on it) | **Confirmed.** A frame seen inside the window raises a floor: it and anything not newer never count in that look. That made the separate "inside the window" check redundant (its mutant survived as equivalent), so it was removed. **Residual, documented:** frames carry no acquisition time, so a capture queue deeper than the window is not detected. |
+| 2 | High | The 2 s pause cap counted explicit delays only: the default delay after every step and long key timings were not counted | **Confirmed.** Before a run: explicit delays plus the default delay times the number of steps must be at most 2 s per state; key hold and key gap at most 100 ms each. |
+| 3 | High | A checkpoint written before `attempted` existed read as "nothing sent", dropping replay protection | **Confirmed.** `attempted` is optional. Missing means unknown, which counts as the state's spent attempts for replay (the operator is asked) and as nothing to reconcile for derived facts. |
+| 4 | Med | The secret-in-file check ran after the context was built and `Started` was published | **Confirmed.** All checks needing no screen run first. A refused run builds no context and publishes one `Stopped` entry. The Markdown export withholds the workflow's name for that refusal (a new test found the name in its title). |
+| 5 | Med | The scan covered selected fields only (not the name, references, key names, the checkpoint) | **Confirmed.** It covers every field of the definition (name, description, start, tenants, config, secrets' prompts, each state in full) and the checkpoint. |
+| 6 | Med | The real-time deadline allowed one poll of slack | **Confirmed.** One deadline, no slack; sleeps are capped to the real time left. Test: frames at 300 ms each settle at about 600 ms, after a 500 ms deadline, and are refused. |
+| 7 | Med | Identical thumbnails could score 0.9999999999999999 by structure, failing a threshold of 1.0 | **Confirmed** with the reviewer's example. Identical thumbnails score exactly 1, and the score is clamped to 0..1. |
+| 8 | Med | Workflow files without `match` silently changed from brightness to structure, keeping thresholds calibrated for the other | **Confirmed in principle** (no such files were ever released: the format is new in this branch). `match` is now required, so every workflow states how it compares. |
+| 9 | Med | The QEMU harness reused one dump file, so a failed dump could hand back an older picture with a new frame number | **Confirmed.** Each dump has its own file, removed before and after, and must exist and be non-empty or the grab fails. |
+
+Mutants (11, each alone, restored): all caught, after two tests were sharpened. The floor and the frame-number boundary
+were each masked by the other rule, or by the boundary read consuming the queued picture. The queued-picture test now
+queues two pictures, and the stall test runs with no latency window, so each rule is the only thing between a stale
+frame and a key.
+
+Re-run on the VM after the fixes (rolled back to the first OOBE screen): REGION → KEYBOARD → SECOND_KEYBOARD → NETWORK,
+all transitions verified (one at confidence 0.995). Verified by running (Windows 11): `cargo test --workspace`, clippy
+`-D warnings`. **Not yet reviewed again.**

@@ -181,8 +181,9 @@ and the demo source do); a source that does not is refused. `secret_text`
 may only use `[secrets]`. A state cannot list itself in `next`. Settling counts distinct captured frames (the capture's own
 frame number), so a stalled capture never "settles", and a frame captured before an action never verifies it.
 
-Screens are compared by **structure** by default (`match = "structure"`: normalised correlation of the light/dark
-pattern), because real setup screens share their background and differ mainly in text. Brightness alone (`match = "luma"`,
+Every workflow states how it compares screens (`match` is required). Use **structure** (`match = "structure"`:
+normalised correlation of the light/dark pattern) for real screens: setup screens share their background and differ
+mainly in text. Brightness alone (`match = "luma"`,
 what `wait_for` uses) found Windows 11 OOBE screens 96-98 % alike. A state can compare only part of the screen with
 `detect.region = [x, y, width, height]` (fractions).
 

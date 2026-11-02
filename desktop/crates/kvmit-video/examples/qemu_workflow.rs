@@ -86,12 +86,20 @@ impl Qemu {
         Ok(out.stdout)
     }
 
-    fn grab(&mut self) -> Option<Frame> {
+    /// One screendump into a file of its own: it is removed first, must exist and be non-empty after the monitor
+    /// command, and is removed after reading, so a failed dump can never hand back an older picture.
+    fn dump(&self) -> Result<Vec<u8>, String> {
+        let nonce: u64 = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+        let f = format!("/tmp/kvmit-wf-{}-{}-{nonce}.ppm", self.vmid, std::process::id());
         let cmd = format!(
-            "echo 'screendump /tmp/kvmit-wf-{0}.ppm' | qm monitor {0} >/dev/null && cat /tmp/kvmit-wf-{0}.ppm",
-            self.vmid
+            "rm -f {f}; out=$(echo 'screendump {f}' | qm monitor {vm} 2>&1); test -s {f} || {{ echo \"$out\" >&2; exit 3; }}; cat {f}; rm -f {f}",
+            vm = self.vmid
         );
-        let ppm = self.ssh(&cmd).ok()?;
+        self.ssh(&cmd)
+    }
+
+    fn grab(&mut self) -> Option<Frame> {
+        let ppm = self.dump().ok()?;
         let (w, h, rgb) = parse_ppm(&ppm)?;
         let gray = rgb.as_chunks::<3>().0.iter().map(|p| ((p[0] as u32 * 77 + p[1] as u32 * 150 + p[2] as u32 * 29) >> 8) as u8).collect();
         self.seq += 1;
@@ -185,8 +193,7 @@ fn main() {
     };
     if let Some(i) = args.iter().position(|a| a == "--snap") {
         let dir = PathBuf::from(args.get(i + 1).expect("--snap <dir>"));
-        let cmd = format!("echo 'screendump /tmp/kvmit-wf-{0}.ppm' | qm monitor {0} >/dev/null && cat /tmp/kvmit-wf-{0}.ppm", host.vmid);
-        let ppm = host.ssh(&cmd).expect("screendump");
+        let ppm = host.dump().expect("screendump");
         let (w, h, rgb) = parse_ppm(&ppm).expect("a P6 screendump");
         let rgba: Vec<u8> = rgb.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect();
         kvmit_video::convert::save_png(&dir.join("screen.png"), w, h, &rgba).expect("save");

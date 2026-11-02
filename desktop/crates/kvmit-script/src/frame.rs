@@ -59,6 +59,9 @@ impl Frame {
     /// 84 % by this). Flat thumbnails have no pattern: two flat ones of nearly the same level score 1, otherwise 0.
     pub fn structure_similarity(&self, other: &Frame) -> f64 {
         let (a, b) = (self.thumb(), other.thumb());
+        if a == b {
+            return 1.0;
+        }
         let mean = |v: &[u8]| v.iter().map(|x| *x as f64).sum::<f64>() / v.len() as f64;
         let (ma, mb) = (mean(&a), mean(&b));
         let (mut ab, mut aa, mut bb) = (0.0, 0.0, 0.0);
@@ -71,7 +74,7 @@ impl Frame {
         if aa < 1e-9 || bb < 1e-9 {
             return if aa < 1e-9 && bb < 1e-9 && (ma - mb).abs() <= 2.0 { 1.0 } else { 0.0 };
         }
-        (ab / (aa.sqrt() * bb.sqrt()) + 1.0) / 2.0
+        ((ab / (aa.sqrt() * bb.sqrt()) + 1.0) / 2.0).clamp(0.0, 1.0)
     }
 
     /// The part of the frame inside a rectangle given as fractions of its width and height (clamped; at least one
@@ -152,6 +155,16 @@ mod tests {
         // Flat frames: equal levels match, different levels do not.
         assert_eq!(solid(64, 36, 100).structure_similarity(&solid(64, 36, 101)), 1.0);
         assert_eq!(solid(64, 36, 100).structure_similarity(&solid(64, 36, 160)), 0.0);
+    }
+
+    #[test]
+    fn identical_pictures_score_exactly_one() {
+        // Floating point would make this 0.9999999999999999, failing a threshold of 1.0 against its own reference.
+        let mut g = vec![1u8; 64 * 36];
+        g[0] = 0;
+        g[1] = 2;
+        let f = Frame::new(64, 36, g).unwrap();
+        assert_eq!(f.structure_similarity(&f.clone()), 1.0);
     }
 
     #[test]

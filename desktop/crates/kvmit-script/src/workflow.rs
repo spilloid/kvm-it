@@ -367,7 +367,10 @@ impl Workflow {
             tenants: raw.tenants,
             ambiguity_margin: margin,
             matching: match raw.matching.as_deref() {
-                None | Some("structure") => Matching::Structure,
+                None => {
+                    return Err("`match` is required: \"structure\" (the pattern of light and dark, for real screens) or \"luma\" (brightness); thresholds mean different things for each".into())
+                }
+                Some("structure") => Matching::Structure,
                 Some("luma") => Matching::Luma,
                 Some(m) => return Err(format!("match must be \"structure\" or \"luma\", got {m:?}")),
             },
@@ -501,8 +504,10 @@ pub struct Checkpoint {
     pub attempts: BTreeMap<String, u32>,
     /// How many times this visit to `state` sent its actions. Zero means nothing was sent (the run stopped at a guard,
     /// a gate or a look), so there is no pending transition to reconcile and nothing was spent.
+    /// `None` in a checkpoint written before this field existed: unknown, and treated as "sent" (the spent
+    /// attempts of the state) for replay protection, and as "nothing to reconcile" for facts.
     #[serde(default)]
-    pub attempted: u32,
+    pub attempted: Option<u32>,
     pub history: Vec<Transition>,
 }
 
@@ -784,7 +789,7 @@ impl WorkflowReport {
             state,
             derived: self.context.derived.iter().map(|(k, (v, _))| (k.clone(), v.clone())).collect(),
             attempts: self.context.attempts.clone(),
-            attempted: self.context.visit_attempts,
+            attempted: Some(self.context.visit_attempts),
             history: self.context.history.clone(),
         })
     }
@@ -950,6 +955,7 @@ impl Engine<'_> {
         let mut elapsed = Duration::ZERO;
         let mut last: Option<Observation> = None;
         let mut last_seq: Option<u64> = None;
+        let mut floor: Option<u64> = None;
         let mut streak = 0u32;
         loop {
             self.check()?;
@@ -962,7 +968,14 @@ impl Engine<'_> {
                     // Without frame numbers a stalled capture looks like a still screen: refuse to guess.
                     let sq = frame.seq.ok_or(WorkflowError::NoFrameNumbers)?;
                     self.seen_seq = Some(self.seen_seq.map_or(sq, |s| s.max(sq)));
-                    let fresh = after_seq.is_none_or(|after| sq > after) && elapsed >= ignore_for;
+                    // A frame first seen inside the latency window may be a queued picture from before the
+                    // boundary: it, and anything not newer than it, never counts in this look, even once the window
+                    // has passed (a capture that freezes on it keeps showing it).
+                    if elapsed < ignore_for {
+                        floor = Some(floor.map_or(sq, |f: u64| f.max(sq)));
+                    }
+                    // (A frame inside the window has just raised the floor to itself, so it is excluded too.)
+                    let fresh = after_seq.is_none_or(|after| sq > after) && floor.is_none_or(|f| sq > f);
                     // Only a newer frame is a new look; the same (or an older, reordered) frame is not.
                     let new = last_seq.is_none_or(|prev| sq > prev);
                     if fresh && new {
@@ -971,7 +984,7 @@ impl Engine<'_> {
                         // Evidence counts only inside the deadline, measured in real time too (classifying and the
                         // host's own delays take time the poll count does not see). A late frame does not count at
                         // all, so it cannot complete a settled look that the timeout would then report.
-                        let in_time = elapsed <= timeout && real.elapsed() <= timeout.saturating_add(poll);
+                        let in_time = elapsed <= timeout && real.elapsed() <= timeout;
                         if in_time {
                             self.last_frame = Some(frame);
                             streak = if last.as_ref().is_some_and(|l| l.state == o.state) { streak + 1 } else { 1 };
@@ -984,7 +997,7 @@ impl Engine<'_> {
                     }
                 }
             }
-            if elapsed >= timeout || real.elapsed() > timeout.saturating_add(poll) {
+            if elapsed >= timeout || real.elapsed() >= timeout {
                 // Report what was decided, not a provisional match: an unsettled classification is unknown.
                 let obs = last.map(|mut o| {
                     if streak < need {
@@ -997,7 +1010,8 @@ impl Engine<'_> {
                 }
                 return Ok(Look { obs });
             }
-            self.host.sleep(poll.min(timeout.saturating_sub(elapsed)).max(Duration::from_millis(1)));
+            let left = timeout.saturating_sub(elapsed).min(timeout.saturating_sub(real.elapsed()));
+            self.host.sleep(poll.min(left).max(Duration::from_millis(1)));
             elapsed += poll;
         }
     }
@@ -1158,10 +1172,11 @@ impl Engine<'_> {
             None => self.enter(&first, "observed at start"),
             Some(cp) if cp.state == first => {
                 self.enter(&first, "re-observed after resume");
-                spent = cp.attempted;
+                // Unknown (an older checkpoint) counts as everything spent in that state: ask rather than replay.
+                spent = cp.attempted.unwrap_or_else(|| cp.attempts.get(&first).copied().unwrap_or(0));
                 self.ctx.visit_attempts = spent;
             }
-            Some(cp) if cp.attempted == 0 => {
+            Some(cp) if cp.attempted.unwrap_or(0) == 0 => {
                 // Nothing was sent in that visit (it stopped at a guard, a gate or a look), so the screen moving on is
                 // not that state's transition: no facts are recorded for it. The new state's own checks decide.
                 self.enter(&first, "observed after resume; the checkpoint's state sent nothing");
@@ -1170,7 +1185,7 @@ impl Engine<'_> {
                 // The screen moved on while the run was stopped: that is the checkpoint's pending transition, now
                 // verified by a fresh look. Record it (and its facts) before the new state's guard.
                 let from = self.wf.state(&cp.state).expect("checked").clone();
-                let attempts = cp.attempted;
+                let attempts = cp.attempted.unwrap_or(0);
                 self.ctx.current = Some(cp.state.clone());
                 let now = self.now();
                 self.transition(&from, &first, confidence, attempts, now, "verified after resume");
@@ -1253,6 +1268,47 @@ impl Engine<'_> {
     }
 }
 
+/// The most a single key may be held, or a gap between keys may last. Typing is the action itself; these timings
+/// only shape it, and a long one would be a pause the engine does not look through.
+pub const MAX_KEY_TIMING: Duration = Duration::from_millis(100);
+
+/// Checks before a run that need no screen: timing options, the pause budget of every state, and that no prompted
+/// secret's value appears anywhere in the workflow or the checkpoint (both are published: inspector, trace, exports).
+fn precheck(wf: &Workflow, secrets: &Secrets, opts: &WorkflowOptions, resume: Option<&Checkpoint>) -> Result<(), WorkflowError> {
+    if opts.run.key_hold > MAX_KEY_TIMING || opts.run.key_gap > MAX_KEY_TIMING {
+        return Err(WorkflowError::Options("key hold and key gap must be at most 100 ms in a workflow".into()));
+    }
+    for st in &wf.states {
+        // The runner applies the default delay after every top-level step: it counts towards the pause budget.
+        let pause = total_pause(&st.actions)
+            .saturating_add(opts.run.default_delay.saturating_mul(st.actions.len() as u32));
+        if pause > MAX_ACTION_PAUSE {
+            return Err(WorkflowError::Options(format!(
+                "state {}: its actions would pause for more than 2s in total (delays plus the default delay after each step)",
+                st.name
+            )));
+        }
+    }
+    // Every string in the definition, by where it is. Debug output covers every field (secret templates are redacted
+    // in it, and they hold only `{{names}}`).
+    let mut places: Vec<(String, String)> = vec![
+        ("name".into(), wf.name.clone()),
+        ("description".into(), wf.description.clone()),
+        ("start".into(), format!("{:?}", wf.start)),
+        ("tenants".into(), format!("{:?}", wf.tenants)),
+    ];
+    places.extend(wf.config.iter().map(|(k, v)| (format!("config.{k}"), format!("{k}={v}"))));
+    places.extend(wf.secrets.iter().map(|(k, v)| (format!("secrets.{k}"), format!("{k}={v}"))));
+    places.extend(wf.states.iter().map(|st| (format!("state {}", st.name), format!("{st:?}"))));
+    if let Some(cp) = resume {
+        places.push(("the checkpoint".into(), format!("{cp:?}")));
+    }
+    match places.into_iter().find(|(_, v)| secrets.appears_in(v)) {
+        Some((place, _)) => Err(WorkflowError::SecretInFile { place }),
+        None => Ok(()),
+    }
+}
+
 /// Run a workflow. `secrets` holds the prompted secret values; they are compiled into key strokes and otherwise kept
 /// only to scrub them from published text, then wiped. `sink` sees every trace entry as it happens (for a live view).
 /// Always releases every key at the end, unless dry-running.
@@ -1265,13 +1321,23 @@ pub fn run_workflow(
     resume: Option<&Checkpoint>,
     sink: &mut dyn FnMut(&TraceEntry, &Context),
 ) -> WorkflowReport {
+    let secret_values = Secrets(wf.secrets.keys().filter_map(|k| secrets.get(k).cloned()).collect());
+    // Checks that need no screen and must come before anything is recorded or shown: the context, the trace and the
+    // sink all publish what the file says.
+    if let Err(err) = precheck(wf, &secret_values, opts, resume) {
+        if !opts.run.dry_run {
+            let _ = host.release_all();
+        }
+        let entry = TraceEntry { at_ms: 0, event: WorkflowEvent::Stopped { state: None, reason: err.to_string() } };
+        sink(&entry, &Context::default());
+        return WorkflowReport { result: Err(err), trace: vec![entry], context: Context::default() };
+    }
     let mut ctx = Context { config: wf.config.clone(), ..Default::default() };
     if let Some(cp) = resume {
         ctx.derived = cp.derived.iter().map(|(k, v)| (k.clone(), (v.clone(), 0))).collect();
         ctx.attempts = cp.attempts.clone();
         ctx.history = cp.history.clone();
     }
-    let secret_values = Secrets(wf.secrets.keys().filter_map(|k| secrets.get(k).cloned()).collect());
     let mut e = Engine {
         wf,
         host,
@@ -1295,24 +1361,6 @@ pub fn run_workflow(
             if cp.workflow != wf.name || wf.state(&cp.state).is_none() {
                 return Err(WorkflowError::ResumeMismatch { checkpoint: cp.state.clone() });
             }
-        }
-        if opts.run.default_delay > MAX_ACTION_PAUSE {
-            return Err(WorkflowError::Options(
-                "a workflow's default delay between steps must be at most 2s (it is a gap after the engine's last look)".into(),
-            ));
-        }
-        // Everything written in the file is published (inspector, trace, exports, checkpoints). If a prompted secret's
-        // value appears anywhere in it, stop before anything is recorded.
-        let mut places: Vec<(String, String)> = wf.config.iter().map(|(k, v)| (format!("config.{k}"), v.clone())).collect();
-        for st in &wf.states {
-            places.extend(st.derive.iter().map(|(k, v)| (format!("{}.derive.{k}", st.name), v.clone())));
-            places.extend(st.require.iter().map(|(k, v)| (format!("{}.require.{k}", st.name), v.clone())));
-            places.extend(st.gate.iter().map(|g| (format!("{}.gate", st.name), g.clone())));
-            places.push((format!("{}.description", st.name), st.description.clone()));
-        }
-        places.push(("description".into(), wf.description.clone()));
-        if let Some((place, _)) = places.iter().find(|(_, v)| e.secrets.appears_in(v)) {
-            return Err(WorkflowError::SecretInFile { place: place.clone() });
         }
         let compiled = compile_workflow(wf, secrets, layout)?;
         e.run_states(&compiled, resume)
@@ -1354,7 +1402,16 @@ pub fn trace_jsonl(report: &WorkflowReport) -> String {
 
 /// A short Markdown record for a ticket: outcome, transitions and the final context.
 pub fn trace_markdown(wf: &Workflow, report: &WorkflowReport) -> String {
-    let mut md = format!("### Workflow: {}\n\n", if wf.name.is_empty() { "(unnamed)" } else { &wf.name });
+    // A run refused because the file itself holds a secret's value must not repeat any of the file's own text.
+    let withheld = matches!(report.result, Err(WorkflowError::SecretInFile { .. }));
+    let title = if withheld {
+        "(name withheld: the file contains a secret's value)"
+    } else if wf.name.is_empty() {
+        "(unnamed)"
+    } else {
+        &wf.name
+    };
+    let mut md = format!("### Workflow: {title}\n\n");
     let stopped = report.trace.iter().rev().find_map(|t| match &t.event {
         WorkflowEvent::Stopped { reason, .. } => Some(reason.clone()),
         _ => None,
