@@ -229,6 +229,13 @@ fn check_actions(state: &str, steps: &[Step], secrets: &BTreeMap<String, RawSecr
     Ok(())
 }
 
+/// Whether a file is a workflow rather than a script: its parsed top level has a `workflow_format` key (quoted or not;
+/// a key of that name nested in a table does not count). A file that is not valid TOML is neither, and says so when
+/// parsed as a script.
+pub fn is_workflow_source(toml_text: &str) -> bool {
+    toml::from_str::<toml::Table>(toml_text).is_ok_and(|t| t.contains_key("workflow_format"))
+}
+
 impl Workflow {
     pub fn parse(toml_text: &str) -> Result<Workflow, String> {
         let raw: RawWorkflow = toml::from_str(toml_text).map_err(|e| e.to_string())?;

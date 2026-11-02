@@ -23,9 +23,9 @@ pub struct Entry {
     pub workflow: bool,
 }
 
-/// Whether a file is a workflow: it says `workflow_format` at the top level.
+/// Whether a file is a workflow: its parsed top level has a `workflow_format` key.
 pub fn is_workflow(source: &str) -> bool {
-    source.lines().any(|l| l.trim_start().starts_with("workflow_format"))
+    kvmit_script::workflow::is_workflow_source(source)
 }
 
 pub fn load_all(dir: &Path) -> Vec<Entry> {
@@ -59,6 +59,15 @@ pub fn load_all(dir: &Path) -> Vec<Entry> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflows_are_told_apart_by_their_top_level_key() {
+        assert!(is_workflow("workflow_format = 1\nstart = []\n"));
+        assert!(is_workflow("\"workflow_format\" = 1\n"), "a quoted key is the same key");
+        assert!(!is_workflow("format = 1\n[vars]\nworkflow_format = { default = \"x\" }\n"), "nested, not top level");
+        assert!(!is_workflow("format = 1\ndescription = \"\"\"\nworkflow_format = 1\n\"\"\"\n"), "inside a string");
+        assert!(!is_workflow("not toml at all ["));
+    }
 
     #[test]
     fn every_builtin_parses_and_compiles() {

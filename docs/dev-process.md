@@ -973,4 +973,22 @@ run's trace (state chip, timeline, export file names, run outcome): pure and uni
 from password boxes, are cleared when the selection changes, and never reach the trace, the variables table or the
 exports (the engine's guarantees). Built, clippy-clean, unit-tested on Windows. **Not looked at on screen:** the screenshot
 harness needs a connected adapter, and launching the GUI here would write the maintainer's own settings (config and
-scripts folder are per-user, with no override). **Not yet reviewed.**
+scripts folder are per-user, with no override).
+
+## 2026-11-02 - Workflows in the GUI (PR #50): review round 50 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static, over `3954b16`. **NO SIGN-OFF:** 1 High, 5 Medium, 1 Low. All confirmed here and fixed on a
+separate branch (PR #50 had been reported complete).
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | Resume could take another workflow's checkpoint (the last run survived selection changes and was stamped with the selected workflow's name), importing its facts and attempts | **Confirmed.** A run keeps the definition it ran. The panel shows a run, and offers Resume, only for exactly that definition (an edited file is a different one). `wf_view::resume_point`, unit-tested. A finished run is dropped when the selection changes. |
+| 2 | Med | egui keeps password text in its undo history, so Ctrl+Z after switching selections could bring a cleared secret back; script caches lingered when a workflow was selected | **Confirmed** by reading egui 0.32.3. Secret fields have explicit ids; on a selection change or reload the secrets are zeroed and the fields' text-edit state removed. The script caches are cleared before either kind loads. A unit test checks that purging removes the state. **Residual:** the same undo history exists for the script panel's existing secret fields (not changed here). |
+| 3 | Med | Export file names and the saved notice used the workflow name, which may hold a secret's value the engine refused | **Confirmed.** Exports are named `workflow-run-<stamp>`, never from the workflow. |
+| 4 | Med | A question could be published after Abort and wait forever; Continue cleared the slot after replying, so it could clear the next question (shared with scripts) | **Confirmed.** `ask` checks the cancel flag and publishes under the lock `abort` takes; `answer` takes the question before replying. Both script and workflow runs use them. Unit test for the first; the second's interleaving is argued, not tested. |
+| 5 | Med | A dry run's checkpoint seeded a live resume (dry attempts count but send nothing) | **Confirmed.** Only a live run's checkpoint can be resumed (same `resume_point`). |
+| 6 | Med | Exports in the same second overwrote each other; a failed second file left half a pair | **Confirmed.** Files are created new (never overwritten), and a taken name gets a number. A failed pair removes what it wrote. Tested, including a stray half pair. |
+| 7 | Low | Workflow detection by line prefix misclassified nested or quoted keys and text in strings | **Confirmed.** It parses the document and checks for a real top-level `workflow_format` key (`kvmit_script::workflow::is_workflow_source`). Tested with nested, quoted and in-string cases. |
+
+Mutants (6, each alone, restored): all caught. The abort-race mutant made its test hang (the very bug); the hung test
+process was ended and counted as caught. **Not yet reviewed again; still not looked at on screen.**

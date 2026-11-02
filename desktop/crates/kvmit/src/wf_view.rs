@@ -80,6 +80,45 @@ pub fn timeline(trace: &[TraceEntry]) -> Vec<Row> {
         .collect()
 }
 
+/// Save a run's trace and notes as `workflow-run-<stamp>[-n].trace.jsonl` and `.notes.md` in `dir`. The name never
+/// comes from the workflow (its name could hold a secret's value the engine refused), files are created new (an
+/// existing export is never overwritten: a numbered name is taken instead), and a pair is never left half written.
+/// Returns the stem used.
+pub fn save_exports(dir: &std::path::Path, stamp: &str, jsonl: &str, md: &str) -> std::io::Result<String> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    for n in 0..1000 {
+        let stem = if n == 0 { format!("workflow-run-{stamp}") } else { format!("workflow-run-{stamp}-{n}") };
+        let (a, b) = (dir.join(format!("{stem}.trace.jsonl")), dir.join(format!("{stem}.notes.md")));
+        let open = |p: &std::path::Path| std::fs::OpenOptions::new().write(true).create_new(true).open(p);
+        let mut fa = match open(&a) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        };
+        let mut fb = match open(&b) {
+            Ok(f) => f,
+            Err(e) => {
+                drop(fa);
+                let _ = std::fs::remove_file(&a);
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    continue;
+                }
+                return Err(e);
+            }
+        };
+        let written = fa.write_all(jsonl.as_bytes()).and_then(|_| fb.write_all(md.as_bytes()));
+        if let Err(e) = written {
+            drop((fa, fb));
+            let _ = std::fs::remove_file(&a);
+            let _ = std::fs::remove_file(&b);
+            return Err(e);
+        }
+        return Ok(stem);
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "too many exports with this timestamp"))
+}
+
 /// File names for a run's exports, from the workflow name (made safe for a file name) and a local timestamp.
 pub fn export_stem(workflow: &str, stamp: &str) -> String {
     let safe: String = workflow
@@ -92,6 +131,21 @@ pub fn export_stem(workflow: &str, stamp: &str) -> String {
         .join("-");
     let safe = if safe.is_empty() { "workflow".to_string() } else { safe.chars().take(60).collect() };
     format!("{safe}-{stamp}")
+}
+
+/// What a Resume button may resume from: only a stopped **live** run (a dry run sent nothing, so its attempt counts mean
+/// nothing to a live one) of **exactly** the selected definition (another workflow's facts and history, or this file's
+/// before it was edited, mean nothing here).
+pub fn resume_point(
+    dry: bool,
+    ran: &kvmit_script::Workflow,
+    selected: &kvmit_script::Workflow,
+    report: Option<&kvmit_script::WorkflowReport>,
+) -> Option<kvmit_script::Checkpoint> {
+    if dry || ran != selected {
+        return None;
+    }
+    report.filter(|r| r.result.is_err()).and_then(|r| r.checkpoint(ran))
 }
 
 /// A run's outcome for the run-log header: the operator stopping it is Aborted, anything else Failed.
@@ -167,6 +221,46 @@ mod tests {
         assert_eq!(export_stem("Windows 11 OOBE (Autopilot)", "20261102-1530"), "windows-11-oobe-autopilot-20261102-1530");
         assert_eq!(export_stem("../../etc/passwd", "s"), "etc-passwd-s");
         assert_eq!(export_stem("", "s"), "workflow-s");
+    }
+
+    #[test]
+    fn exports_never_overwrite_or_use_the_workflow_name() {
+        let dir = std::env::temp_dir().join(format!("kvmit-export-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = save_exports(&dir, "20261102-1530", "{}", "# a").unwrap();
+        assert_eq!(first, "workflow-run-20261102-1530");
+        // Same second: a new name, the first pair untouched.
+        let second = save_exports(&dir, "20261102-1530", "{}", "# b").unwrap();
+        assert_eq!(second, "workflow-run-20261102-1530-1");
+        assert_eq!(std::fs::read_to_string(dir.join(format!("{first}.notes.md"))).unwrap(), "# a");
+        // A stray file holding one half of the next name: that name is skipped whole, nothing is overwritten.
+        std::fs::write(dir.join("workflow-run-20261102-1530-2.notes.md"), "keep").unwrap();
+        let third = save_exports(&dir, "20261102-1530", "{}", "# c").unwrap();
+        assert_eq!(third, "workflow-run-20261102-1530-3");
+        assert_eq!(std::fs::read_to_string(dir.join("workflow-run-20261102-1530-2.notes.md")).unwrap(), "keep");
+        assert!(!dir.join("workflow-run-20261102-1530-2.trace.jsonl").exists(), "no half pair left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_stopped_live_run_of_this_very_workflow_can_be_resumed() {
+        use kvmit_script::workflow::Context;
+        use kvmit_script::{Workflow, WorkflowReport};
+        let src = "workflow_format = 1\nname = \"w\"\nstart = [\"A\"]\nmatch = \"luma\"\n[[states]]\nname = \"A\"\ndetect = { screen = \"a.png\" }\nterminal = true\n";
+        let wf = Workflow::parse(src).unwrap();
+        let mut other = wf.clone();
+        other.description = "edited".into();
+        let stopped = WorkflowReport {
+            result: Err(WorkflowError::Cancelled),
+            trace: vec![],
+            context: Context { current: Some("A".into()), ..Default::default() },
+        };
+        let done = WorkflowReport { result: Ok(()), ..stopped.clone() };
+        assert!(resume_point(false, &wf, &wf, Some(&stopped)).is_some());
+        assert!(resume_point(true, &wf, &wf, Some(&stopped)).is_none(), "a dry run never seeds a live resume");
+        assert!(resume_point(false, &wf, &other, Some(&stopped)).is_none(), "another definition's run");
+        assert!(resume_point(false, &wf, &wf, Some(&done)).is_none(), "a completed run");
+        assert!(resume_point(false, &wf, &wf, None).is_none());
     }
 
     #[test]
