@@ -58,6 +58,9 @@ struct Sim {
     queue_on_confirm: usize,
     /// After the queue empties, the capture freezes on the last queued picture (same frame number).
     freeze_on_queued: bool,
+    /// Queued pictures are stamped when delivered, not when queued: old pictures released late from the driver's own
+    /// queue, which only the latency window can catch.
+    queued_received_late: bool,
     frozen_queued: Option<Frame>,
     events: Vec<crate::exec::RunEvent>,
 }
@@ -115,6 +118,7 @@ impl Host for Sim {
         if let Some(f) = self.queued.pop_front() {
             self.seq += 1;
             let f = f.with_seq(Some(self.seq));
+            let f = if self.queued_received_late { f.with_captured_at(Some(std::time::Instant::now())) } else { f };
             if self.freeze_on_queued && self.queued.is_empty() {
                 self.frozen_queued = Some(f.clone());
             }
@@ -804,6 +808,7 @@ fn a_queued_picture_seen_inside_the_latency_window_never_counts_later() {
         // Two: the fresh look's own boundary read takes the first; the second arrives inside the window.
         queue_on_confirm: 2,
         freeze_on_queued: true,
+        queued_received_late: true,
         ..Default::default()
     };
     let r = go(&w, &mut sim, &o, None);

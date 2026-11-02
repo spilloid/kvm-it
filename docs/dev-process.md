@@ -951,8 +951,16 @@ new frame numbers and **no latency window**. Only their receipt time gives them 
 nothing typed). Its mutant (ignore receipt time) fails that test alone.
 
 **What remains:** receipt is not acquisition. A picture still inside the *driver's* own queue at the boundary is received
-after it. That queue is a few frames (about 30-130 ms at 30 fps), which the 300 ms latency window covers. Using the
+after it. That queue is usually a few frames (about 30-130 ms at 30 fps). The 300 ms latency window is a mitigation, not a bound:
+driver and framework queues, callback scheduling and a stalled capture thread can exceed it. Using the
 drivers' own capture timestamps (V4L2 buffer timestamps, Media Foundation sample times, CMSampleBuffer presentation
 times) would close that too, but each needs its clock mapped to this process's clock and a hardware run to trust.
 **Built and host-tested on Windows only:** the Linux and macOS stamping is type-checked by CI; no capture card ran it.
 VM re-run with stamped harness frames: all transitions verified.
+
+Review round 45 (Codex `gpt-6-astra`, read-only, static, over the stamping commit): **SIGN-OFF: no High or Medium
+defect remains.** Finding 1 is closed for receipt times. Two Low points, both taken: (1) the new queued-picture stamps
+masked the latency floor's own test. The frozen-queue test now delivers its pictures with late receipt stamps (old
+pictures released from the driver's queue), so only the floor catches them; its mutant was re-run and fails. (2) The
+residual is now described as a mitigation, not a bound. Also taken: a frame must be received strictly *after* a boundary
+(equal instants prove nothing).

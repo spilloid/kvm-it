@@ -993,7 +993,7 @@ impl Engine<'_> {
                     // (A frame inside the window has just raised the floor to itself, so it is excluded too.)
                     // Received by the backend before the boundary: a picture of the past, whatever its number.
                     let received_after = match (after, frame.captured_at) {
-                        (Some(b), Some(t)) => t >= b.at,
+                        (Some(b), Some(t)) => t > b.at,
                         _ => true,
                     };
                     let fresh = after.is_none_or(|b| sq > b.seq) && floor.is_none_or(|f| sq > f) && received_after;
