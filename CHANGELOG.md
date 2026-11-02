@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+- **Stateful workflows, engine only** (issue #46): a separate `workflow_format = 1` file of named states, each with
+  reference screens, entry guards, permitted transitions, verification with a timeout, bounded retries (only where marked
+  safe), human gates and a tenant branding check. The engine observes, classifies, validates, acts, verifies and only then
+  transitions; an unknown, ambiguous or unexpected screen stops the run without typing. A typed run context
+  (config / observed / derived / runtime, secrets kept apart), structured events, a redacted JSONL and Markdown export, and
+  a non-secret resume checkpoint that re-observes the screen before continuing. Linear scripts are unchanged. No firmware
+  or protocol change. **Host-tested only** (simulated targets); no GUI or CLI yet. See `docs/ux.md`.
+
 ## [0.4.9] - 2026-10-30 (cross-platform UX audit)
 
 Cross-platform parity audit (review round 36, `docs/platform-parity.md`). Desktop only; no firmware or protocol change.

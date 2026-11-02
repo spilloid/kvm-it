@@ -794,3 +794,18 @@ fixing where a test could run on this PC (STD-001), and the fix chosen here. Sam
 Verified by running (Windows 11): `cargo test --workspace` (219 pass, 1 ignored; 214 before, plus five new tests),
 `cargo clippy --workspace --all-targets -D warnings` for the Windows and `aarch64-apple-darwin` targets. Not run: anything on
 Linux or macOS (the `cfg(unix)` ffmpeg test included), the GUI by hand (the popup fix is covered headless only), any hardware.
+
+## 2026-11-02 - Stateful workflow engine (`feat/workflow-engine`, issue #46): review round 38 (Codex `gpt-6-astra`, pending)
+
+Engine only (`kvmit-script::workflow`), written by the orchestrator (Claude Opus 5.5). It reuses the script compiler, `Host` and
+`Frame`; no firmware or protocol change. Host-tested against simulated targets: a mocked host whose screens advance per Enter,
+and a self-advancing timeline for dry runs. 13 tests, all of them for issue #46's acceptance criteria.
+
+Mutants caught: ignoring the settle rule; skipping the tenant check; accepting any changed screen as a verified transition;
+dropping the threshold; dropping the ambiguity margin. The last two first survived together: the only ambiguous test frame
+was also under the threshold, so neither rule was tested alone. Two cases were added (a clear-but-weak match, a
+strong-but-ambiguous one), and each mutant now fails on its own. Found while testing: the tenant check read a fresh frame,
+not the one that classified the screen. It now uses the same frame (dry-run timelines showed the difference).
+
+Verified by running (Windows 11): `cargo test -p kvmit-script` (38 pass), clippy `-D warnings` on the crate. Not run: any
+real OOBE screen, capture card or adapter; the GUI and CLI do not use the engine yet.

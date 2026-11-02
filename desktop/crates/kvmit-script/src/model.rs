@@ -138,7 +138,7 @@ struct RawMove {
 
 #[derive(Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-struct RawStep {
+pub(crate) struct RawStep {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -177,7 +177,7 @@ struct RawScript {
     steps: Vec<RawStep>,
 }
 
-fn step_from_raw(r: RawStep) -> Result<Step, String> {
+pub(crate) fn step_from_raw(r: RawStep) -> Result<Step, String> {
     let n = [
         r.text.is_some(), r.secret_text.is_some(), r.key.is_some(), r.chord.is_some(), r.delay.is_some(),
         r.repeat.is_some(), r.wait_for.is_some(), r.confirm.is_some(), r.click.is_some(),

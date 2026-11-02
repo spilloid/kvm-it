@@ -4,7 +4,9 @@ pub mod duckyscript;
 pub mod exec;
 pub mod frame;
 pub mod model;
+pub mod workflow;
 
 pub use exec::{compile, preview, run, Host, Op, Preview, RunError, RunEvent, RunOptions, Vars};
 pub use frame::Frame;
 pub use model::{parse_duration, Script, Step, VarDef, WaitSpec};
+pub use workflow::{run_workflow, Checkpoint, Workflow, WorkflowError, WorkflowEvent, WorkflowOptions, WorkflowReport};
