@@ -932,3 +932,35 @@ the required `match`, the harness's stale dump. Remaining: 2 High, 4 Medium, eac
 
 Mutants (6, each alone, restored): all caught. Verified by running (Windows 11): `cargo test --workspace`, clippy
 `-D warnings`. VM re-run: all transitions verified. **Not yet reviewed again; finding 1 open.**
+
+**Process slip found 2026-11-02:** PR #47 was merged at its first commit (`e8b6850`). The five commits above (rounds
+38-43, the structure matcher, the VM harness) were pushed to the branch afterwards and never reached main, so main held
+the engine as reviewed "do not ship". PR #48 lands them. From now on, before a PR is reported ready, compare its head
+with what was reviewed and tested, and push nothing to a branch whose PR the maintainer may be merging without saying so.
+
+## 2026-11-02 - Capture timestamps (`feat/capture-timestamps`): round-43 finding 1
+
+Frames now say when the capture backend **received** them (`Frame.captured_at`, from `VideoFrame.captured_at`), stamped
+before decoding: after V4L2's `stream.next()` (Linux), after Media Foundation's `ReadSample` (Windows), at the top of the
+AVFoundation delegate callback (macOS). The demo source has none. The QEMU harness stamps the moment before each
+screendump, which the dump cannot precede. Each boundary (a decision taken, keys sent) records its instant as well as its
+frame number. A frame received before it is not evidence after it, whatever its number or delivery time.
+
+Test: three pictures of the approved tenant are queued while the question is open, then delivered after approval with
+new frame numbers and **no latency window**. Only their receipt time gives them away, and the run stops (tenant mismatch,
+nothing typed). Its mutant (ignore receipt time) fails that test alone.
+
+**What remains:** receipt is not acquisition. A picture still inside the *driver's* own queue at the boundary is received
+after it. That queue is usually a few frames (about 30-130 ms at 30 fps). The 300 ms latency window is a mitigation, not a bound:
+driver and framework queues, callback scheduling and a stalled capture thread can exceed it. Using the
+drivers' own capture timestamps (V4L2 buffer timestamps, Media Foundation sample times, CMSampleBuffer presentation
+times) would close that too, but each needs its clock mapped to this process's clock and a hardware run to trust.
+**Built and host-tested on Windows only:** the Linux and macOS stamping is type-checked by CI; no capture card ran it.
+VM re-run with stamped harness frames: all transitions verified.
+
+Review round 45 (Codex `gpt-6-astra`, read-only, static, over the stamping commit): **SIGN-OFF: no High or Medium
+defect remains.** Finding 1 is closed for receipt times. Two Low points, both taken: (1) the new queued-picture stamps
+masked the latency floor's own test. The frozen-queue test now delivers its pictures with late receipt stamps (old
+pictures released from the driver's queue), so only the floor catches them; its mutant was re-run and fails. (2) The
+residual is now described as a mitigation, not a bound. Also taken: a frame must be received strictly *after* a boundary
+(equal instants prove nothing).

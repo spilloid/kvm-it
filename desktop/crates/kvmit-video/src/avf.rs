@@ -118,6 +118,8 @@ define_class!(
     unsafe impl AVCaptureVideoDataOutputSampleBufferDelegate for Delegate {
         #[unsafe(method(captureOutput:didOutputSampleBuffer:fromConnection:))]
         fn on_frame(&self, _output: &AVCaptureOutput, sample: &CMSampleBuffer, _connection: &AVCaptureConnection) {
+            // Received now, before conversion: the earliest moment this process knows the picture.
+            let captured_at = Some(std::time::Instant::now());
             let Some(buf) = (unsafe { sample.image_buffer() }) else { return };
             if CVPixelBufferGetPixelFormatType(&buf) != kCVPixelFormatType_32BGRA {
                 return; // the session was asked for BGRA; anything else is not ours to guess at
@@ -138,7 +140,7 @@ define_class!(
             if let Some(rgba) = rgba {
                 let sh = &self.ivars().shared;
                 let seq = sh.seq.fetch_add(1, Ordering::SeqCst) + 1;
-                *sh.latest.lock().unwrap() = Some(Arc::new(VideoFrame { width: w, height: h, rgba, seq }));
+                *sh.latest.lock().unwrap() = Some(Arc::new(VideoFrame { width: w, height: h, rgba, seq, captured_at }));
                 *sh.last_frame.lock().unwrap() = Instant::now();
             }
         }

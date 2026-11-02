@@ -10,6 +10,10 @@ pub struct Frame {
     /// The capture's own frame counter, when the source has one. Two reads of the same captured frame carry the same
     /// number, so a stalled capture is not mistaken for a screen that stayed the same (workflows rely on this).
     pub seq: Option<u64>,
+    /// When the capture backend received this picture from its driver (before decoding). A picture received before a
+    /// decision was taken can never be evidence after it, however late it is delivered (workflows rely on this). The
+    /// driver's own queue is not covered: that is what a workflow's capture latency window is for.
+    pub captured_at: Option<std::time::Instant>,
 }
 
 pub const GRID_W: usize = 64;
@@ -17,11 +21,16 @@ pub const GRID_H: usize = 36;
 
 impl Frame {
     pub fn new(width: usize, height: usize, gray: Vec<u8>) -> Option<Frame> {
-        (width > 0 && height > 0 && gray.len() == width * height).then_some(Frame { width, height, gray, seq: None })
+        (width > 0 && height > 0 && gray.len() == width * height).then_some(Frame { width, height, gray, seq: None, captured_at: None })
     }
 
     pub fn with_seq(mut self, seq: Option<u64>) -> Frame {
         self.seq = seq;
+        self
+    }
+
+    pub fn with_captured_at(mut self, at: Option<std::time::Instant>) -> Frame {
+        self.captured_at = at;
         self
     }
 
@@ -89,7 +98,7 @@ impl Frame {
         for row in y0..y1 {
             gray.extend_from_slice(&self.gray[row * self.width + x0..row * self.width + x1]);
         }
-        Frame { width: x1 - x0, height: y1 - y0, gray, seq: self.seq }
+        Frame { width: x1 - x0, height: y1 - y0, gray, seq: self.seq, captured_at: self.captured_at }
     }
 }
 

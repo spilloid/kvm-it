@@ -58,6 +58,9 @@ struct Sim {
     queue_on_confirm: usize,
     /// After the queue empties, the capture freezes on the last queued picture (same frame number).
     freeze_on_queued: bool,
+    /// Queued pictures are stamped when delivered, not when queued: old pictures released late from the driver's own
+    /// queue, which only the latency window can catch.
+    queued_received_late: bool,
     frozen_queued: Option<Frame>,
     events: Vec<crate::exec::RunEvent>,
 }
@@ -115,6 +118,7 @@ impl Host for Sim {
         if let Some(f) = self.queued.pop_front() {
             self.seq += 1;
             let f = f.with_seq(Some(self.seq));
+            let f = if self.queued_received_late { f.with_captured_at(Some(std::time::Instant::now())) } else { f };
             if self.freeze_on_queued && self.queued.is_empty() {
                 self.frozen_queued = Some(f.clone());
             }
@@ -141,7 +145,7 @@ impl Host for Sim {
             return t.get((self.looks - 1).min(t.len() - 1)).cloned().map(|f| f.with_seq(seq));
         }
         let seq = if self.no_seq { None } else { seq };
-        let f = self.screens.get(self.pos).cloned().map(|f| f.with_seq(seq));
+        let f = self.screens.get(self.pos).cloned().map(|f| f.with_seq(seq).with_captured_at(Some(std::time::Instant::now())));
         self.last_frame = f.clone();
         f
     }
@@ -162,7 +166,8 @@ impl Host for Sim {
         self.asked.push(message.to_string());
         if let Some((at, f)) = self.during_confirm.take() {
             for _ in 0..self.queue_on_confirm {
-                self.queued.push_back(self.screens[at].clone());
+                // Received now, while the question is still open: pictures of the screen before the decision.
+                self.queued.push_back(self.screens[at].clone().with_captured_at(Some(std::time::Instant::now())));
             }
             self.screens[at] = f;
         }
@@ -803,6 +808,7 @@ fn a_queued_picture_seen_inside_the_latency_window_never_counts_later() {
         // Two: the fresh look's own boundary read takes the first; the second arrives inside the window.
         queue_on_confirm: 2,
         freeze_on_queued: true,
+        queued_received_late: true,
         ..Default::default()
     };
     let r = go(&w, &mut sim, &o, None);
@@ -954,4 +960,24 @@ fn no_capture_is_started_after_the_deadline() {
     let r = go(&w, &mut sim, &o, None);
     assert!(matches!(r.result, Err(WorkflowError::UnknownScreen { best: Some(_) })), "{:?}", r.result);
     assert_eq!(sim.looks, 2);
+}
+
+#[test]
+fn a_picture_received_before_a_decision_is_never_evidence_after_it() {
+    let w = wf();
+    let mut o = opts();
+    // No latency window at all: only the capture time can tell these pictures apart.
+    o.capture_latency = Duration::ZERO;
+    // While the enrollment question is open, the target switches tenant, and three pictures of the old (approved)
+    // tenant are already queued. They arrive after the approval with new frame numbers, but were received before it.
+    let mut sim = Sim {
+        screens: screens(),
+        confirms: [true].into(),
+        during_confirm: Some((3, solid(186))),
+        queue_on_confirm: 3,
+        ..Default::default()
+    };
+    let r = go(&w, &mut sim, &o, None);
+    assert!(matches!(r.result, Err(WorkflowError::TenantMismatch { .. })), "{:?}", r.result);
+    assert_eq!(enters(&sim), 3, "nothing typed on the enrollment screen");
 }

@@ -19,11 +19,16 @@ pub struct VideoFrame {
     pub rgba: Vec<u8>,
     /// Monotonic per-capture counter; lets the UI skip re-uploading an unchanged frame.
     pub seq: u64,
+    /// When the backend received this picture from the driver, before decoding (`None` for pictures that were not
+    /// captured, such as the demo source).
+    pub captured_at: Option<std::time::Instant>,
 }
 
 impl VideoFrame {
     pub fn to_gray(&self) -> kvmit_script::Frame {
-        convert::rgba_to_gray_frame(self.width, self.height, &self.rgba).with_seq(Some(self.seq))
+        convert::rgba_to_gray_frame(self.width, self.height, &self.rgba)
+            .with_seq(Some(self.seq))
+            .with_captured_at(self.captured_at)
     }
 
     /// True when the frame is (nearly) one flat colour. Cheap USB capture cards emit a uniform fill while they
@@ -63,7 +68,7 @@ mod blank_tests {
                 rgba[(y * w + x) * 4..][..3].copy_from_slice(&[v, v, v]);
             }
         }
-        VideoFrame { width: w, height: h, rgba, seq: 0 }
+        VideoFrame { width: w, height: h, rgba, seq: 0, captured_at: None }
     }
 
     #[test]
@@ -80,7 +85,7 @@ mod blank_tests {
 
     #[test]
     fn empty_or_short_frames_are_blank() {
-        assert!(VideoFrame { width: 0, height: 0, rgba: vec![], seq: 0 }.is_blank());
-        assert!(VideoFrame { width: 10, height: 10, rgba: vec![0; 12], seq: 0 }.is_blank());
+        assert!(VideoFrame { width: 0, height: 0, rgba: vec![], seq: 0, captured_at: None }.is_blank());
+        assert!(VideoFrame { width: 10, height: 10, rgba: vec![0; 12], seq: 0, captured_at: None }.is_blank());
     }
 }

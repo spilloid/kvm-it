@@ -850,6 +850,16 @@ struct Engine<'a> {
     started: Instant,
 }
 
+/// A moment after which evidence must have been captured: a decision was taken, or keys were sent.
+#[derive(Debug, Clone, Copy)]
+struct Boundary {
+    /// The newest capture number seen at that moment.
+    seq: u64,
+    /// The moment itself. A frame the backend received before it can never be evidence after it, however late it is
+    /// delivered.
+    at: Instant,
+}
+
 /// How a look at the screen ended.
 struct Look {
     /// The last classification, normalised: `state` is `None` unless it settled.
@@ -944,13 +954,13 @@ impl Engine<'_> {
     fn observe(
         &mut self,
         timeout: Duration,
-        after_seq: Option<u64>,
+        after: Option<Boundary>,
         stop_on: impl Fn(&Observation) -> bool,
     ) -> Result<Look, WorkflowError> {
         let poll = self.opts.run.poll.max(Duration::from_millis(10));
         let need = self.opts.settle_frames.max(1);
         // Frames that may still be queued pictures from before the boundary are skipped.
-        let ignore_for = if after_seq.is_some() { self.opts.capture_latency } else { Duration::ZERO };
+        let ignore_for = if after.is_some() { self.opts.capture_latency } else { Duration::ZERO };
         let real = Instant::now();
         let mut elapsed = Duration::ZERO;
         let mut last: Option<Observation> = None;
@@ -981,7 +991,12 @@ impl Engine<'_> {
                         floor = Some(floor.map_or(sq, |f: u64| f.max(sq)));
                     }
                     // (A frame inside the window has just raised the floor to itself, so it is excluded too.)
-                    let fresh = after_seq.is_none_or(|after| sq > after) && floor.is_none_or(|f| sq > f);
+                    // Received by the backend before the boundary: a picture of the past, whatever its number.
+                    let received_after = match (after, frame.captured_at) {
+                        (Some(b), Some(t)) => t > b.at,
+                        _ => true,
+                    };
+                    let fresh = after.is_none_or(|b| sq > b.seq) && floor.is_none_or(|f| sq > f) && received_after;
                     // Only a newer frame is a new look; the same (or an older, reordered) frame is not.
                     let new = last_seq.is_none_or(|prev| sq > prev);
                     if fresh && new {
@@ -1056,8 +1071,10 @@ impl Engine<'_> {
     /// keys, first attempt or retry, is preceded by this.
     fn still_on(&mut self, s: &StateDef) -> Result<(), WorkflowError> {
         let here = s.name.clone();
+        // The decision is now: nothing the capture received before this moment counts.
+        let decided = Instant::now();
         let now = self.host.screen().map(|f| f.seq.ok_or(WorkflowError::NoFrameNumbers)).transpose()?;
-        let boundary = now.max(self.seen_seq).unwrap_or(0);
+        let boundary = Boundary { seq: now.max(self.seen_seq).unwrap_or(0), at: decided };
         let look = self.observe(self.opts.observe_timeout, Some(boundary), |o| o.state.is_some())?;
         match look.obs.as_ref().and_then(|o| o.state.clone()) {
             Some(st) if st == here => {}
@@ -1244,7 +1261,13 @@ impl Engine<'_> {
                 self.still_on(&s)?;
                 self.act(&s, ops, attempt)?;
                 // Everything captured up to now predates the action's effect.
-                let boundary = self.host.screen().and_then(|f| f.seq).or(self.seen_seq);
+                let sent = Instant::now();
+                let boundary = self
+                    .host
+                    .screen()
+                    .and_then(|f| f.seq)
+                    .or(self.seen_seq)
+                    .map(|seq| Boundary { seq, at: sent });
                 // Verify: the screen must settle on a permitted next state. Staying put is "not yet"; anything else
                 // stops the run.
                 let here = name.clone();
