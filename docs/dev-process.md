@@ -914,4 +914,21 @@ frame and a key.
 
 Re-run on the VM after the fixes (rolled back to the first OOBE screen): REGION → KEYBOARD → SECOND_KEYBOARD → NETWORK,
 all transitions verified (one at confidence 0.995). Verified by running (Windows 11): `cargo test --workspace`, clippy
-`-D warnings`. **Not yet reviewed again.**
+`-D warnings`.
+
+## 2026-11-02 - Round-41 fixes (`5ee0c27`): review round 43 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: legacy checkpoints, exact-threshold structure scores,
+the required `match`, the harness's stale dump. Remaining: 2 High, 4 Medium, each confirmed here.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | Buffered pictures from before a decision, delivered after the latency window with higher frame numbers, can still pass as fresh | **Confirmed, not fixed: needs the operator's decision.** Closing it needs acquisition timestamps from each capture backend (Media Foundation, V4L2, AVFoundation) carried through `Frame`. This machine cannot verify any of them without the hardware on each OS. Documented as the open residual. |
+| 2 | High | Many short key gaps (600 taps at 100 ms) could add up to a minute with nothing watched before secret typing | **Confirmed.** After compiling, each state's actions must take at most **5 s to send**, all told: every key's hold and gap (a shifted character counts twice), delays, the default delay after each step, repeats expanded. This replaces the separate default-delay budget. |
+| 3 | Med | A timing error was reported before the secret scan, so its message and the Markdown title could carry a secret-bearing name | **Confirmed.** The secret scan runs first; nothing else reports until it has passed. |
+| 4 | Med | The secret's location could contain the secret (`config.hunter2`) | **Confirmed.** Locations are built from positions only ("config entry 3", "state 2 (in file order)", "the checkpoint"). |
+| 5 | Med | The scan searched `Debug` renderings, which escape quotes, so a secret containing `"` was missed | **Confirmed.** The scan walks the real string values field by field (every state field and action string, every checkpoint field). |
+| 6 | Med | The observation loop started a capture after its deadline | **Confirmed.** No capture starts past the deadline (the first look always happens), and no sleep is forced beyond the time left. The reviewer's further point (a capture already in progress can block past the deadline) needs a deadline-aware host API: not done. |
+
+Mutants (6, each alone, restored): all caught. Verified by running (Windows 11): `cargo test --workspace`, clippy
+`-D warnings`. VM re-run: all transitions verified. **Not yet reviewed again; finding 1 open.**

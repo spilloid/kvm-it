@@ -663,14 +663,14 @@ fn a_secret_pasted_into_free_text_is_scrubbed_from_everything_published() {
     let w = Workflow::parse(&leaky).unwrap();
     let mut sim = Sim { screens: screens(), confirms: [true].into(), ..Default::default() };
     let r = go(&w, &mut sim, &opts(), None);
-    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "state AUTOPILOT".into() }));
+    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "state 4 (in file order)".into() }));
     assert_eq!(sim.typed, 0);
     // The same for a recorded fact, which would otherwise sit in the context, the inspector and checkpoints.
     let leaky = OOBE.replace("derive = { region_set = \"yes\" }", "derive = { region_set = \"hunter2-wifi\" }");
     let w = Workflow::parse(&leaky).unwrap();
     let mut sim = Sim { screens: screens(), ..Default::default() };
     let r = go(&w, &mut sim, &opts(), None);
-    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "state REGION".into() }));
+    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "state 1 (in file order)".into() }));
     for text in [trace_jsonl(&r), trace_markdown(&w, &r), format!("{r:?}")] {
         assert!(!text.contains("hunter2"), "{text}");
     }
@@ -813,9 +813,9 @@ fn a_queued_picture_seen_inside_the_latency_window_never_counts_later() {
 #[test]
 fn the_pause_budget_counts_default_delays_and_key_timing() {
     let w = wf();
-    // REGION has two steps: a 1.5 s default delay after each makes 3 s of pauses.
+    // REGION has two steps: a 3 s default delay after each makes 6 s with nothing watched.
     let mut o = opts();
-    o.run.default_delay = Duration::from_millis(1500);
+    o.run.default_delay = Duration::from_secs(3);
     let mut sim = Sim { screens: screens(), ..Default::default() };
     assert!(matches!(go(&w, &mut sim, &o, None).result, Err(WorkflowError::Options(_))));
     let mut o = opts();
@@ -847,7 +847,7 @@ fn a_secret_anywhere_in_the_definition_is_refused_before_anything_is_published()
     let r = run_workflow(&w, &secrets(), &UsAnsi, &mut sim, &opts(), None, &mut |t, c| {
         seen.push(format!("{t:?} {c:?}"));
     });
-    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "name".into() }));
+    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "the workflow's name or description".into() }));
     assert_eq!(r.context, Context::default(), "no context was built");
     for text in seen.iter().chain([trace_jsonl(&r), trace_markdown(&w, &r), format!("{r:?}")].iter()) {
         assert!(!text.contains("hunter2"), "{text}");
@@ -858,7 +858,7 @@ fn a_secret_anywhere_in_the_definition_is_refused_before_anything_is_published()
     let w = Workflow::parse(&leaky).unwrap();
     let mut sim = Sim { screens: screens(), ..Default::default() };
     let r = go(&w, &mut sim, &opts(), None);
-    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "state KEYBOARD".into() }));
+    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "state 2 (in file order)".into() }));
 }
 
 #[test]
@@ -879,4 +879,79 @@ fn a_workflow_must_say_how_it_compares_screens() {
     let e = Workflow::parse(&OOBE.replace("match = \"luma\"\n", "")).unwrap_err();
     assert!(e.contains("`match` is required"), "{e}");
     assert!(Workflow::parse(&OOBE.replace("match = \"luma\"", "match = \"pixels\"")).is_err());
+}
+
+#[test]
+fn many_short_gaps_add_up_against_the_action_time_limit() {
+    // 600 taps with a 100 ms gap each: every timing is within its own limit, together a minute unwatched.
+    let long = OOBE.replace(
+        "actions = [ { key = \"ENTER\" } ]\nretries",
+        "actions = [ { repeat = { count = 600, steps = [ { key = \"SHIFT\" } ] } }, { key = \"ENTER\" } ]\nretries",
+    );
+    let w = Workflow::parse(&long).unwrap();
+    let mut o = opts();
+    o.run.key_gap = Duration::from_millis(100);
+    let mut sim = Sim { screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &o, None);
+    assert!(matches!(&r.result, Err(WorkflowError::Options(m)) if m.contains("state 2")), "{:?}", r.result);
+    assert_eq!(sim.typed, 0, "refused before the first key");
+}
+
+#[test]
+fn the_secret_check_comes_first_and_never_names_the_secret() {
+    // A secret in the name and a bad timing option: the secret is what is reported, so nothing echoes the name.
+    let leaky = OOBE.replace("name = \"test-oobe\"", "name = \"hunter2-wifi\"");
+    let w = Workflow::parse(&leaky).unwrap();
+    let mut o = opts();
+    o.run.key_gap = Duration::from_secs(1);
+    let mut sim = Sim { screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &o, None);
+    assert!(matches!(r.result, Err(WorkflowError::SecretInFile { .. })), "{:?}", r.result);
+    for text in [trace_jsonl(&r), trace_markdown(&w, &r), format!("{r:?}")] {
+        assert!(!text.contains("hunter2"), "{text}");
+    }
+    // A config *key* equal to the secret: the location says where by position, not by the key.
+    let leaky = OOBE.replace("tenant = \"contoso\"\n", "tenant = \"contoso\"\nhunter2_wifi = \"ordinary\"\n");
+    let w = Workflow::parse(&leaky).unwrap();
+    let key_secret: Vars = [("wifi".to_string(), "hunter2_wifi".to_string())].into();
+    let mut sim = Sim { screens: screens(), ..Default::default() };
+    let r = run_workflow(&w, &key_secret, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+    assert!(matches!(&r.result, Err(WorkflowError::SecretInFile { place }) if place.starts_with("config entry")), "{:?}", r.result);
+    for text in [trace_jsonl(&r), trace_markdown(&w, &r), format!("{r:?}")] {
+        assert!(!text.contains("hunter2"), "{text}");
+    }
+}
+
+#[test]
+fn a_secret_with_quotes_is_found_in_a_checkpoint() {
+    // A formatted (Debug) rendering would escape the quote and miss it; the real values are scanned.
+    let w = wf();
+    let quoted: Vars = [("wifi".to_string(), "pa\"ss".to_string())].into();
+    let cp = Checkpoint {
+        workflow: "test-oobe".into(),
+        state: "NETWORK".into(),
+        derived: [("note".to_string(), "pa\"ss".to_string())].into(),
+        attempts: BTreeMap::new(),
+        attempted: Some(0),
+        history: vec![],
+    };
+    let mut seen = Vec::new();
+    let mut sim = Sim { screens: screens(), pos: 2, ..Default::default() };
+    let r = run_workflow(&w, &quoted, &UsAnsi, &mut sim, &opts(), Some(&cp), &mut |t, c| seen.push(format!("{t:?}{c:?}")));
+    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "the checkpoint".into() }));
+    assert!(seen.iter().all(|t| !t.contains("pa\\\"ss") && !t.contains("pa\"ss")), "{seen:?}");
+    assert_eq!(r.context, Context::default());
+}
+
+#[test]
+fn no_capture_is_started_after_the_deadline() {
+    let w = wf();
+    let mut o = opts();
+    o.offer_manual_recovery = false;
+    o.observe_timeout = Duration::from_millis(500);
+    // Unknown screen, 250 ms polls: looks at 0 and 250 ms; at 500 ms the deadline has passed and no capture starts.
+    let mut sim = Sim { screens: vec![solid(45)], ..Default::default() };
+    let r = go(&w, &mut sim, &o, None);
+    assert!(matches!(r.result, Err(WorkflowError::UnknownScreen { best: Some(_) })), "{:?}", r.result);
+    assert_eq!(sim.looks, 2);
 }

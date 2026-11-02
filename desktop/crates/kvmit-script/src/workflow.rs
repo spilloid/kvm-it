@@ -957,9 +957,15 @@ impl Engine<'_> {
         let mut last_seq: Option<u64> = None;
         let mut floor: Option<u64> = None;
         let mut streak = 0u32;
+        let mut first = true;
         loop {
             self.check()?;
-            match self.host.screen() {
+            // No new capture is started once the deadline has passed (the first look always happens).
+            let expired = elapsed >= timeout || real.elapsed() >= timeout;
+            let frame = if first || !expired { Some(self.host.screen()) } else { None };
+            first = false;
+            // `None`: no capture was started (past the deadline); the timeout below reports what was seen.
+            if let Some(frame) = frame { match frame {
                 None => {
                     streak = 0;
                     last = None;
@@ -996,7 +1002,7 @@ impl Engine<'_> {
                         }
                     }
                 }
-            }
+            } }
             if elapsed >= timeout || real.elapsed() >= timeout {
                 // Report what was decided, not a provisional match: an unsettled classification is unknown.
                 let obs = last.map(|mut o| {
@@ -1011,7 +1017,9 @@ impl Engine<'_> {
                 return Ok(Look { obs });
             }
             let left = timeout.saturating_sub(elapsed).min(timeout.saturating_sub(real.elapsed()));
-            self.host.sleep(poll.min(left).max(Duration::from_millis(1)));
+            if !left.is_zero() {
+                self.host.sleep(poll.min(left));
+            }
             elapsed += poll;
         }
     }
@@ -1275,38 +1283,97 @@ pub const MAX_KEY_TIMING: Duration = Duration::from_millis(100);
 /// Checks before a run that need no screen: timing options, the pause budget of every state, and that no prompted
 /// secret's value appears anywhere in the workflow or the checkpoint (both are published: inspector, trace, exports).
 fn precheck(wf: &Workflow, secrets: &Secrets, opts: &WorkflowOptions, resume: Option<&Checkpoint>) -> Result<(), WorkflowError> {
+    // Privacy first: no other check may report anything from the file before this one has passed.
+    if let Some(place) = secret_place(wf, secrets, resume) {
+        return Err(WorkflowError::SecretInFile { place });
+    }
     if opts.run.key_hold > MAX_KEY_TIMING || opts.run.key_gap > MAX_KEY_TIMING {
         return Err(WorkflowError::Options("key hold and key gap must be at most 100 ms in a workflow".into()));
     }
-    for st in &wf.states {
-        // The runner applies the default delay after every top-level step: it counts towards the pause budget.
-        let pause = total_pause(&st.actions)
-            .saturating_add(opts.run.default_delay.saturating_mul(st.actions.len() as u32));
-        if pause > MAX_ACTION_PAUSE {
-            return Err(WorkflowError::Options(format!(
-                "state {}: its actions would pause for more than 2s in total (delays plus the default delay after each step)",
-                st.name
-            )));
+    Ok(())
+}
+
+/// Every string a workflow (and a checkpoint) holds, field by field (the real values, not a formatted rendering that
+/// would escape quotes), with a location that is built only from positions, never from the file's own text.
+fn secret_place(wf: &Workflow, secrets: &Secrets, resume: Option<&Checkpoint>) -> Option<String> {
+    fn steps<'a>(out: &mut Vec<&'a str>, list: &'a [Step]) {
+        for s in list {
+            match s {
+                Step::Text(t) | Step::Key(t) | Step::Confirm(t) | Step::Click(t) | Step::Comment(t) => out.push(t),
+                Step::SecretText(t) => out.push(t.as_str()),
+                Step::Chord(keys) => out.extend(keys.iter().map(String::as_str)),
+                Step::Repeat { steps: inner, .. } => steps(out, inner),
+                Step::Wait(crate::model::WaitSpec::Screen { image, .. }) => out.push(image),
+                Step::Wait(_) | Step::Delay(_) | Step::MoveMouse { .. } => {}
+            }
         }
     }
-    // Every string in the definition, by where it is. Debug output covers every field (secret templates are redacted
-    // in it, and they hold only `{{names}}`).
-    let mut places: Vec<(String, String)> = vec![
-        ("name".into(), wf.name.clone()),
-        ("description".into(), wf.description.clone()),
-        ("start".into(), format!("{:?}", wf.start)),
-        ("tenants".into(), format!("{:?}", wf.tenants)),
-    ];
-    places.extend(wf.config.iter().map(|(k, v)| (format!("config.{k}"), format!("{k}={v}"))));
-    places.extend(wf.secrets.iter().map(|(k, v)| (format!("secrets.{k}"), format!("{k}={v}"))));
-    places.extend(wf.states.iter().map(|st| (format!("state {}", st.name), format!("{st:?}"))));
+    let hit = |vals: &[&str]| vals.iter().any(|v| secrets.appears_in(v));
+    if hit(&[&wf.name, &wf.description]) {
+        return Some("the workflow's name or description".into());
+    }
+    if wf.start.iter().any(|v| secrets.appears_in(v)) {
+        return Some("the start states".into());
+    }
+    for (i, (k, v)) in wf.config.iter().enumerate() {
+        if hit(&[k, v]) {
+            return Some(format!("config entry {}", i + 1));
+        }
+    }
+    for (i, (k, v)) in wf.secrets.iter().enumerate() {
+        if hit(&[k, v]) {
+            return Some(format!("secret declaration {}", i + 1));
+        }
+    }
+    for (i, (k, v)) in wf.tenants.iter().enumerate() {
+        if hit(&[k, v]) {
+            return Some(format!("tenant {}", i + 1));
+        }
+    }
+    for (i, st) in wf.states.iter().enumerate() {
+        let mut vals: Vec<&str> = vec![&st.name, &st.description];
+        vals.extend(st.detect.screens.iter().map(String::as_str));
+        vals.extend(st.next.iter().map(String::as_str));
+        vals.extend(st.require.iter().flat_map(|(k, v)| [k.as_str(), v.as_str()]));
+        vals.extend(st.derive.iter().flat_map(|(k, v)| [k.as_str(), v.as_str()]));
+        vals.extend(st.gate.iter().map(String::as_str));
+        steps(&mut vals, &st.actions);
+        if hit(&vals) {
+            return Some(format!("state {} (in file order)", i + 1));
+        }
+    }
     if let Some(cp) = resume {
-        places.push(("the checkpoint".into(), format!("{cp:?}")));
+        let mut vals: Vec<&str> = vec![&cp.workflow, &cp.state];
+        vals.extend(cp.derived.iter().flat_map(|(k, v)| [k.as_str(), v.as_str()]));
+        vals.extend(cp.attempts.keys().map(String::as_str));
+        vals.extend(cp.history.iter().flat_map(|t| [t.from.as_str(), t.to.as_str()]));
+        if hit(&vals) {
+            return Some("the checkpoint".into());
+        }
     }
-    match places.into_iter().find(|(_, v)| secrets.appears_in(v)) {
-        Some((place, _)) => Err(WorkflowError::SecretInFile { place }),
-        None => Ok(()),
-    }
+    None
+}
+
+/// The longest a state's actions may take to send, all told: every key's hold and gap, every delay, the default
+/// delay after each step, repeats expanded. The engine does not look at the screen while they run, so this bounds
+/// how stale its last look can be by the final key.
+pub const MAX_ACTION_TIME: Duration = Duration::from_secs(5);
+
+/// How long sending `ops` takes with these timings (an upper bound, ignoring the host's own latency).
+pub fn action_time(ops: &[(usize, Op)], run: &RunOptions, top: bool) -> Duration {
+    let tap = run.key_hold.saturating_add(run.key_gap);
+    ops.iter().fold(Duration::ZERO, |acc, (_, op)| {
+        let t = match op {
+            // A shifted character is a shift press around the tap: count it as two taps.
+            Op::Type { strokes, .. } => tap.saturating_mul(strokes.iter().map(|s| if s.shift { 2 } else { 1 }).sum::<u32>()),
+            Op::Key(_) | Op::Chord(_) | Op::Click(_) => tap,
+            Op::Delay(d) => *d,
+            Op::Repeat { count, ops } => action_time(ops, run, false).saturating_mul(*count),
+            Op::Wait(_) | Op::Confirm(_) | Op::Move(..) | Op::Comment => Duration::ZERO,
+        };
+        let after = if top { run.default_delay } else { Duration::ZERO };
+        acc.saturating_add(t).saturating_add(after)
+    })
 }
 
 /// Run a workflow. `secrets` holds the prompted secret values; they are compiled into key strokes and otherwise kept
@@ -1363,6 +1430,14 @@ pub fn run_workflow(
             }
         }
         let compiled = compile_workflow(wf, secrets, layout)?;
+        for (i, st) in wf.states.iter().enumerate() {
+            if action_time(&compiled[&st.name], &opts.run, true) > MAX_ACTION_TIME {
+                return Err(WorkflowError::Options(format!(
+                    "state {} (in file order): its actions would take more than 5s to send, during which nothing is                      watched; split them across states",
+                    i + 1
+                )));
+            }
+        }
         e.run_states(&compiled, resume)
     })();
     let mut result = result;
