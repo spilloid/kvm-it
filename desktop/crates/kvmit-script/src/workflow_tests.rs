@@ -41,6 +41,22 @@ struct Sim {
     stalled: Option<Frame>,
     /// While a question is open, the target changes to this screen.
     during_confirm: Option<(usize, Frame)>,
+    /// After the Nth Enter and M more looks, the capture freezes on its last frame while the target shows an unknown
+    /// dialog behind it.
+    freeze_after_enter: Option<(usize, usize)>,
+    freeze_countdown: Option<usize>,
+    last_frame: Option<Frame>,
+    /// Frames come without capture numbers.
+    no_seq: bool,
+    /// Pressing Enter fails with this host error.
+    fail_enter_with: Option<String>,
+    /// Each look really takes this long (classifying, a slow host).
+    look_cost: Duration,
+    /// Pictures still queued in the capture: delivered next, with new frame numbers, though they show the past.
+    queued: VecDeque<Frame>,
+    /// When the question is answered, this many pictures of the screen from before it are still queued.
+    queue_on_confirm: usize,
+    events: Vec<crate::exec::RunEvent>,
 }
 
 impl Host for Sim {
@@ -52,7 +68,15 @@ impl Host for Sim {
         self.keys.push(format!("up {:02x}", k.0));
         self.typed += 1;
         if k.0 == ENTER {
+            if let Some(msg) = &self.fail_enter_with {
+                return Err(msg.clone());
+            }
             self.enters_seen += 1;
+            if let Some((n, m)) = self.freeze_after_enter {
+                if n == self.enters_seen {
+                    self.freeze_countdown = Some(m);
+                }
+            }
             if self.stall_at_enter == Some(self.enters_seen) {
                 self.stalled = self.screens.get(self.pos).cloned().map(|f| f.with_seq(Some(self.seq)));
             }
@@ -79,8 +103,25 @@ impl Host for Sim {
     fn sleep(&mut self, _: Duration) {}
     fn screen(&mut self) -> Option<Frame> {
         self.looks += 1;
+        if !self.look_cost.is_zero() {
+            std::thread::sleep(self.look_cost);
+        }
         if let Some(f) = &self.stalled {
             return Some(f.clone());
+        }
+        if let Some(f) = self.queued.pop_front() {
+            self.seq += 1;
+            return Some(f.with_seq(Some(self.seq)));
+        }
+        match self.freeze_countdown {
+            Some(0) => {
+                // Frozen: the target has moved on to an unknown dialog, the capture still shows the old frame.
+                let last = self.screens.len() - 1;
+                self.screens[last.min(self.pos)] = solid(45);
+                return self.last_frame.clone();
+            }
+            Some(n) => self.freeze_countdown = Some(n - 1),
+            None => {}
         }
         if !self.frozen || self.seq == 0 {
             self.seq += 1;
@@ -89,7 +130,10 @@ impl Host for Sim {
         if let Some(t) = &self.timeline {
             return t.get((self.looks - 1).min(t.len() - 1)).cloned().map(|f| f.with_seq(seq));
         }
-        self.screens.get(self.pos).cloned().map(|f| f.with_seq(seq))
+        let seq = if self.no_seq { None } else { seq };
+        let f = self.screens.get(self.pos).cloned().map(|f| f.with_seq(seq));
+        self.last_frame = f.clone();
+        f
     }
     fn reference(&mut self, name: &str) -> Result<Frame, String> {
         let v = match name {
@@ -107,6 +151,9 @@ impl Host for Sim {
     fn confirm(&mut self, message: &str) -> bool {
         self.asked.push(message.to_string());
         if let Some((at, f)) = self.during_confirm.take() {
+            for _ in 0..self.queue_on_confirm {
+                self.queued.push_back(self.screens[at].clone());
+            }
             self.screens[at] = f;
         }
         let yes = self.confirms.pop_front().unwrap_or(false);
@@ -120,7 +167,9 @@ impl Host for Sim {
     fn cancelled(&self) -> bool {
         self.cancel_after_keys.is_some_and(|n| self.typed >= n)
     }
-    fn event(&mut self, _: crate::exec::RunEvent) {}
+    fn event(&mut self, e: crate::exec::RunEvent) {
+        self.events.push(e);
+    }
 }
 
 const OOBE: &str = r#"
@@ -373,7 +422,7 @@ fn abort_releases_every_key() {
 fn dry_run_follows_synthetic_frames_and_sends_nothing() {
     let w = wf();
     let timeline: Vec<Frame> =
-        [20, 70, 120, 170, 225].into_iter().flat_map(|v| std::iter::repeat_n(solid(v), 6)).collect();
+        [20, 70, 120, 170, 225].into_iter().flat_map(|v| std::iter::repeat_n(solid(v), 12)).collect();
     let mut sim = Sim { timeline: Some(timeline), screens: screens(), ..Default::default() };
     let mut o = opts();
     o.run.dry_run = true;
@@ -417,6 +466,7 @@ fn resuming_re_observes_the_screen_and_never_replays_blindly() {
         state: "NETWORK".into(),
         derived: [("region_set".to_string(), "yes".to_string())].into(),
         attempts: BTreeMap::new(),
+        attempted: 0,
         history: vec![],
     };
     let cp = Checkpoint::from_json(&cp.to_json()).unwrap();
@@ -467,7 +517,7 @@ fn malformed_workflows_are_refused() {
     assert!(bad("{ secret_text = \"{{wifi}}\" }", "{ secret_text = \"{{region}}\" }").contains("not under [secrets]"));
     // A tie must never pick a state.
     assert!(bad("start = [\"REGION\"]", "start = [\"REGION\"]\nambiguity_margin = 0.0").contains("ambiguity_margin"));
-    assert!(bad("derive = { region_set = \"yes\" }", "derive = { region_set = \"pass word\" }").contains("short token"));
+    assert!(bad("derive = { region_set = \"yes\" }", "derive = { region_set = \"a\\nb\" }").contains("one line"));
     assert!(bad("timeout = \"2s\"\nderive = { region_set", "timeout = \"100ms\"\nderive = { region_set").contains("at least 500ms"));
 }
 
@@ -527,6 +577,18 @@ fn approval_is_followed_by_a_fresh_look_before_typing() {
     let r = go(&w, &mut sim, &opts(), None);
     assert!(matches!(r.result, Err(WorkflowError::TenantMismatch { .. })), "{:?}", r.result);
     assert_eq!(enters(&sim), 3, "nothing typed on the enrollment screen");
+    // Pictures from before the decision still queued in the capture (new frame numbers, old screen) are not the fresh
+    // look: they arrive within the capture latency and are skipped.
+    let mut sim = Sim {
+        screens: screens(),
+        confirms: [true].into(),
+        during_confirm: Some((3, solid(186))),
+        queue_on_confirm: 2,
+        ..Default::default()
+    };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(r.result, Err(WorkflowError::TenantMismatch { .. })), "{:?}", r.result);
+    assert_eq!(enters(&sim), 3, "the queued pictures did not authorise typing");
     // ... or moved to a different screen altogether.
     let mut sim = Sim { screens: screens(), confirms: [true].into(), during_confirm: Some((3, solid(120))), ..Default::default() };
     let r = go(&w, &mut sim, &opts(), None);
@@ -542,6 +604,7 @@ fn resuming_keeps_spent_attempts_and_asks_before_resending() {
         state: state.into(),
         derived: BTreeMap::new(),
         attempts: [(state.to_string(), attempts)].into(),
+        attempted: attempts,
         history: vec![],
     };
     // KEYBOARD's whole budget (1 + 1 retry) was spent: resuming does not grant a new one.
@@ -569,6 +632,7 @@ fn resuming_on_the_next_screen_records_the_pending_transition() {
         state: "NETWORK".into(),
         derived: BTreeMap::new(),
         attempts: [("NETWORK".to_string(), 1)].into(),
+        attempted: 1,
         history: vec![],
     };
     let mut sim = Sim { screens: screens(), pos: 3, confirms: [true].into(), ..Default::default() };
@@ -583,11 +647,129 @@ fn a_secret_pasted_into_free_text_is_scrubbed_from_everything_published() {
     // An author wrote the secret's value into a gate message by mistake.
     let leaky = OOBE.replace("Enroll this device into the tenant shown?", "Wi-Fi was hunter2-wifi. Enroll?");
     let w = Workflow::parse(&leaky).unwrap();
-    let mut sim = Sim { screens: screens(), confirms: [false].into(), ..Default::default() };
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), ..Default::default() };
     let r = go(&w, &mut sim, &opts(), None);
-    assert_eq!(r.result, Err(WorkflowError::GateDeclined { state: "AUTOPILOT".into() }));
-    for text in [trace_jsonl(&r), trace_markdown(&w, &r), format!("{:?}", r.trace)] {
+    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "AUTOPILOT.gate".into() }));
+    assert_eq!(sim.typed, 0);
+    // The same for a recorded fact, which would otherwise sit in the context, the inspector and checkpoints.
+    let leaky = OOBE.replace("derive = { region_set = \"yes\" }", "derive = { region_set = \"hunter2-wifi\" }");
+    let w = Workflow::parse(&leaky).unwrap();
+    let mut sim = Sim { screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "REGION.derive.region_set".into() }));
+    for text in [trace_jsonl(&r), trace_markdown(&w, &r), format!("{r:?}")] {
         assert!(!text.contains("hunter2"), "{text}");
     }
-    assert!(trace_jsonl(&r).contains("<redacted>"));
+
+    // A host diagnostic carrying the secret is scrubbed everywhere, the nested runner's own events included.
+    let w = wf();
+    let mut sim = Sim { screens: screens(), fail_enter_with: Some("adapter said: hunter2-wifi".into()), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(r.result, Err(WorkflowError::Action { .. })), "{:?}", r.result);
+    for text in [trace_jsonl(&r), trace_markdown(&w, &r), format!("{r:?}"), format!("{:?}", sim.events)] {
+        assert!(!text.contains("hunter2"), "{text}");
+    }
+}
+
+#[test]
+fn overlapping_secrets_are_redacted_whole() {
+    let s = Secrets(vec!["abc".into(), "abcSECRET".into()]);
+    let mut t = "x abcSECRET y abc".to_string();
+    s.scrub(&mut t);
+    assert_eq!(t, "x <redacted> y <redacted>");
+    let s = Secrets(vec!["cdef".into(), "abcd".into()]);
+    let mut t = "abcdef!".to_string();
+    s.scrub(&mut t);
+    assert_eq!(t, "<redacted>!");
+}
+
+#[test]
+fn a_capture_that_freezes_after_settling_does_not_authorise_a_retry() {
+    let w = wf();
+    let mut o = opts();
+    o.offer_manual_recovery = false;
+    // KEYBOARD swallows its first Enter (the second overall). The verify look settles on KEYBOARD, then the capture
+    // freezes while an unknown dialog appears. The retry needs a fresh look, which a frozen capture cannot give.
+    let mut sim = Sim { screens: screens(), swallow: vec![2], freeze_after_enter: Some((2, 6)), ..Default::default() };
+    let r = go(&w, &mut sim, &o, None);
+    assert!(matches!(r.result, Err(WorkflowError::UnknownScreen { .. })), "{:?}", r.result);
+    assert_eq!(enters(&sim), 2, "no retry on evidence from before the freeze");
+
+    // One fresh frame after REGION's Enter, then the capture freezes on it: one frame is not a settled look, however
+    // often it is read, so the transition is not verified.
+    let mut sim = Sim { screens: screens(), freeze_after_enter: Some((1, 4)), ..Default::default() };
+    let r = go(&w, &mut sim, &o, None);
+    assert!(matches!(r.result, Err(WorkflowError::UnknownScreen { .. })), "{:?}", r.result);
+    assert!(r.context.history.is_empty(), "nothing verified from one frame read many times: {:?}", r.context.history);
+}
+
+#[test]
+fn frames_without_capture_numbers_are_refused() {
+    let w = wf();
+    let mut sim = Sim { screens: screens(), no_seq: true, ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Err(WorkflowError::NoFrameNumbers));
+    assert_eq!(sim.typed, 0);
+}
+
+#[test]
+fn a_checkpoint_that_sent_nothing_has_no_pending_transition() {
+    let w = wf();
+    // Stopped at NETWORK before sending anything; the target is now on AUTOPILOT. NETWORK's fact is not invented, so
+    // AUTOPILOT's guard (network_status = connected) stops the run.
+    let cp = Checkpoint {
+        workflow: "test-oobe".into(),
+        state: "NETWORK".into(),
+        derived: BTreeMap::new(),
+        attempts: [("NETWORK".to_string(), 3)].into(),
+        attempted: 0,
+        history: vec![],
+    };
+    let mut sim = Sim { screens: screens(), pos: 3, confirms: [true].into(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), Some(&cp));
+    assert!(matches!(&r.result, Err(WorkflowError::Guard { state, .. }) if state == "AUTOPILOT"), "{:?}", r.result);
+    assert!(r.context.derived.is_empty());
+    assert_eq!(sim.typed, 0);
+    // Attempts from earlier visits are history, not this visit's budget: resuming on NETWORK itself just runs.
+    let cp = Checkpoint { state: "NETWORK".into(), ..cp };
+    let mut sim = Sim { screens: screens(), pos: 2, confirms: [true].into(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), Some(&cp));
+    assert_eq!(r.result, Ok(()), "{:?}", r.result);
+    assert!(sim.asked.iter().all(|q| !q.contains("already sent")), "{:?}", sim.asked);
+}
+
+#[test]
+fn long_pauses_inside_actions_are_refused() {
+    let bad = |from: &str, to: &str| Workflow::parse(&OOBE.replace(from, to)).unwrap_err();
+    assert!(bad("actions = [ { key = \"ENTER\" } ]\nretries", "actions = [ { delay = \"3s\" }, { key = \"ENTER\" } ]\nretries")
+        .contains("pause for more than 2s"));
+    assert!(bad(
+        "actions = [ { key = \"ENTER\" } ]\nretries",
+        "actions = [ { repeat = { count = 5, steps = [ { delay = \"500ms\" } ] } }, { key = \"ENTER\" } ]\nretries"
+    )
+    .contains("pause for more than 2s"));
+    let w = wf();
+    let mut o = opts();
+    o.run.default_delay = Duration::from_secs(5);
+    let mut sim = Sim { screens: screens(), ..Default::default() };
+    assert!(matches!(go(&w, &mut sim, &o, None).result, Err(WorkflowError::Options(_))));
+    assert_eq!(sim.typed, 0);
+}
+
+#[test]
+fn evidence_arriving_after_the_real_deadline_is_not_accepted() {
+    let w = wf();
+    let mut o = opts();
+    o.offer_manual_recovery = false;
+    o.observe_timeout = Duration::from_millis(500);
+    // Each look really takes 400 ms: the second settling frame arrives after the 500 ms deadline, even though the
+    // poll count (whose sleeps return at once here) would still be inside it.
+    let mut sim = Sim { screens: screens(), look_cost: Duration::from_millis(400), ..Default::default() };
+    let r = go(&w, &mut sim, &o, None);
+    assert!(matches!(r.result, Err(WorkflowError::UnknownScreen { .. })), "{:?}", r.result);
+    assert_eq!(sim.typed, 0);
+    assert!(
+        !events(&r).iter().any(|e| matches!(e, WorkflowEvent::StateEntered { .. })),
+        "the late frame did not even start the run: {:#?}", r.trace
+    );
 }

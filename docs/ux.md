@@ -173,8 +173,11 @@ secret. A **checkpoint** (no secrets, no images) lets a run resume, but only aft
 matches the checkpoint's state or a state that may follow it: never a blind replay. A dry run follows the frames it is
 shown and sends no HID at all.
 
-Inside a workflow, actions may not `wait_for` or `confirm`: waiting and asking belong to states, so nothing blocks between
-the engine's last look and the keys. After any gate the engine looks again (fresh frames only) before typing. `secret_text`
+**Every burst of keys follows a fresh look taken at that moment**: the screen must settle again on the state, on frames
+captured after that moment (frames arriving within the capture latency, 300 ms, may still be queued pictures and are
+skipped), and the tenant check is repeated. Inside a workflow, actions may not `wait_for` or `confirm`, and may pause at
+most 2 s in total: waiting and asking belong to states. The video source must number its frames (the app's capture cards
+and the demo source do); a source that does not is refused. `secret_text`
 may only use `[secrets]`. A state cannot list itself in `next`. Settling counts distinct captured frames (the capture's own
 frame number), so a stalled capture never "settles", and a frame captured before an action never verifies it.
 

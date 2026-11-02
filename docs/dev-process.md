@@ -831,5 +831,33 @@ attempts, skipping the pending transition on resume, no scrubbing, allowing conf
 was added.
 
 Verified by running (Windows 11, rustc 1.99.1): `cargo test --workspace` (all pass; 21 workflow tests), clippy `-D warnings`
-on the workspace. Not run: any real OOBE screen, capture card or adapter; the GUI and CLI do not use the engine yet. The
-fixes have not been reviewed again.
+on the workspace. Not run: any real OOBE screen, capture card or adapter; the GUI and CLI do not use the engine yet.
+
+## 2026-11-02 - Workflow engine round-38 fixes (`21a5c48`): review round 39 (Codex `gpt-6-astra`)
+
+Re-review of the round-38 fixes: read-only, high effort, static. Complete: self-transitions, config in `secret_text`, ties,
+timeout normalisation, plus the config-secret check for repeats. Partial or new: 4 High, 6 Medium. Every finding was confirmed
+here. The fix was chosen here.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | A capture freezing *after* settling still authorised a retry (the settled look predates the freeze) | **Confirmed.** One rule now covers this and #3: **every burst of keys, first attempt or retry, follows a fresh look taken at that moment.** Its boundary is read then, only newer frames count, and the tenant check is repeated on that look. Test: KEYBOARD's Enter is swallowed, the capture freezes after the verify look settles, an unknown dialog appears; no retry. |
+| 2 | High | Frames without numbers passed every freshness check; numbered frames can still be pictures queued before the boundary | **Confirmed.** Frames without capture numbers are refused (`NoFrameNumbers`): a workflow cannot tell a stalled capture from a still screen. After a boundary, frames within `capture_latency` (300 ms) are skipped as possibly queued, and frame numbers must increase (a repeated or reordered frame is not a new look). **Residual:** the capture layer has no acquisition timestamps, so a queue deeper than the latency window is not detected; the window is a bound, not a proof. Test: pictures queued with new numbers after a gate do not authorise typing. |
+| 3 | High | `still_on()` took its boundary before the human decision | **Confirmed**; fixed by #1 (boundary read after approval). |
+| 4 | High | `delay` steps (and `default_delay`) still opened a gap between the last look and the keys | **Confirmed.** A state's actions may pause at most 2 s in total (repeats multiplied); `default_delay` over 2 s is refused. Longer waits belong to states. |
+| 5 | High | Resuming on a successor invented the checkpoint state's transition even when that visit had sent nothing (stopped at a guard or a gate) | **Confirmed; introduced by the round-38 fix.** Checkpoints now record `attempted` for the current visit. Only a visit that sent its actions has a pending transition. Otherwise the new state is entered with no facts invented, and its own guard decides. |
+| 6 | Med | Resume used attempts from earlier visits to a state as this visit's | **Confirmed.** Attempts are counted per visit (`visit_attempts`, reset on entry); the per-state totals stay as history. |
+| 7 | Med | Scrubbing events did not cover the context, reports or checkpoints; a secret's value written into a `derive` reached all of them. The token rule refused legitimate facts | **Confirmed.** The engine refuses to start (`SecretInFile`, naming the place, never the value) when a prompted secret's value appears anywhere in the file: config, derive, require, gates, descriptions. Facts are one line of up to 200 characters again. The Markdown footer says "prompted secrets". |
+| 8 | Med | The nested script runner published host errors (`RunEvent::Aborted`) before the workflow scrubbed them | **Confirmed.** Actions run through a scrubbing host wrapper. |
+| 9 | Med | Replacing secrets one after another exposed parts of overlapping ones | **Confirmed.** All matches are found in the original text, merged, then replaced once. |
+| 10 | Med | Deadlines ignored processing time; success could be accepted after the real deadline | **Confirmed.** Evidence counts only inside the deadline measured in real time as well as in polls. **Found by the new test:** a late frame still counted toward the settle streak, so the timeout branch reported it as settled. A late frame now does not count at all. |
+
+Mutants after the fixes (21, each run alone, restored after): 19 caught. Two survive and are equivalent: retrying into an
+unknown screen (the fresh look before every retry already refuses an unknown screen) and dropping the event-level scrub (no
+path can now bring a secret's value into an event: files that contain one are refused, and host errors are scrubbed before
+the event is built). Both checks stay as defence in depth. Two other mutants (counting the same captured frame twice, no
+real-time deadline) first survived because the tests asserted only the final error. The tests now assert that nothing was
+verified and that no state was entered.
+
+Verified by running (Windows 11): `cargo test --workspace`, clippy `-D warnings` on the workspace (the new QEMU harness
+included). Not run: any real OOBE screen, capture card or adapter. **Not yet reviewed again.**
