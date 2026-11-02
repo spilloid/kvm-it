@@ -795,17 +795,41 @@ Verified by running (Windows 11): `cargo test --workspace` (219 pass, 1 ignored;
 `cargo clippy --workspace --all-targets -D warnings` for the Windows and `aarch64-apple-darwin` targets. Not run: anything on
 Linux or macOS (the `cfg(unix)` ffmpeg test included), the GUI by hand (the popup fix is covered headless only), any hardware.
 
-## 2026-11-02 - Stateful workflow engine (`feat/workflow-engine`, issue #46): review round 38 (Codex `gpt-6-astra`, pending)
+## 2026-11-02 - Stateful workflow engine (`feat/workflow-engine`, PR #47, issue #46): review round 38 (Codex `gpt-6-astra`)
 
 Engine only (`kvmit-script::workflow`), written by the orchestrator (Claude Opus 5.5). It reuses the script compiler, `Host` and
 `Frame`; no firmware or protocol change. Host-tested against simulated targets: a mocked host whose screens advance per Enter,
-and a self-advancing timeline for dry runs. 13 tests, all of them for issue #46's acceptance criteria.
+and a self-advancing timeline for dry runs.
 
-Mutants caught: ignoring the settle rule; skipping the tenant check; accepting any changed screen as a verified transition;
-dropping the threshold; dropping the ambiguity margin. The last two first survived together: the only ambiguous test frame
-was also under the threshold, so neither rule was tested alone. Two cases were added (a clear-but-weak match, a
-strong-but-ambiguous one), and each mutant now fails on its own. Found while testing: the tenant check read a fresh frame,
-not the one that classified the screen. It now uses the same frame (dry-run timelines showed the difference).
+Before review, mutants caught: ignoring the settle rule; skipping the tenant check; accepting any changed screen as a
+verified transition; dropping the threshold; dropping the ambiguity margin. The last two first survived together, because the
+only ambiguous test frame was also under the threshold; two cases were added so each rule is tested alone. Found while
+testing: the tenant check read a fresh frame, not the one that classified the screen. It now uses the same frame.
 
-Verified by running (Windows 11): `cargo test -p kvmit-script` (38 pass), clippy `-D warnings` on the crate. Not run: any
-real OOBE screen, capture card or adapter; the GUI and CLI do not use the engine yet.
+Review: read-only, high effort, static, over `e8b6850`. **Do not ship**: 6 High, 4 Medium, 1 Low and test gaps. Every
+finding was confirmed by reading and then by a test that fails without its fix. The fix was chosen here.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | A retry-safe state retried after the screen became unknown or video was lost | **Confirmed.** Only a fresh, settled look at the same state retries, and the tenant check runs again first. Unknown, unsettled or no fresh frames stop the run. Test: an unknown dialog after KEYBOARD's Enter gets no second Enter. |
+| 2 | High | Settling counted reads, not captured frames: a stalled capture "settled", and a frame from before the action could verify it | **Confirmed**: the host dropped the capture's frame number in the grayscale conversion. `Frame` now carries `seq` (the capture's counter; `VideoFrame::to_gray` passes it on). Settling needs distinct frames; a missing frame starts over. Frames at or before a boundary read right after acting are ignored when verifying. Tests: a frozen capture never settles; a capture stalled at the Enter neither verifies nor retries, even with a one-frame settle. Sources without frame numbers keep the plain rule. |
+| 3 | High | After a gate (open for any length of time) the engine typed on the evidence from before it | **Confirmed.** After any gate, and after an operator's resume approval, the engine looks again (fresh frames only) and repeats the tenant check before typing. `wait_for` and `confirm` steps are refused inside workflow actions, so no blocking step sits between the look and the keys. Tests: the tenant or the screen changing during the gate stops the run with nothing typed. |
+| 4 | High | A state listing itself in `next` accepted an unchanged screen as a transition, looping forever | **Confirmed.** Self-edges are refused at parse time, and the engine never accepts the same state as a transition (tested with a workflow built in code). |
+| 5 | High | Resume reset the attempt count: an unverified, unsafe action (a typed password) could be replayed, and spent retries were granted again | **Confirmed.** The checkpoint's attempts carry over: a retry-safe state continues its budget (an exhausted one stops), and a state that is not retry-safe and was attempted is only acted on again if the operator agrees. |
+| 6 | High | `secret_text` could type a `[config]` value, which the inspector, the Markdown export and Debug output show | **Confirmed.** `secret_text` may only reference `[secrets]` (parse error otherwise). |
+| 7 | Med | Free text (gate messages, host diagnostics, derived values) was published verbatim, so a secret pasted there leaked | **Partly fixable; fixed what the engine can know.** Prompted secret values are scrubbed from every published string (events, the Markdown stop reason, host error text). Derived values must be short tokens. The docs no longer promise more: a value the author writes into the file is not a secret to the engine. |
+| 8 | Med | Resuming on a permitted next screen skipped the pending transition, so its derived facts were missing and the next guard failed | **Confirmed.** That transition is recorded (history and facts) before the next state's guard. |
+| 9 | Med | `ambiguity_margin = 0` let an exact tie pick a state (or a tenant) | **Confirmed.** The margin must be at least 0.01, and a tie never wins whatever the margin (tested with a margin set in code). |
+| 10 | Med | Deadlines were checked after accepting a match and ignored a zero poll | **Confirmed in part.** The poll is at least 10 ms, sleeps are capped to the time left, and state timeouts are at least 500 ms. The deadline is still counted in polls, not wall-clock time: the mocked host's sleep returns at once, and these tests need that. |
+| 11 | Low | On timeout, a provisional (unsettled) match was published as recognised | **Confirmed.** The observation is settled first, then stored, emitted and returned. |
+| T | - | Test gaps: outer `release_all` on early failures, capture identity, resume budgets, privacy on error paths | All added: the unknown-screen and compile-failure runs record exactly one `release_all`. |
+
+Mutants after the fixes (each run alone, restored after): retrying into an unknown screen, counting the same captured frame
+twice, counting pre-action frames, no fresh look after a gate, accepting an unchanged screen as a transition, forgetting spent
+attempts, skipping the pending transition on resume, no scrubbing, allowing config in `secret_text`, letting ties win. All
+10 are caught. The tie mutant first survived (the parser already refuses a zero margin), so a test with a margin set in code
+was added.
+
+Verified by running (Windows 11, rustc 1.99.1): `cargo test --workspace` (all pass; 21 workflow tests), clippy `-D warnings`
+on the workspace. Not run: any real OOBE screen, capture card or adapter; the GUI and CLI do not use the engine yet. The
+fixes have not been reviewed again.

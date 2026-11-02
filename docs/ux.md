@@ -173,6 +173,11 @@ secret. A **checkpoint** (no secrets, no images) lets a run resume, but only aft
 matches the checkpoint's state or a state that may follow it: never a blind replay. A dry run follows the frames it is
 shown and sends no HID at all.
 
+Inside a workflow, actions may not `wait_for` or `confirm`: waiting and asking belong to states, so nothing blocks between
+the engine's last look and the keys. After any gate the engine looks again (fresh frames only) before typing. `secret_text`
+may only use `[secrets]`. A state cannot list itself in `next`. Settling counts distinct captured frames (the capture's own
+frame number), so a stalled capture never "settles", and a frame captured before an action never verifies it.
+
 **Status: engine built and host-tested** against simulated targets (synthetic frames and a mocked host). No real OOBE
 screen, capture card or adapter has run it. The GUI (state chip, timeline, live variable inspector, export buttons) and
 the CLI are not built yet.

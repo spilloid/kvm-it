@@ -23,7 +23,7 @@ pub struct VideoFrame {
 
 impl VideoFrame {
     pub fn to_gray(&self) -> kvmit_script::Frame {
-        convert::rgba_to_gray_frame(self.width, self.height, &self.rgba)
+        convert::rgba_to_gray_frame(self.width, self.height, &self.rgba).with_seq(Some(self.seq))
     }
 
     /// True when the frame is (nearly) one flat colour. Cheap USB capture cards emit a uniform fill while they

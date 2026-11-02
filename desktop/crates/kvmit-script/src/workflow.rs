@@ -146,9 +146,55 @@ struct RawWorkflow {
 
 const MAX_STATES: usize = 64;
 const MAX_RETRIES: u32 = 5;
+const MIN_TIMEOUT: Duration = Duration::from_millis(500);
 
 fn valid_name(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// A recorded fact is a short plain token ("connected", "yes", "en-US"): never free text that could carry a credential.
+fn valid_fact(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c))
+}
+
+/// The `{{name}}` references in a template (malformed templates are reported later, by the compiler).
+fn template_names(t: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = t;
+    while let Some(i) = rest.find("{{") {
+        let after = &rest[i + 2..];
+        let Some(j) = after.find("}}") else { break };
+        out.push(after[..j].trim().to_string());
+        rest = &after[j + 2..];
+    }
+    out
+}
+
+/// Checks on a state's actions that the script format allows but a workflow does not.
+fn check_actions(state: &str, steps: &[Step], secrets: &BTreeMap<String, RawSecret>) -> Result<(), String> {
+    for step in steps {
+        match step {
+            // Waiting and asking belong to states: a step that blocks inside the actions would let the screen change
+            // under keys that are still to be typed, without the engine looking again.
+            Step::Wait(_) | Step::Confirm(_) => {
+                return Err(format!(
+                    "state {state:?}: `wait_for` and `confirm` are not allowed in workflow actions (use states and `gate`)"
+                ))
+            }
+            // Secret text may only come from prompted secrets: a config value is stored in the file and shown in the
+            // inspector and exports, so typing it "as a secret" would only pretend to protect it.
+            Step::SecretText(t) => {
+                if let Some(n) = template_names(t).into_iter().find(|n| !secrets.contains_key(n)) {
+                    return Err(format!(
+                        "state {state:?}: secret_text uses {n:?}, which is not under [secrets]; secrets must be prompted"
+                    ));
+                }
+            }
+            Step::Repeat { steps, .. } => check_actions(state, steps, secrets)?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 impl Workflow {
@@ -164,8 +210,8 @@ impl Workflow {
             return Err(format!("a workflow needs 1..={MAX_STATES} states"));
         }
         let margin = raw.ambiguity_margin.unwrap_or(0.03);
-        if !(0.0..=0.5).contains(&margin) {
-            return Err("ambiguity_margin must be within 0..=0.5".into());
+        if !(0.01..=0.5).contains(&margin) {
+            return Err("ambiguity_margin must be within 0.01..=0.5 (a tie must never pick a state)".into());
         }
         for k in raw.config.keys().chain(raw.secrets.keys()) {
             if !valid_name(k) {
@@ -209,6 +255,12 @@ impl Workflow {
                     r.name
                 ));
             }
+            if r.next.contains(&r.name) {
+                return Err(format!(
+                    "state {:?} lists itself in `next`: staying on a screen is never a transition (use retries)",
+                    r.name
+                ));
+            }
             if r.terminal && !r.next.is_empty() {
                 return Err(format!("state {:?} is terminal and cannot have `next` states", r.name));
             }
@@ -218,17 +270,29 @@ impl Workflow {
             if r.verify_tenant && raw.tenants.is_empty() {
                 return Err(format!("state {:?} verifies the tenant but the workflow lists no tenants", r.name));
             }
-            for k in r.derive.keys() {
+            for (k, v) in &r.derive {
                 if !valid_name(k) || raw.config.contains_key(k) || raw.secrets.contains_key(k) {
                     return Err(format!("state {:?}: bad derived name {k:?}", r.name));
+                }
+                if !valid_fact(v) {
+                    return Err(format!(
+                        "state {:?}: derived value for {k:?} must be a short token (letters, digits, . _ : -)",
+                        r.name
+                    ));
                 }
             }
             if r.require.keys().any(|k| raw.secrets.contains_key(k)) {
                 return Err(format!("state {:?}: a guard cannot compare a secret", r.name));
             }
+            let timeout = parse_duration(r.timeout.as_deref().unwrap_or("60s"))?;
+            if timeout < MIN_TIMEOUT {
+                return Err(format!("state {:?}: timeout must be at least 500ms", r.name));
+            }
+            let actions: Vec<Step> = r.actions.into_iter().map(step_from_raw).collect::<Result<_, _>>()?;
+            check_actions(&r.name, &actions, &raw.secrets)?;
             states.push(StateDef {
-                timeout: parse_duration(r.timeout.as_deref().unwrap_or("60s"))?,
-                actions: r.actions.into_iter().map(step_from_raw).collect::<Result<_, _>>()?,
+                timeout,
+                actions,
                 name: r.name,
                 description: r.description,
                 detect: Detect { screens, threshold },
@@ -375,6 +439,8 @@ impl Context {
 }
 
 /// What a run may resume from: no secrets, no images. Resuming re-observes the screen first; it never replays.
+/// `attempts` keeps the attempts already spent in `state`: resuming continues the retry budget instead of starting a
+/// new one, and actions that were sent and not verified are only sent again with the operator's say-so.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Checkpoint {
     pub workflow: String,
@@ -413,6 +479,47 @@ pub enum WorkflowEvent {
     RunCompleted { state: String },
 }
 
+impl WorkflowEvent {
+    /// Replace any run-time secret value that found its way into free text (a gate message an author wrote, a host
+    /// diagnostic) before the event is published.
+    fn scrub(&mut self, secrets: &Secrets) {
+        match self {
+            WorkflowEvent::HumanGateRequested { message, .. } => secrets.scrub(message),
+            WorkflowEvent::Stopped { reason, .. } => secrets.scrub(reason),
+            WorkflowEvent::GuardChecked { detail, .. } => secrets.scrub(detail),
+            WorkflowEvent::StateEntered { reason, .. } => secrets.scrub(reason),
+            WorkflowEvent::ContextChanged { from, to, .. } => {
+                secrets.scrub(to);
+                if let Some(f) = from {
+                    secrets.scrub(f);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The run's secret values, kept only to scrub them from published text; wiped when the run ends.
+struct Secrets(Vec<String>);
+
+impl Secrets {
+    fn scrub(&self, text: &mut String) {
+        for s in &self.0 {
+            if !s.is_empty() && text.contains(s.as_str()) {
+                *text = text.replace(s.as_str(), "<redacted>");
+            }
+        }
+    }
+}
+
+impl Drop for Secrets {
+    fn drop(&mut self) {
+        for s in self.0.iter_mut() {
+            zeroize::Zeroize::zeroize(s);
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TraceEntry {
     pub at_ms: u64,
@@ -436,6 +543,8 @@ pub enum WorkflowError {
     GateDeclined { state: String },
     TimedOut { state: String, attempts: u32 },
     ResumeMismatch { checkpoint: String },
+    /// Resuming would send actions that were already sent and not verified; the operator did not agree.
+    ResumeDeclined { state: String },
     Action { state: String, error: RunError },
     Cancelled,
 }
@@ -468,6 +577,10 @@ impl std::fmt::Display for WorkflowError {
             WorkflowError::ResumeMismatch { checkpoint } => write!(
                 f,
                 "the screen does not match the checkpoint (state {checkpoint} or what may follow it); not resuming"
+            ),
+            WorkflowError::ResumeDeclined { state } => write!(
+                f,
+                "state {state}: its actions were already sent and not verified; not sending them again without the operator"
             ),
             WorkflowError::Action { state, error } => write!(f, "state {state}: {error}"),
             WorkflowError::Cancelled => write!(f, "aborted"),
@@ -567,10 +680,20 @@ struct Engine<'a> {
     refs: BTreeMap<String, Frame>,
     /// The frame behind the latest settled classification: later checks use the same evidence.
     last_frame: Option<Frame>,
+    /// The newest capture number seen. Frames at or below a boundary taken after acting were captured before the
+    /// action took effect, and never verify it.
+    seen_seq: Option<u64>,
+    secrets: Secrets,
     ctx: Context,
     trace: Vec<TraceEntry>,
     sink: &'a mut dyn FnMut(&TraceEntry, &Context),
     started: Instant,
+}
+
+/// How a look at the screen ended.
+struct Look {
+    /// The last classification, normalised: `state` is `None` unless it settled.
+    obs: Option<Observation>,
 }
 
 impl Engine<'_> {
@@ -578,7 +701,8 @@ impl Engine<'_> {
         self.started.elapsed().as_millis() as u64
     }
 
-    fn emit(&mut self, event: WorkflowEvent) {
+    fn emit(&mut self, mut event: WorkflowEvent) {
+        event.scrub(&self.secrets);
         let entry = TraceEntry { at_ms: self.now(), event };
         (self.sink)(&entry, &self.ctx);
         self.trace.push(entry);
@@ -593,9 +717,18 @@ impl Engine<'_> {
         Ok(f)
     }
 
+    /// The winner among `scores` (name, similarity, threshold), if it clears its threshold and beats the runner-up
+    /// by the margin. A tie never wins, whatever the margin.
+    fn winner(&self, scores: &[(String, f64, f64)]) -> Option<String> {
+        let top = scores.first()?;
+        let clear = scores.get(1).is_none_or(|r| top.1 - r.1 > 0.0 && top.1 - r.1 >= self.wf.ambiguity_margin);
+        (top.1 >= top.2 && clear).then(|| top.0.clone())
+    }
+
     /// Best and runner-up state for one frame.
     fn classify(&mut self, frame: &Frame) -> Result<Observation, WorkflowError> {
-        let mut scores: Vec<(String, f64, String, f64)> = Vec::new(); // state, similarity, reference, threshold
+        let mut scores: Vec<(String, f64, f64)> = Vec::new(); // state, similarity, threshold
+        let mut refs: BTreeMap<String, String> = BTreeMap::new();
         for s in &self.wf.states {
             let mut best: Option<(f64, String)> = None;
             for screen in &s.detect.screens {
@@ -606,18 +739,16 @@ impl Engine<'_> {
                 }
             }
             let (sim, screen) = best.expect("every state has a screen");
-            scores.push((s.name.clone(), sim, screen, s.detect.threshold));
+            refs.insert(s.name.clone(), screen);
+            scores.push((s.name.clone(), sim, s.detect.threshold));
         }
         scores.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let top = &scores[0];
-        let runner_up = scores.get(1).map(|r| (r.0.clone(), r.1));
-        let clear = runner_up.as_ref().is_none_or(|(_, r)| top.1 - r >= self.wf.ambiguity_margin);
-        let state = (top.1 >= top.3 && clear).then(|| top.0.clone());
+        let state = self.winner(&scores);
         Ok(Observation {
             state,
-            confidence: top.1,
-            runner_up,
-            reference: Some(top.2.clone()),
+            confidence: scores[0].1,
+            runner_up: scores.get(1).map(|r| (r.0.clone(), r.1)),
+            reference: refs.remove(&scores[0].0),
             frame_hash: frame_hash(frame),
             at_ms: self.now(),
         })
@@ -627,42 +758,75 @@ impl Engine<'_> {
         if self.host.cancelled() { Err(WorkflowError::Cancelled) } else { Ok(()) }
     }
 
-    /// Look until the screen settles on a classification (the same answer for `settle_frames` frames in a row) or
-    /// `timeout` passes. Returns the last observation; its `state` is `None` if nothing settled with confidence.
-    fn observe(&mut self, timeout: Duration, stop_on: impl Fn(&Observation) -> bool) -> Result<Option<Observation>, WorkflowError> {
-        let poll = self.opts.run.poll;
+    fn record(&mut self, o: &Observation) {
+        self.ctx.observed = Some(o.clone());
+        self.emit(WorkflowEvent::StateObserved { observation: o.clone() });
+    }
+
+    /// Look until the screen settles on a classification the caller wants, or `timeout` passes.
+    ///
+    /// A classification settles when it is the same for `settle_frames` *distinct* captured frames in a row: reading
+    /// the same captured frame twice is not a second look, a missing frame starts over, and frames captured at or
+    /// before `after_seq` (taken right after acting) are ignored, so a picture from before the action can never
+    /// verify it. Sources without capture numbers get the plain consecutive-reads rule.
+    fn observe(
+        &mut self,
+        timeout: Duration,
+        after_seq: Option<u64>,
+        stop_on: impl Fn(&Observation) -> bool,
+    ) -> Result<Look, WorkflowError> {
+        let poll = self.opts.run.poll.max(Duration::from_millis(10));
+        let need = self.opts.settle_frames.max(1);
         let mut elapsed = Duration::ZERO;
         let mut last: Option<Observation> = None;
+        let mut last_seq: Option<u64> = None;
         let mut streak = 0u32;
         loop {
             self.check()?;
-            if let Some(frame) = self.host.screen() {
-                let o = self.classify(&frame)?;
-                self.last_frame = Some(frame);
-                streak = if last.as_ref().is_some_and(|l| l.state == o.state) { streak + 1 } else { 1 };
-                let settled = streak >= self.opts.settle_frames.max(1);
-                last = Some(o.clone());
-                // A settled, recognised screen the caller is waiting for ends the look. An unknown screen keeps
-                // being looked at until the timeout: it may be mid-transition.
-                if settled && o.state.is_some() && stop_on(&o) {
-                    self.ctx.observed = Some(o.clone());
-                    self.emit(WorkflowEvent::StateObserved { observation: o.clone() });
-                    return Ok(Some(o));
+            match self.host.screen() {
+                None => {
+                    streak = 0;
+                    last = None;
+                }
+                Some(frame) => {
+                    if let Some(sq) = frame.seq {
+                        self.seen_seq = Some(self.seen_seq.map_or(sq, |s| s.max(sq)));
+                    }
+                    let fresh = match (frame.seq, after_seq) {
+                        (Some(sq), Some(after)) => sq > after,
+                        _ => true,
+                    };
+                    let new = match (frame.seq, last_seq) {
+                        (Some(sq), Some(prev)) => sq != prev,
+                        _ => true,
+                    };
+                    if fresh && new {
+                        last_seq = frame.seq;
+                        let o = self.classify(&frame)?;
+                        self.last_frame = Some(frame);
+                        streak = if last.as_ref().is_some_and(|l| l.state == o.state) { streak + 1 } else { 1 };
+                        last = Some(o.clone());
+                        if streak >= need && o.state.is_some() && stop_on(&o) {
+                            self.record(&o);
+                            return Ok(Look { obs: Some(o) });
+                        }
+                    }
                 }
             }
             if elapsed >= timeout {
-                if let Some(o) = &last {
-                    self.ctx.observed = Some(o.clone());
-                    self.emit(WorkflowEvent::StateObserved { observation: o.clone() });
-                }
-                return Ok(last.map(|mut o| {
-                    if streak < self.opts.settle_frames.max(1) {
+                // Report what was decided, not a provisional match: an unsettled classification is unknown.
+                let obs = last.map(|mut o| {
+                    if streak < need {
                         o.state = None;
                     }
                     o
-                }));
+                });
+                if let Some(o) = &obs {
+                    self.record(o);
+                }
+                return Ok(Look { obs });
             }
-            self.host.sleep(poll);
+            self.host.sleep(poll.min(timeout.saturating_sub(elapsed)).max(Duration::from_millis(1)));
             elapsed += poll;
         }
     }
@@ -674,7 +838,7 @@ impl Engine<'_> {
     /// Recognise the screen; on an unknown screen, offer the operator a manual fix and look once more.
     fn recognise(&mut self, timeout: Duration, allowed: &[String]) -> Result<Observation, WorkflowError> {
         let accept = |o: &Observation| o.state.is_some();
-        let mut o = self.observe(timeout, accept)?;
+        let mut o = self.observe(timeout, None, accept)?.obs;
         if o.as_ref().is_none_or(|o| o.state.is_none()) && self.opts.offer_manual_recovery && !self.opts.run.dry_run {
             let msg = format!(
                 "The screen is not recognised. Bring the target to one of: {}. Then continue, or stop.",
@@ -686,12 +850,28 @@ impl Engine<'_> {
             if !approved {
                 return Err(Self::unknown(o));
             }
-            o = self.observe(timeout, accept)?;
+            o = self.observe(timeout, None, accept)?.obs;
         }
         match o {
             Some(o) if o.state.is_some() => Ok(o),
             other => Err(Self::unknown(other)),
         }
+    }
+
+    /// Right before sending keys: the screen must still be `state` now, from a fresh look (a gate may have been open
+    /// for minutes), and the tenant check, if any, is repeated on that look.
+    fn still_on(&mut self, s: &StateDef) -> Result<(), WorkflowError> {
+        let here = s.name.clone();
+        let look = self.observe(self.opts.observe_timeout, self.seen_seq, |o| o.state.is_some())?;
+        match look.obs.as_ref().and_then(|o| o.state.clone()) {
+            Some(st) if st == here => {}
+            Some(st) => return Err(WorkflowError::Unexpected { expected: vec![here], saw: st }),
+            None => return Err(Self::unknown(look.obs)),
+        }
+        if s.verify_tenant {
+            self.verify_tenant(s)?;
+        }
+        Ok(())
     }
 
     fn enter(&mut self, to: &str, reason: &str) {
@@ -706,18 +886,22 @@ impl Engine<'_> {
         for (k, want) in &s.require {
             let have = self.wf.config.get(k).cloned().or_else(|| self.ctx.derived.get(k).map(|(v, _)| v.clone()));
             if have.as_deref() != Some(want.as_str()) {
-                let detail = format!("{k} must be {want:?}, is {}", have.map(|h| format!("{h:?}")).unwrap_or("unset".into()));
+                let mut detail =
+                    format!("{k} must be {want:?}, is {}", have.map(|h| format!("{h:?}")).unwrap_or("unset".into()));
+                self.secrets.scrub(&mut detail);
                 self.emit(WorkflowEvent::GuardChecked { state: s.name.clone(), ok: false, detail: detail.clone() });
                 return Err(WorkflowError::Guard { state: s.name.clone(), detail });
             }
         }
         if !s.require.is_empty() {
-            self.emit(WorkflowEvent::GuardChecked { state: s.name.clone(), ok: true, detail: format!("{} condition(s)", s.require.len()) });
+            let detail = format!("{} condition(s)", s.require.len());
+            self.emit(WorkflowEvent::GuardChecked { state: s.name.clone(), ok: true, detail });
         }
         Ok(())
     }
 
-    /// The configured tenant's branding must be on screen, and match better than any other allowed tenant's.
+    /// The configured tenant's branding must be on screen (the frame that classified it), and match better than any
+    /// other allowed tenant's.
     fn verify_tenant(&mut self, s: &StateDef) -> Result<(), WorkflowError> {
         let expected = self.wf.config.get("tenant").cloned().unwrap_or_default();
         let mismatch = || WorkflowError::TenantMismatch { state: s.name.clone(), expected: expected.clone() };
@@ -725,15 +909,14 @@ impl Engine<'_> {
         let mut scores = Vec::new();
         for (tenant, image) in &self.wf.tenants.clone() {
             let r = self.reference(image)?;
-            scores.push((tenant.clone(), frame.similarity(&r)));
+            scores.push((tenant.clone(), frame.similarity(&r), s.detect.threshold));
         }
         scores.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let (best, conf) = scores[0].clone();
-        let clear = scores.get(1).is_none_or(|(_, r)| conf - r >= self.wf.ambiguity_margin);
-        if best != expected || conf < s.detect.threshold || !clear {
+        if self.winner(&scores).as_deref() != Some(expected.as_str()) {
             return Err(mismatch());
         }
-        self.emit(WorkflowEvent::TenantVerified { state: s.name.clone(), tenant: expected, confidence: conf });
+        let confidence = scores[0].1;
+        self.emit(WorkflowEvent::TenantVerified { state: s.name.clone(), tenant: expected, confidence });
         Ok(())
     }
 
@@ -754,6 +937,25 @@ impl Engine<'_> {
         })
     }
 
+    /// Record a verified transition out of `from`: history, its derived facts, and entering `to`.
+    fn transition(&mut self, from: &StateDef, to: &str, confidence: f64, attempts: u32, entered_at: u64, reason: &str) {
+        let at = self.now();
+        self.emit(WorkflowEvent::TransitionVerified {
+            from: from.name.clone(),
+            to: to.to_string(),
+            confidence,
+            duration_ms: at.saturating_sub(entered_at),
+        });
+        self.ctx.history.push(Transition { from: from.name.clone(), to: to.to_string(), at_ms: at, attempts, confidence });
+        for (k, v) in &from.derive {
+            let old = self.ctx.derived.insert(k.clone(), (v.clone(), at)).map(|(old, _)| old);
+            if old.as_deref() != Some(v.as_str()) {
+                self.emit(WorkflowEvent::ContextChanged { key: format!("derived.{k}"), from: old, to: v.clone() });
+            }
+        }
+        self.enter(to, reason);
+    }
+
     fn run_states(&mut self, compiled: &BTreeMap<String, Vec<(usize, Op)>>, resume: Option<&Checkpoint>) -> Result<(), WorkflowError> {
         // Where may the run begin? Fresh: the start states. Resumed: the checkpoint's state or what may follow it.
         let allowed: Vec<String> = match resume {
@@ -765,6 +967,7 @@ impl Engine<'_> {
             }
         };
         let first = self.recognise(self.opts.observe_timeout, &allowed)?;
+        let confidence = first.confidence;
         let first = first.state.expect("recognised");
         if !allowed.contains(&first) {
             return Err(match resume {
@@ -772,7 +975,24 @@ impl Engine<'_> {
                 None => WorkflowError::Unexpected { expected: allowed, saw: first },
             });
         }
-        self.enter(&first, if resume.is_some() { "re-observed after resume" } else { "observed at start" });
+        // Attempts already spent in the state the run (re)starts in.
+        let mut spent = 0;
+        match resume {
+            None => self.enter(&first, "observed at start"),
+            Some(cp) if cp.state == first => {
+                spent = cp.attempts.get(&first).copied().unwrap_or(0);
+                self.enter(&first, "re-observed after resume");
+            }
+            Some(cp) => {
+                // The screen moved on while the run was stopped: that is the checkpoint's pending transition, now
+                // verified by a fresh look. Record it (and its facts) before the new state's guard.
+                let from = self.wf.state(&cp.state).expect("checked").clone();
+                let attempts = cp.attempts.get(&cp.state).copied().unwrap_or(0);
+                self.ctx.current = Some(cp.state.clone());
+                let now = self.now();
+                self.transition(&from, &first, confidence, attempts, now, "verified after resume");
+            }
+        }
 
         loop {
             self.check()?;
@@ -786,61 +1006,81 @@ impl Engine<'_> {
             if s.verify_tenant {
                 self.verify_tenant(&s)?;
             }
-            if let Some(msg) = &s.gate {
+            if spent > 0 && !s.retry_safe && !self.opts.run.dry_run {
+                let msg = format!(
+                    "The actions for {name} were already sent and not verified. Send them again? (Check the screen first.)"
+                );
+                let approved = self.host.confirm(&msg);
+                self.emit(WorkflowEvent::HumanGateRequested { state: name.clone(), message: msg, approved });
+                if !approved {
+                    return Err(WorkflowError::ResumeDeclined { state: name });
+                }
+            }
+            let gated = if let Some(msg) = &s.gate {
                 let approved = self.opts.run.dry_run || self.host.confirm(msg);
                 self.emit(WorkflowEvent::HumanGateRequested { state: name.clone(), message: msg.clone(), approved });
                 if !approved {
                     return Err(WorkflowError::GateDeclined { state: name });
                 }
+                true
+            } else {
+                spent > 0
+            };
+            if gated {
+                // Time has passed with a person deciding: look again before typing.
+                self.still_on(&s)?;
             }
             let ops = &compiled[&name];
             let entered_at = self.now();
-            let mut attempt = 0;
+            let budget = if s.retry_safe { s.retries + 1 } else { 1 };
+            let mut attempt = spent;
+            if s.retry_safe && attempt >= budget {
+                self.emit(WorkflowEvent::StateTimedOut { state: name.clone(), attempts: attempt });
+                return Err(WorkflowError::TimedOut { state: name, attempts: attempt });
+            }
+            spent = 0;
             let next = loop {
                 attempt += 1;
                 self.act(&s, ops, attempt)?;
+                // Everything captured up to now predates the action's effect.
+                let boundary = self.host.screen().and_then(|f| f.seq).or(self.seen_seq);
                 // Verify: the screen must settle on a permitted next state. Staying put is "not yet"; anything else
                 // stops the run.
-                let next_states = s.next.clone();
                 let here = name.clone();
-                let o = self.observe(s.timeout, |o| o.state.as_ref().is_some_and(|st| *st != here))?;
-                match o.and_then(|o| o.state.map(|st| (st, o.confidence))) {
-                    Some((st, conf)) if next_states.contains(&st) => break (st, conf),
+                let look = self.observe(s.timeout, boundary, |o| o.state.as_ref().is_some_and(|st| *st != here))?;
+                match look.obs.as_ref().and_then(|o| o.state.clone().map(|st| (st, o.confidence))) {
+                    Some((st, conf)) if st != name && s.next.contains(&st) => break (st, conf),
                     Some((st, _)) if st != name => {
-                        return Err(WorkflowError::Unexpected { expected: next_states, saw: st });
+                        return Err(WorkflowError::Unexpected { expected: s.next.clone(), saw: st });
                     }
-                    Some(_) | None => {
-                        if attempt <= s.retries && s.retry_safe {
+                    // Settled, freshly, on the same screen: the action did not take. Retry only where marked safe
+                    // and within the budget, after the tenant check again.
+                    Some(_) => {
+                        if attempt < budget {
+                            if s.verify_tenant {
+                                self.verify_tenant(&s)?;
+                            }
                             continue;
                         }
                         self.emit(WorkflowEvent::StateTimedOut { state: name.clone(), attempts: attempt });
                         return Err(WorkflowError::TimedOut { state: name, attempts: attempt });
                     }
+                    // Unknown, unsettled or no fresh frames: never type into what cannot be seen.
+                    None => {
+                        self.emit(WorkflowEvent::StateTimedOut { state: name.clone(), attempts: attempt });
+                        return Err(Self::unknown(look.obs));
+                    }
                 }
             };
             let (to, confidence) = next;
-            let at = self.now();
-            self.emit(WorkflowEvent::TransitionVerified {
-                from: name.clone(),
-                to: to.clone(),
-                confidence,
-                duration_ms: at.saturating_sub(entered_at),
-            });
-            self.ctx.history.push(Transition { from: name.clone(), to: to.clone(), at_ms: at, attempts: attempt, confidence });
-            for (k, v) in &s.derive {
-                let from = self.ctx.derived.insert(k.clone(), (v.clone(), at)).map(|(old, _)| old);
-                if from.as_deref() != Some(v.as_str()) {
-                    self.emit(WorkflowEvent::ContextChanged { key: format!("derived.{k}"), from, to: v.clone() });
-                }
-            }
-            self.enter(&to, "transition verified");
+            self.transition(&s, &to, confidence, attempt, entered_at, "transition verified");
         }
     }
 }
 
-/// Run a workflow. `secrets` holds the prompted secret values; they are compiled into key strokes and never kept
-/// anywhere else. `sink` sees every trace entry as it happens (for a live view). Always releases every key at the
-/// end, unless dry-running.
+/// Run a workflow. `secrets` holds the prompted secret values; they are compiled into key strokes and otherwise kept
+/// only to scrub them from published text, then wiped. `sink` sees every trace entry as it happens (for a live view).
+/// Always releases every key at the end, unless dry-running.
 pub fn run_workflow(
     wf: &Workflow,
     secrets: &Vars,
@@ -856,7 +1096,20 @@ pub fn run_workflow(
         ctx.attempts = cp.attempts.clone();
         ctx.history = cp.history.clone();
     }
-    let mut e = Engine { wf, host, opts, refs: BTreeMap::new(), last_frame: None, ctx, trace: Vec::new(), sink, started: Instant::now() };
+    let secret_values = Secrets(wf.secrets.keys().filter_map(|k| secrets.get(k).cloned()).collect());
+    let mut e = Engine {
+        wf,
+        host,
+        opts,
+        refs: BTreeMap::new(),
+        last_frame: None,
+        seen_seq: None,
+        secrets: secret_values,
+        ctx,
+        trace: Vec::new(),
+        sink,
+        started: Instant::now(),
+    };
     e.emit(WorkflowEvent::Started {
         workflow: wf.name.clone(),
         dry_run: opts.run.dry_run,
@@ -879,7 +1132,12 @@ pub fn run_workflow(
             }
         }
     }
-    if let Err(err) = &result {
+    if let Err(err) = &mut result {
+        // Host diagnostics are free text: scrub them in the returned error as well as in the trace.
+        match err {
+            WorkflowError::Reference(m) | WorkflowError::Action { error: RunError::Host(m), .. } => e.secrets.scrub(m),
+            _ => {}
+        }
         let state = e.ctx.current.clone();
         e.emit(WorkflowEvent::Stopped { state, reason: err.to_string() });
     }
@@ -888,7 +1146,10 @@ pub fn run_workflow(
 
 // ---------- export ----------
 
-/// One JSON object per trace entry. Contains no typed text and no secret values (events never hold them).
+/// One JSON object per trace entry. Events never hold typed text or secret values, and prompted secret values are
+/// scrubbed from any free text (gate messages, host diagnostics) before it is recorded. A value an author writes into
+/// the workflow file itself (a gate message, a config value) is not a secret to this engine: keep secrets under
+/// `[secrets]`.
 pub fn trace_jsonl(report: &WorkflowReport) -> String {
     report
         .trace
@@ -901,9 +1162,14 @@ pub fn trace_jsonl(report: &WorkflowReport) -> String {
 /// A short Markdown record for a ticket: outcome, transitions and the final context.
 pub fn trace_markdown(wf: &Workflow, report: &WorkflowReport) -> String {
     let mut md = format!("### Workflow: {}\n\n", if wf.name.is_empty() { "(unnamed)" } else { &wf.name });
-    md.push_str(&match &report.result {
-        Ok(()) => format!("**Completed** in state `{}`.\n\n", report.context.current.as_deref().unwrap_or("?")),
-        Err(e) => format!("**Stopped:** {e}\n\n"),
+    let stopped = report.trace.iter().rev().find_map(|t| match &t.event {
+        WorkflowEvent::Stopped { reason, .. } => Some(reason.clone()),
+        _ => None,
+    });
+    md.push_str(&match (&report.result, stopped) {
+        (Ok(()), _) => format!("**Completed** in state `{}`.\n\n", report.context.current.as_deref().unwrap_or("?")),
+        (Err(_), Some(reason)) => format!("**Stopped:** {reason}\n\n"),
+        (Err(_), None) => "**Stopped.**\n\n".to_string(),
     });
     md.push_str("| # | From | To | Attempts | Confidence | At |\n|---|---|---|---|---|---|\n");
     for (i, t) in report.context.history.iter().enumerate() {

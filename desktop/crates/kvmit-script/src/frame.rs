@@ -7,6 +7,9 @@ pub struct Frame {
     pub height: usize,
     /// Row-major 8-bit luma, `width * height` bytes.
     pub gray: Vec<u8>,
+    /// The capture's own frame counter, when the source has one. Two reads of the same captured frame carry the same
+    /// number, so a stalled capture is not mistaken for a screen that stayed the same (workflows rely on this).
+    pub seq: Option<u64>,
 }
 
 pub const GRID_W: usize = 64;
@@ -14,7 +17,12 @@ pub const GRID_H: usize = 36;
 
 impl Frame {
     pub fn new(width: usize, height: usize, gray: Vec<u8>) -> Option<Frame> {
-        (width > 0 && height > 0 && gray.len() == width * height).then_some(Frame { width, height, gray })
+        (width > 0 && height > 0 && gray.len() == width * height).then_some(Frame { width, height, gray, seq: None })
+    }
+
+    pub fn with_seq(mut self, seq: Option<u64>) -> Frame {
+        self.seq = seq;
+        self
     }
 
     /// Area-average downscale to the comparison grid (upscales by replication if smaller).

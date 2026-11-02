@@ -10,6 +10,8 @@
   (config / observed / derived / runtime, secrets kept apart), structured events, a redacted JSONL and Markdown export, and
   a non-secret resume checkpoint that re-observes the screen before continuing. Linear scripts are unchanged. No firmware
   or protocol change. **Host-tested only** (simulated targets); no GUI or CLI yet. See `docs/ux.md`.
+- Video frames handed to scripts now carry the capture's frame number, so a stalled capture card is not mistaken for an
+  unchanged screen (used by workflows).
 
 ## [0.4.9] - 2026-10-30 (cross-platform UX audit)
 
