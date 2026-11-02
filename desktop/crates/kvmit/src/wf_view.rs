@@ -285,8 +285,8 @@ mod tests {
     #[test]
     fn sources_compare_paths_exactly() {
         use std::os::unix::ffi::OsStrExt;
-        let a = Source::File(std::ffi::OsStr::from_bytes(b"a-.toml").into());
-        let b = Source::File(std::ffi::OsStr::from_bytes(b"a-.toml").into());
+        let a = Source::File(std::ffi::OsStr::from_bytes(&[b'a', b'-', 0x80, b'.', b't', b'o', b'm', b'l']).into());
+        let b = Source::File(std::ffi::OsStr::from_bytes(&[b'a', b'-', 0x81, b'.', b't', b'o', b'm', b'l']).into());
         if let (Source::File(pa), Source::File(pb)) = (&a, &b) {
             assert_eq!(pa.display().to_string(), pb.display().to_string(), "the display strings collide");
         }
