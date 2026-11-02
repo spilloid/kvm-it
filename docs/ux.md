@@ -106,6 +106,77 @@ Step kinds: `text`, `secret_text`, `key`, `chord`, `delay`, `repeat`, `wait_for`
 "screen stopped changing for N s", with timeout), `confirm` (human gate), `comment`. Variables via
 `{{name}}`. No loops over arbitrary expressions, no shell, no file or network access from scripts.
 
+## Stateful workflows (issue #46, engine only)
+
+A script types and hopes. A **workflow** knows which screen it is on. It is a separate file (`workflow_format = 1`); linear
+scripts are unchanged. Each state names the reference screens that identify it, what to type there, and which states may
+follow. The engine loops **observe → classify → validate → act → verify → transition**:
+
+- **Observe and classify:** the screen counts as a state only when it matches that state's reference at or above its
+  threshold, beats the runner-up by the workflow's `ambiguity_margin`, and stays that way for two consecutive frames (a
+  screen mid-animation does not count). Anything else is **unknown**: nothing is typed. The operator may fix the target by
+  hand and continue, or stop.
+- **Validate:** the state must be a permitted start (or the checkpoint's state, or what may follow it, on resume). A
+  state's `require` guard compares `config` and `derived` values. `verify_tenant` checks that the screen shows the
+  configured tenant's branding, and not another allowed tenant's, before acting. A `gate` asks the operator first.
+- **Act:** the state's actions are the same steps a script uses, all compiled before the first key: a missing secret or an
+  untypable character stops the run before anything is sent.
+- **Verify:** only the next screen counts as success, never a HID acknowledgement. The screen must settle on one of the
+  state's `next` states within its `timeout`. Staying put is retried only when the state says `retry_safe = true` (at most
+  5 retries). Landing anywhere else stops the run.
+
+```toml
+workflow_format = 1
+name = "Windows 11 OOBE (Autopilot)"
+start = ["REGION"]
+
+[config]                        # the approved profile: immutable during a run
+region = "United States"
+deployment_mode = "autopilot"
+tenant = "contoso"              # must be one of [tenants]
+
+[secrets]                       # prompted at run time; never saved, logged or exported
+wifi = { prompt = "Wi-Fi password" }
+
+[tenants]                       # allowed tenants and their sign-in branding
+contoso = "contoso-signin.png"
+
+[[states]]
+name = "NETWORK"
+detect = { screen = "oobe-network.png", threshold = 0.92 }
+next = ["AUTOPILOT"]
+actions = [ { secret_text = "{{wifi}}" }, { key = "ENTER" } ]
+timeout = "90s"
+derive = { network_status = "connected" }   # recorded only once the transition out is verified
+
+[[states]]
+name = "AUTOPILOT"
+detect = { screen = "oobe-autopilot.png" }
+require = { deployment_mode = "autopilot", network_status = "connected" }
+verify_tenant = true
+gate = "Enroll this device into the tenant shown?"
+next = ["DONE"]
+actions = [ { key = "ENTER" } ]
+
+[[states]]
+name = "DONE"
+detect = { screen = "oobe-desktop.png" }
+terminal = true
+```
+
+The run's context keeps `config`, `observed` (classification, confidence, runner-up, reference, frame hash),
+`derived` (with when it was verified), `runtime` (state, previous state, attempts, history) and secrets apart; the
+inspector shows each value's source. Every step is a structured event (`StateObserved`, `StateEntered`, `GuardChecked`,
+`TenantVerified`, `HumanGateRequested`, `ActionAttempted`, `TransitionVerified`, `ContextChanged`, `StateTimedOut`,
+`Stopped`, `RunCompleted`), exportable as JSONL or as a Markdown note for a ticket. None of them carries typed text or a
+secret. A **checkpoint** (no secrets, no images) lets a run resume, but only after the screen is observed again and
+matches the checkpoint's state or a state that may follow it: never a blind replay. A dry run follows the frames it is
+shown and sends no HID at all.
+
+**Status: engine built and host-tested** against simulated targets (synthetic frames and a mocked host). No real OOBE
+screen, capture card or adapter has run it. The GUI (state chip, timeline, live variable inspector, export buttons) and
+the CLI are not built yet.
+
 ## DuckyScript import
 
 `kvm-it script import payload.txt` converts the common subset (`REM`, `STRING`, `STRINGLN`, `DELAY`,
