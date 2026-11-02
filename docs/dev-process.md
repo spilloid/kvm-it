@@ -1008,5 +1008,16 @@ confirm races, dry-run resume, TOML detection. Remaining: 4 Medium and 1 Low, al
 | 5 | Low | A failed export rollback was ignored, so a later suffix could succeed with an orphan file left behind | **Confirmed.** A rollback that fails returns an error naming the file left behind. Not tested (removal cannot be made to fail portably). |
 
 Mutants (3, each alone, restored): all caught. Waking the panel inside the lock deadlocks its test; that hung test
-process was ended and counted as caught. Items 4 and 5 are inline and argued, not tested. **Not yet reviewed again;
-still not looked at on screen.**
+process was ended and counted as caught. Items 4 and 5 are inline and argued, not tested.
+
+## 2026-11-02 - Round-51 fixes (PR #52): review round 52 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static, over `0d2bc0d`. **NO SIGN-OFF.** Judged complete: same-frame undo recovery,
+wake-after-publish, re-click. Remaining: 1 Medium, 1 Low, both confirmed. Fixed on PR #53.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Med | The source key was `path.display()`, which is lossy: distinct non-Unicode file names on Linux gave the same key | **Confirmed.** The source is `Source::File(PathBuf)` or `Source::Builtin(name)`, compared exactly. Unix-only test (runs in CI): two such names display alike yet compare different. |
+| 2 | Low | After a write failure, the rollback stopped at the first failed removal and named only that file | **Confirmed; introduced by round 51.** Both removals are attempted; every file left behind is named with the original error. Not tested (removal cannot be made to fail portably). |
+
+**Not yet reviewed again; still not looked at on screen.**

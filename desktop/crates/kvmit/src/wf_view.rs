@@ -114,9 +114,12 @@ pub fn save_exports(dir: &std::path::Path, stamp: &str, jsonl: &str, md: &str) -
         let written = fa.write_all(jsonl.as_bytes()).and_then(|_| fb.write_all(md.as_bytes()));
         if let Err(e) = written {
             drop((fa, fb));
-            undo(&a)?;
-            undo(&b)?;
-            return Err(e);
+            // Try to remove both, whatever happens to the first, and name everything left behind.
+            let left: Vec<String> = [undo(&a), undo(&b)].into_iter().filter_map(|r| r.err().map(|e| e.to_string())).collect();
+            if left.is_empty() {
+                return Err(e);
+            }
+            return Err(std::io::Error::new(e.kind(), format!("{e}; {}", left.join("; "))));
         }
         return Ok(stem);
     }
@@ -140,11 +143,18 @@ pub fn export_stem(workflow: &str, stamp: &str) -> String {
 /// What a Resume button may resume from: only a stopped **live** run (a dry run sent nothing, so its attempt counts mean
 /// nothing to a live one) of **exactly** the selected definition (another workflow's facts and history, or this file's
 /// before it was edited, mean nothing here).
+/// Where a workflow came from. Paths are compared as paths, exactly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    File(std::path::PathBuf),
+    Builtin(String),
+}
+
 /// `ran` and `selected` are (definition, source): two files with the same contents are still two workflows.
 pub fn resume_point(
     dry: bool,
-    ran: (&kvmit_script::Workflow, &str),
-    selected: (&kvmit_script::Workflow, &str),
+    ran: (&kvmit_script::Workflow, &Source),
+    selected: (&kvmit_script::Workflow, &Source),
     report: Option<&kvmit_script::WorkflowReport>,
 ) -> Option<kvmit_script::Checkpoint> {
     if dry || ran != selected {
@@ -261,13 +271,26 @@ mod tests {
             context: Context { current: Some("A".into()), ..Default::default() },
         };
         let done = WorkflowReport { result: Ok(()), ..stopped.clone() };
-        let (a, b) = ("file:a.toml", "file:b.toml");
+        let (a, b) = (&Source::File("a.toml".into()), &Source::File("b.toml".into()));
         assert!(resume_point(false, (&wf, a), (&wf, a), Some(&stopped)).is_some());
         assert!(resume_point(true, (&wf, a), (&wf, a), Some(&stopped)).is_none(), "a dry run never seeds a live resume");
         assert!(resume_point(false, (&wf, a), (&other, a), Some(&stopped)).is_none(), "another definition's run");
         assert!(resume_point(false, (&wf, a), (&wf, b), Some(&stopped)).is_none(), "same contents, another file");
         assert!(resume_point(false, (&wf, a), (&wf, a), Some(&done)).is_none(), "a completed run");
         assert!(resume_point(false, (&wf, a), (&wf, a), None).is_none());
+    }
+
+    /// Distinct non-Unicode file names display alike (both lossy); as sources they stay distinct.
+    #[cfg(unix)]
+    #[test]
+    fn sources_compare_paths_exactly() {
+        use std::os::unix::ffi::OsStrExt;
+        let a = Source::File(std::ffi::OsStr::from_bytes(b"a-.toml").into());
+        let b = Source::File(std::ffi::OsStr::from_bytes(b"a-.toml").into());
+        if let (Source::File(pa), Source::File(pb)) = (&a, &b) {
+            assert_eq!(pa.display().to_string(), pb.display().to_string(), "the display strings collide");
+        }
+        assert_ne!(a, b);
     }
 
     #[test]
