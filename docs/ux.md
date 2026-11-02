@@ -173,6 +173,23 @@ secret. A **checkpoint** (no secrets, no images) lets a run resume, but only aft
 matches the checkpoint's state or a state that may follow it: never a blind replay. A dry run follows the frames it is
 shown and sends no HID at all.
 
+**Every burst of keys follows a fresh look taken at that moment**: the screen must settle again on the state, on frames
+captured after that moment (frames arriving within the capture latency, 300 ms, may still be queued pictures and are
+skipped), and the tenant check is repeated. Inside a workflow, actions may not `wait_for` or `confirm`, and may pause at
+most 2 s in total: waiting and asking belong to states. The video source must number its frames (the app's capture cards
+and the demo source do); a source that does not is refused. `secret_text`
+may only use `[secrets]`. A state cannot list itself in `next`. Settling counts distinct captured frames (the capture's own
+frame number), so a stalled capture never "settles", and a frame captured before an action never verifies it.
+
+Every workflow states how it compares screens (`match` is required). Use **structure** (`match = "structure"`:
+normalised correlation of the light/dark pattern) for real screens: setup screens share their background and differ
+mainly in text. Brightness alone (`match = "luma"`,
+what `wait_for` uses) found Windows 11 OOBE screens 96-98 % alike. A state can compare only part of the screen with
+`detect.region = [x, y, width, height]` (fractions).
+
+**VM-verified (2026-11-02):** the first four Windows 11 25H2 OOBE screens, on a Proxmox VM through a QEMU harness (keys via
+`qm sendkey`, screen via `screendump`), recognised and verified end to end. Not hardware-verified.
+
 **Status: engine built and host-tested** against simulated targets (synthetic frames and a mocked host). No real OOBE
 screen, capture card or adapter has run it. The GUI (state chip, timeline, live variable inspector, export buttons) and
 the CLI are not built yet.

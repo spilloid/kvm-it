@@ -795,17 +795,140 @@ Verified by running (Windows 11): `cargo test --workspace` (219 pass, 1 ignored;
 `cargo clippy --workspace --all-targets -D warnings` for the Windows and `aarch64-apple-darwin` targets. Not run: anything on
 Linux or macOS (the `cfg(unix)` ffmpeg test included), the GUI by hand (the popup fix is covered headless only), any hardware.
 
-## 2026-11-02 - Stateful workflow engine (`feat/workflow-engine`, issue #46): review round 38 (Codex `gpt-6-astra`, pending)
+## 2026-11-02 - Stateful workflow engine (`feat/workflow-engine`, PR #47, issue #46): review round 38 (Codex `gpt-6-astra`)
 
 Engine only (`kvmit-script::workflow`), written by the orchestrator (Claude Opus 5.5). It reuses the script compiler, `Host` and
 `Frame`; no firmware or protocol change. Host-tested against simulated targets: a mocked host whose screens advance per Enter,
-and a self-advancing timeline for dry runs. 13 tests, all of them for issue #46's acceptance criteria.
+and a self-advancing timeline for dry runs.
 
-Mutants caught: ignoring the settle rule; skipping the tenant check; accepting any changed screen as a verified transition;
-dropping the threshold; dropping the ambiguity margin. The last two first survived together: the only ambiguous test frame
-was also under the threshold, so neither rule was tested alone. Two cases were added (a clear-but-weak match, a
-strong-but-ambiguous one), and each mutant now fails on its own. Found while testing: the tenant check read a fresh frame,
-not the one that classified the screen. It now uses the same frame (dry-run timelines showed the difference).
+Before review, mutants caught: ignoring the settle rule; skipping the tenant check; accepting any changed screen as a
+verified transition; dropping the threshold; dropping the ambiguity margin. The last two first survived together, because the
+only ambiguous test frame was also under the threshold; two cases were added so each rule is tested alone. Found while
+testing: the tenant check read a fresh frame, not the one that classified the screen. It now uses the same frame.
 
-Verified by running (Windows 11): `cargo test -p kvmit-script` (38 pass), clippy `-D warnings` on the crate. Not run: any
-real OOBE screen, capture card or adapter; the GUI and CLI do not use the engine yet.
+Review: read-only, high effort, static, over `e8b6850`. **Do not ship**: 6 High, 4 Medium, 1 Low and test gaps. Every
+finding was confirmed by reading and then by a test that fails without its fix. The fix was chosen here.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | A retry-safe state retried after the screen became unknown or video was lost | **Confirmed.** Only a fresh, settled look at the same state retries, and the tenant check runs again first. Unknown, unsettled or no fresh frames stop the run. Test: an unknown dialog after KEYBOARD's Enter gets no second Enter. |
+| 2 | High | Settling counted reads, not captured frames: a stalled capture "settled", and a frame from before the action could verify it | **Confirmed**: the host dropped the capture's frame number in the grayscale conversion. `Frame` now carries `seq` (the capture's counter; `VideoFrame::to_gray` passes it on). Settling needs distinct frames; a missing frame starts over. Frames at or before a boundary read right after acting are ignored when verifying. Tests: a frozen capture never settles; a capture stalled at the Enter neither verifies nor retries, even with a one-frame settle. Sources without frame numbers keep the plain rule. |
+| 3 | High | After a gate (open for any length of time) the engine typed on the evidence from before it | **Confirmed.** After any gate, and after an operator's resume approval, the engine looks again (fresh frames only) and repeats the tenant check before typing. `wait_for` and `confirm` steps are refused inside workflow actions, so no blocking step sits between the look and the keys. Tests: the tenant or the screen changing during the gate stops the run with nothing typed. |
+| 4 | High | A state listing itself in `next` accepted an unchanged screen as a transition, looping forever | **Confirmed.** Self-edges are refused at parse time, and the engine never accepts the same state as a transition (tested with a workflow built in code). |
+| 5 | High | Resume reset the attempt count: an unverified, unsafe action (a typed password) could be replayed, and spent retries were granted again | **Confirmed.** The checkpoint's attempts carry over: a retry-safe state continues its budget (an exhausted one stops), and a state that is not retry-safe and was attempted is only acted on again if the operator agrees. |
+| 6 | High | `secret_text` could type a `[config]` value, which the inspector, the Markdown export and Debug output show | **Confirmed.** `secret_text` may only reference `[secrets]` (parse error otherwise). |
+| 7 | Med | Free text (gate messages, host diagnostics, derived values) was published verbatim, so a secret pasted there leaked | **Partly fixable; fixed what the engine can know.** Prompted secret values are scrubbed from every published string (events, the Markdown stop reason, host error text). Derived values must be short tokens. The docs no longer promise more: a value the author writes into the file is not a secret to the engine. |
+| 8 | Med | Resuming on a permitted next screen skipped the pending transition, so its derived facts were missing and the next guard failed | **Confirmed.** That transition is recorded (history and facts) before the next state's guard. |
+| 9 | Med | `ambiguity_margin = 0` let an exact tie pick a state (or a tenant) | **Confirmed.** The margin must be at least 0.01, and a tie never wins whatever the margin (tested with a margin set in code). |
+| 10 | Med | Deadlines were checked after accepting a match and ignored a zero poll | **Confirmed in part.** The poll is at least 10 ms, sleeps are capped to the time left, and state timeouts are at least 500 ms. The deadline is still counted in polls, not wall-clock time: the mocked host's sleep returns at once, and these tests need that. |
+| 11 | Low | On timeout, a provisional (unsettled) match was published as recognised | **Confirmed.** The observation is settled first, then stored, emitted and returned. |
+| T | - | Test gaps: outer `release_all` on early failures, capture identity, resume budgets, privacy on error paths | All added: the unknown-screen and compile-failure runs record exactly one `release_all`. |
+
+Mutants after the fixes (each run alone, restored after): retrying into an unknown screen, counting the same captured frame
+twice, counting pre-action frames, no fresh look after a gate, accepting an unchanged screen as a transition, forgetting spent
+attempts, skipping the pending transition on resume, no scrubbing, allowing config in `secret_text`, letting ties win. All
+10 are caught. The tie mutant first survived (the parser already refuses a zero margin), so a test with a margin set in code
+was added.
+
+Verified by running (Windows 11, rustc 1.99.1): `cargo test --workspace` (all pass; 21 workflow tests), clippy `-D warnings`
+on the workspace. Not run: any real OOBE screen, capture card or adapter; the GUI and CLI do not use the engine yet.
+
+## 2026-11-02 - Workflow engine round-38 fixes (`21a5c48`): review round 39 (Codex `gpt-6-astra`)
+
+Re-review of the round-38 fixes: read-only, high effort, static. Complete: self-transitions, config in `secret_text`, ties,
+timeout normalisation, plus the config-secret check for repeats. Partial or new: 4 High, 6 Medium. Every finding was confirmed
+here. The fix was chosen here.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | A capture freezing *after* settling still authorised a retry (the settled look predates the freeze) | **Confirmed.** One rule now covers this and #3: **every burst of keys, first attempt or retry, follows a fresh look taken at that moment.** Its boundary is read then, only newer frames count, and the tenant check is repeated on that look. Test: KEYBOARD's Enter is swallowed, the capture freezes after the verify look settles, an unknown dialog appears; no retry. |
+| 2 | High | Frames without numbers passed every freshness check; numbered frames can still be pictures queued before the boundary | **Confirmed.** Frames without capture numbers are refused (`NoFrameNumbers`): a workflow cannot tell a stalled capture from a still screen. After a boundary, frames within `capture_latency` (300 ms) are skipped as possibly queued, and frame numbers must increase (a repeated or reordered frame is not a new look). **Residual:** the capture layer has no acquisition timestamps, so a queue deeper than the latency window is not detected; the window is a bound, not a proof. Test: pictures queued with new numbers after a gate do not authorise typing. |
+| 3 | High | `still_on()` took its boundary before the human decision | **Confirmed**; fixed by #1 (boundary read after approval). |
+| 4 | High | `delay` steps (and `default_delay`) still opened a gap between the last look and the keys | **Confirmed.** A state's actions may pause at most 2 s in total (repeats multiplied); `default_delay` over 2 s is refused. Longer waits belong to states. |
+| 5 | High | Resuming on a successor invented the checkpoint state's transition even when that visit had sent nothing (stopped at a guard or a gate) | **Confirmed; introduced by the round-38 fix.** Checkpoints now record `attempted` for the current visit. Only a visit that sent its actions has a pending transition. Otherwise the new state is entered with no facts invented, and its own guard decides. |
+| 6 | Med | Resume used attempts from earlier visits to a state as this visit's | **Confirmed.** Attempts are counted per visit (`visit_attempts`, reset on entry); the per-state totals stay as history. |
+| 7 | Med | Scrubbing events did not cover the context, reports or checkpoints; a secret's value written into a `derive` reached all of them. The token rule refused legitimate facts | **Confirmed.** The engine refuses to start (`SecretInFile`, naming the place, never the value) when a prompted secret's value appears anywhere in the file: config, derive, require, gates, descriptions. Facts are one line of up to 200 characters again. The Markdown footer says "prompted secrets". |
+| 8 | Med | The nested script runner published host errors (`RunEvent::Aborted`) before the workflow scrubbed them | **Confirmed.** Actions run through a scrubbing host wrapper. |
+| 9 | Med | Replacing secrets one after another exposed parts of overlapping ones | **Confirmed.** All matches are found in the original text, merged, then replaced once. |
+| 10 | Med | Deadlines ignored processing time; success could be accepted after the real deadline | **Confirmed.** Evidence counts only inside the deadline measured in real time as well as in polls. **Found by the new test:** a late frame still counted toward the settle streak, so the timeout branch reported it as settled. A late frame now does not count at all. |
+
+Mutants after the fixes (21, each run alone, restored after): 19 caught. Two survive and are equivalent: retrying into an
+unknown screen (the fresh look before every retry already refuses an unknown screen) and dropping the event-level scrub (no
+path can now bring a secret's value into an event: files that contain one are refused, and host errors are scrubbed before
+the event is built). Both checks stay as defence in depth. Two other mutants (counting the same captured frame twice, no
+real-time deadline) first survived because the tests asserted only the final error. The tests now assert that nothing was
+verified and that no state was entered.
+
+Verified by running (Windows 11): `cargo test --workspace`, clippy `-D warnings` on the workspace (the new QEMU harness
+included). Not run: any real OOBE screen, capture card or adapter. **Not yet reviewed again.**
+
+## 2026-11-02 - Workflow engine on a real OOBE in a VM (round 40, orchestrator)
+
+A Windows 11 25H2 VM on the maintainer's Proxmox host (VM 120, **no network card**, nothing else on the host touched) was
+installed by hand to OOBE. A Proxmox snapshot with RAM state was taken at the first OOBE screen, so every run starts from
+the same screen. A dev-only harness (`kvmit-video/examples/qemu_workflow.rs`) implements `Host` with `qm sendkey` and the
+monitor's `screendump` over ssh; each dump is a new numbered frame.
+
+**What the real screens showed that the simulated ones could not:** with the engine's brightness comparison
+(`Frame::similarity`), different OOBE screens are **96-98 % alike** (same background and card, different text). Keyboard vs
+second-keyboard is 0.980, against a default margin of 0.03. The engine would have refused them as ambiguous: fail-closed,
+but useless. Normalised cross-correlation of the same thumbnails separates them (at most 0.84 across screens on the whole
+frame, 0.55-0.68 on the right-hand column). So workflows now compare by **structure** by default (`match = "structure"`;
+`"luma"` remains). A state may compare only a **region** (`detect.region = [x, y, w, h]`, fractions; the capture and the
+reference are cropped alike). Tests: structure tells apart a moved bar that brightness cannot, ignores a brightness shift,
+handles flat frames; crop by fraction keeps the frame number. The synthetic workflow tests use flat greys, so they declare
+`match = "luma"`.
+
+**VM-verified run** (`examples/oobe/win11-25h2-first-screens.toml`, region = right-hand column): REGION → KEYBOARD →
+SECOND_KEYBOARD → NETWORK, each recognised at confidence 1.00 with the runner-up at 0.65-0.67. Each transition was verified
+from the next screen, and each derived fact was recorded. Completed in 71 s (mostly ssh round trips per frame). **Negative
+run:** started while the VM showed the network screen, the engine stopped with "expected REGION but the screen shows
+NETWORK" and typed nothing.
+
+Not verified: any capture card or adapter (QEMU's keyboard is not USB HID; a screendump is not HDMI); any screen after the
+network screen (the VM has no network by design); Autopilot or tenant screens; other resolutions, themes or builds. The
+reference images are not committed (screenshots of Microsoft's UI); `examples/oobe/README.md` says how to make them.
+
+## 2026-11-02 - Rounds 39-40 (`21a5c48..bbb9315`): review round 41 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. Round-39 fixes judged complete: frozen-after-settling retries, the post-approval boundary,
+invented successor transitions (new checkpoints), visit-scoped attempts, nested-event scrubbing, overlap-merged scrubbing.
+Partial or new: 3 High, 6 Medium. Every finding was confirmed here. The fix was chosen here.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | A frame first seen inside the latency window could count once the window passed (a capture freezing on it) | **Confirmed.** A frame seen inside the window raises a floor: it and anything not newer never count in that look. That made the separate "inside the window" check redundant (its mutant survived as equivalent), so it was removed. **Residual, documented:** frames carry no acquisition time, so a capture queue deeper than the window is not detected. |
+| 2 | High | The 2 s pause cap counted explicit delays only: the default delay after every step and long key timings were not counted | **Confirmed.** Before a run: explicit delays plus the default delay times the number of steps must be at most 2 s per state; key hold and key gap at most 100 ms each. |
+| 3 | High | A checkpoint written before `attempted` existed read as "nothing sent", dropping replay protection | **Confirmed.** `attempted` is optional. Missing means unknown, which counts as the state's spent attempts for replay (the operator is asked) and as nothing to reconcile for derived facts. |
+| 4 | Med | The secret-in-file check ran after the context was built and `Started` was published | **Confirmed.** All checks needing no screen run first. A refused run builds no context and publishes one `Stopped` entry. The Markdown export withholds the workflow's name for that refusal (a new test found the name in its title). |
+| 5 | Med | The scan covered selected fields only (not the name, references, key names, the checkpoint) | **Confirmed.** It covers every field of the definition (name, description, start, tenants, config, secrets' prompts, each state in full) and the checkpoint. |
+| 6 | Med | The real-time deadline allowed one poll of slack | **Confirmed.** One deadline, no slack; sleeps are capped to the real time left. Test: frames at 300 ms each settle at about 600 ms, after a 500 ms deadline, and are refused. |
+| 7 | Med | Identical thumbnails could score 0.9999999999999999 by structure, failing a threshold of 1.0 | **Confirmed** with the reviewer's example. Identical thumbnails score exactly 1, and the score is clamped to 0..1. |
+| 8 | Med | Workflow files without `match` silently changed from brightness to structure, keeping thresholds calibrated for the other | **Confirmed in principle** (no such files were ever released: the format is new in this branch). `match` is now required, so every workflow states how it compares. |
+| 9 | Med | The QEMU harness reused one dump file, so a failed dump could hand back an older picture with a new frame number | **Confirmed.** Each dump has its own file, removed before and after, and must exist and be non-empty or the grab fails. |
+
+Mutants (11, each alone, restored): all caught, after two tests were sharpened. The floor and the frame-number boundary
+were each masked by the other rule, or by the boundary read consuming the queued picture. The queued-picture test now
+queues two pictures, and the stall test runs with no latency window, so each rule is the only thing between a stale
+frame and a key.
+
+Re-run on the VM after the fixes (rolled back to the first OOBE screen): REGION → KEYBOARD → SECOND_KEYBOARD → NETWORK,
+all transitions verified (one at confidence 0.995). Verified by running (Windows 11): `cargo test --workspace`, clippy
+`-D warnings`.
+
+## 2026-11-02 - Round-41 fixes (`5ee0c27`): review round 43 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: legacy checkpoints, exact-threshold structure scores,
+the required `match`, the harness's stale dump. Remaining: 2 High, 4 Medium, each confirmed here.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | Buffered pictures from before a decision, delivered after the latency window with higher frame numbers, can still pass as fresh | **Confirmed, not fixed: needs the operator's decision.** Closing it needs acquisition timestamps from each capture backend (Media Foundation, V4L2, AVFoundation) carried through `Frame`. This machine cannot verify any of them without the hardware on each OS. Documented as the open residual. |
+| 2 | High | Many short key gaps (600 taps at 100 ms) could add up to a minute with nothing watched before secret typing | **Confirmed.** After compiling, each state's actions must take at most **5 s to send**, all told: every key's hold and gap (a shifted character counts twice), delays, the default delay after each step, repeats expanded. This replaces the separate default-delay budget. |
+| 3 | Med | A timing error was reported before the secret scan, so its message and the Markdown title could carry a secret-bearing name | **Confirmed.** The secret scan runs first; nothing else reports until it has passed. |
+| 4 | Med | The secret's location could contain the secret (`config.hunter2`) | **Confirmed.** Locations are built from positions only ("config entry 3", "state 2 (in file order)", "the checkpoint"). |
+| 5 | Med | The scan searched `Debug` renderings, which escape quotes, so a secret containing `"` was missed | **Confirmed.** The scan walks the real string values field by field (every state field and action string, every checkpoint field). |
+| 6 | Med | The observation loop started a capture after its deadline | **Confirmed.** No capture starts past the deadline (the first look always happens), and no sleep is forced beyond the time left. The reviewer's further point (a capture already in progress can block past the deadline) needs a deadline-aware host API: not done. |
+
+Mutants (6, each alone, restored): all caught. Verified by running (Windows 11): `cargo test --workspace`, clippy
+`-D warnings`. VM re-run: all transitions verified. **Not yet reviewed again; finding 1 open.**
