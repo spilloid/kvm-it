@@ -99,11 +99,13 @@ impl Qemu {
     }
 
     fn grab(&mut self) -> Option<Frame> {
+        // The dump is taken after this moment, so the picture is at least this new.
+        let at = std::time::Instant::now();
         let ppm = self.dump().ok()?;
         let (w, h, rgb) = parse_ppm(&ppm)?;
         let gray = rgb.as_chunks::<3>().0.iter().map(|p| ((p[0] as u32 * 77 + p[1] as u32 * 150 + p[2] as u32 * 29) >> 8) as u8).collect();
         self.seq += 1;
-        Frame::new(w, h, gray).map(|f| f.with_seq(Some(self.seq)))
+        Frame::new(w, h, gray).map(|f| f.with_seq(Some(self.seq)).with_captured_at(Some(at)))
     }
 }
 

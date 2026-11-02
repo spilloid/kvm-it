@@ -214,6 +214,8 @@ impl Capture {
                         continue;
                     }
                     errors = 0;
+                    // Received now, before decoding: the earliest moment this process knows the picture.
+                    let captured_at = Some(std::time::Instant::now());
                     let Some(bytes) = sample.as_ref().and_then(sample_bytes) else { continue };
                     let decoded = if mode.mjpeg {
                         convert::decode_mjpeg(&bytes)
@@ -222,7 +224,7 @@ impl Capture {
                     };
                     if let Some((width, height, rgba)) = decoded {
                         seq += 1;
-                        *l2.lock().unwrap() = Some(Arc::new(VideoFrame { width, height, rgba, seq }));
+                        *l2.lock().unwrap() = Some(Arc::new(VideoFrame { width, height, rgba, seq, captured_at }));
                     }
                 }
             })

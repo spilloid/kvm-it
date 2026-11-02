@@ -141,7 +141,7 @@ impl Host for Sim {
             return t.get((self.looks - 1).min(t.len() - 1)).cloned().map(|f| f.with_seq(seq));
         }
         let seq = if self.no_seq { None } else { seq };
-        let f = self.screens.get(self.pos).cloned().map(|f| f.with_seq(seq));
+        let f = self.screens.get(self.pos).cloned().map(|f| f.with_seq(seq).with_captured_at(Some(std::time::Instant::now())));
         self.last_frame = f.clone();
         f
     }
@@ -162,7 +162,8 @@ impl Host for Sim {
         self.asked.push(message.to_string());
         if let Some((at, f)) = self.during_confirm.take() {
             for _ in 0..self.queue_on_confirm {
-                self.queued.push_back(self.screens[at].clone());
+                // Received now, while the question is still open: pictures of the screen before the decision.
+                self.queued.push_back(self.screens[at].clone().with_captured_at(Some(std::time::Instant::now())));
             }
             self.screens[at] = f;
         }
@@ -954,4 +955,24 @@ fn no_capture_is_started_after_the_deadline() {
     let r = go(&w, &mut sim, &o, None);
     assert!(matches!(r.result, Err(WorkflowError::UnknownScreen { best: Some(_) })), "{:?}", r.result);
     assert_eq!(sim.looks, 2);
+}
+
+#[test]
+fn a_picture_received_before_a_decision_is_never_evidence_after_it() {
+    let w = wf();
+    let mut o = opts();
+    // No latency window at all: only the capture time can tell these pictures apart.
+    o.capture_latency = Duration::ZERO;
+    // While the enrollment question is open, the target switches tenant, and three pictures of the old (approved)
+    // tenant are already queued. They arrive after the approval with new frame numbers, but were received before it.
+    let mut sim = Sim {
+        screens: screens(),
+        confirms: [true].into(),
+        during_confirm: Some((3, solid(186))),
+        queue_on_confirm: 3,
+        ..Default::default()
+    };
+    let r = go(&w, &mut sim, &o, None);
+    assert!(matches!(r.result, Err(WorkflowError::TenantMismatch { .. })), "{:?}", r.result);
+    assert_eq!(enters(&sim), 3, "nothing typed on the enrollment screen");
 }

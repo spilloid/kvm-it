@@ -48,7 +48,7 @@ impl DemoCapture {
         }
         let img = image::open(png).map_err(|e| CaptureError(format!("demo picture {png}: {e}")))?.into_rgba8();
         let (w, h) = (img.width() as usize, img.height() as usize);
-        let frame = Arc::new(VideoFrame { width: w, height: h, rgba: img.into_raw(), seq: 1 });
+        let frame = Arc::new(VideoFrame { width: w, height: h, rgba: img.into_raw(), seq: 1, captured_at: None });
         Ok(DemoCapture { frame, mode: Mode { width: w as u32, height: h as u32, fps: 30, mjpeg: false } })
     }
 
