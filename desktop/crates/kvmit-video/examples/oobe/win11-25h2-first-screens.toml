@@ -1,0 +1,38 @@
+workflow_format = 1
+name = "win11-25h2-oobe-first-screens"
+description = "Windows 11 25H2 OOBE: region, keyboard, second keyboard, up to the network screen (VM run, no network)"
+start = ["REGION"]
+match = "structure"
+
+[[states]]
+name = "REGION"
+description = "Is this the right country or region?"
+detect = { screen = "oobe-region.png", region = [0.52, 0.12, 0.40, 0.75] }
+next = ["KEYBOARD"]
+actions = [ { key = "ENTER" } ]
+timeout = "30s"
+derive = { region = "United States" }
+
+[[states]]
+name = "KEYBOARD"
+description = "Is this the right keyboard layout or input method?"
+detect = { screen = "oobe-keyboard.png", region = [0.52, 0.12, 0.40, 0.75] }
+next = ["SECOND_KEYBOARD"]
+actions = [ { key = "ENTER" } ]
+timeout = "30s"
+derive = { keyboard = "US" }
+
+[[states]]
+name = "SECOND_KEYBOARD"
+description = "Want to add a second keyboard layout? (Skip has focus)"
+detect = { screen = "oobe-second-keyboard.png", region = [0.52, 0.12, 0.40, 0.75] }
+next = ["NETWORK"]
+actions = [ { key = "ENTER" } ]
+timeout = "30s"
+derive = { second_keyboard = "skipped" }
+
+[[states]]
+name = "NETWORK"
+description = "Let's connect you to a network (this VM has no network card)"
+detect = { screen = "oobe-network.png", region = [0.52, 0.12, 0.40, 0.75] }
+terminal = true

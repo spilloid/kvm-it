@@ -176,6 +176,8 @@ const OOBE: &str = r#"
 workflow_format = 1
 name = "test-oobe"
 start = ["REGION"]
+# The simulated screens are flat greys, which have no pattern to correlate: compare brightness.
+match = "luma"
 
 [config]
 region = "United States"

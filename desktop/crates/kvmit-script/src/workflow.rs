@@ -33,6 +33,19 @@ pub struct Detect {
     pub screens: Vec<String>,
     /// Minimum similarity to count as this state.
     pub threshold: f64,
+    /// Compare only this part of the screen: `[x, y, width, height]` as fractions of the frame (both the capture and
+    /// the reference are cropped the same way).
+    pub region: Option<[f64; 4]>,
+}
+
+/// How a frame is compared with a reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Matching {
+    /// The pattern of light and dark ([`Frame::structure_similarity`]). The default: real setup screens share their
+    /// background and differ in text, which brightness alone barely sees.
+    Structure,
+    /// Mean brightness difference ([`Frame::similarity`]), as `wait_for` uses.
+    Luma,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -75,6 +88,7 @@ pub struct Workflow {
     pub tenants: BTreeMap<String, String>,
     /// A classification must beat the runner-up by at least this much similarity.
     pub ambiguity_margin: f64,
+    pub matching: Matching,
     pub states: Vec<StateDef>,
 }
 
@@ -87,6 +101,8 @@ struct RawDetect {
     screens: Vec<String>,
     #[serde(default)]
     threshold: Option<f64>,
+    #[serde(default)]
+    region: Option<[f64; 4]>,
 }
 
 #[derive(Deserialize)]
@@ -141,6 +157,8 @@ struct RawWorkflow {
     tenants: BTreeMap<String, String>,
     #[serde(default)]
     ambiguity_margin: Option<f64>,
+    #[serde(default, rename = "match")]
+    matching: Option<String>,
     states: Vec<RawState>,
 }
 
@@ -256,6 +274,12 @@ impl Workflow {
             if screens.is_empty() {
                 return Err(format!("state {:?} needs at least one detect screen", r.name));
             }
+            if let Some([x, y, w, h]) = r.detect.region {
+                let ok = [x, y, w, h].iter().all(|v| (0.0..=1.0).contains(v)) && w > 0.0 && h > 0.0 && x + w <= 1.0 && y + h <= 1.0;
+                if !ok {
+                    return Err(format!("state {:?}: region must be [x, y, width, height] inside 0..1", r.name));
+                }
+            }
             let threshold = r.detect.threshold.unwrap_or(0.92);
             if !(0.5..=1.0).contains(&threshold) {
                 return Err(format!("state {:?}: threshold must be within 0.5..=1", r.name));
@@ -315,7 +339,7 @@ impl Workflow {
                 actions,
                 name: r.name,
                 description: r.description,
-                detect: Detect { screens, threshold },
+                detect: Detect { screens, threshold, region: r.detect.region },
                 next: r.next,
                 require: r.require,
                 gate: r.gate,
@@ -342,6 +366,11 @@ impl Workflow {
             secrets: raw.secrets.into_iter().map(|(k, v)| (k, v.prompt)).collect(),
             tenants: raw.tenants,
             ambiguity_margin: margin,
+            matching: match raw.matching.as_deref() {
+                None | Some("structure") => Matching::Structure,
+                Some("luma") => Matching::Luma,
+                Some(m) => return Err(format!("match must be \"structure\" or \"luma\", got {m:?}")),
+            },
             states,
         })
     }
@@ -851,6 +880,18 @@ impl Engine<'_> {
         (top.1 >= top.2 && clear).then(|| top.0.clone())
     }
 
+    /// One frame against one reference, with the workflow's comparison, in a region if the state has one.
+    fn compare(&self, frame: &Frame, reference: &Frame, region: Option<[f64; 4]>) -> f64 {
+        let (f, r) = match region {
+            Some([x, y, w, h]) => (frame.crop(x, y, w, h), reference.crop(x, y, w, h)),
+            None => (frame.clone(), reference.clone()),
+        };
+        match self.wf.matching {
+            Matching::Structure => f.structure_similarity(&r),
+            Matching::Luma => f.similarity(&r),
+        }
+    }
+
     /// Best and runner-up state for one frame.
     fn classify(&mut self, frame: &Frame) -> Result<Observation, WorkflowError> {
         let mut scores: Vec<(String, f64, f64)> = Vec::new(); // state, similarity, threshold
@@ -859,7 +900,7 @@ impl Engine<'_> {
             let mut best: Option<(f64, String)> = None;
             for screen in &s.detect.screens {
                 let r = self.reference(screen)?;
-                let sim = frame.similarity(&r);
+                let sim = self.compare(frame, &r, s.detect.region);
                 if best.as_ref().is_none_or(|(b, _)| sim > *b) {
                     best = Some((sim, screen.clone()));
                 }
@@ -1043,7 +1084,7 @@ impl Engine<'_> {
         let mut scores = Vec::new();
         for (tenant, image) in &self.wf.tenants.clone() {
             let r = self.reference(image)?;
-            scores.push((tenant.clone(), frame.similarity(&r), s.detect.threshold));
+            scores.push((tenant.clone(), self.compare(&frame, &r, None), s.detect.threshold));
         }
         scores.sort_by(|a, b| b.1.total_cmp(&a.1));
         if self.winner(&scores).as_deref() != Some(expected.as_str()) {

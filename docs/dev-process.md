@@ -861,3 +861,30 @@ verified and that no state was entered.
 
 Verified by running (Windows 11): `cargo test --workspace`, clippy `-D warnings` on the workspace (the new QEMU harness
 included). Not run: any real OOBE screen, capture card or adapter. **Not yet reviewed again.**
+
+## 2026-11-02 - Workflow engine on a real OOBE in a VM (round 40, orchestrator)
+
+A Windows 11 25H2 VM on the maintainer's Proxmox host (VM 120, **no network card**, nothing else on the host touched) was
+installed by hand to OOBE. A Proxmox snapshot with RAM state was taken at the first OOBE screen, so every run starts from
+the same screen. A dev-only harness (`kvmit-video/examples/qemu_workflow.rs`) implements `Host` with `qm sendkey` and the
+monitor's `screendump` over ssh; each dump is a new numbered frame.
+
+**What the real screens showed that the simulated ones could not:** with the engine's brightness comparison
+(`Frame::similarity`), different OOBE screens are **96-98 % alike** (same background and card, different text). Keyboard vs
+second-keyboard is 0.980, against a default margin of 0.03. The engine would have refused them as ambiguous: fail-closed,
+but useless. Normalised cross-correlation of the same thumbnails separates them (at most 0.84 across screens on the whole
+frame, 0.55-0.68 on the right-hand column). So workflows now compare by **structure** by default (`match = "structure"`;
+`"luma"` remains). A state may compare only a **region** (`detect.region = [x, y, w, h]`, fractions; the capture and the
+reference are cropped alike). Tests: structure tells apart a moved bar that brightness cannot, ignores a brightness shift,
+handles flat frames; crop by fraction keeps the frame number. The synthetic workflow tests use flat greys, so they declare
+`match = "luma"`.
+
+**VM-verified run** (`examples/oobe/win11-25h2-first-screens.toml`, region = right-hand column): REGION → KEYBOARD →
+SECOND_KEYBOARD → NETWORK, each recognised at confidence 1.00 with the runner-up at 0.65-0.67. Each transition was verified
+from the next screen, and each derived fact was recorded. Completed in 71 s (mostly ssh round trips per frame). **Negative
+run:** started while the VM showed the network screen, the engine stopped with "expected REGION but the screen shows
+NETWORK" and typed nothing.
+
+Not verified: any capture card or adapter (QEMU's keyboard is not USB HID; a screendump is not HDMI); any screen after the
+network screen (the VM has no network by design); Autopilot or tenant screens; other resolutions, themes or builds. The
+reference images are not committed (screenshots of Microsoft's UI); `examples/oobe/README.md` says how to make them.

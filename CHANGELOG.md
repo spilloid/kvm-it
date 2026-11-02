@@ -10,6 +10,9 @@
   (config / observed / derived / runtime, secrets kept apart), structured events, a redacted JSONL and Markdown export, and
   a non-secret resume checkpoint that re-observes the screen before continuing. Linear scripts are unchanged. No firmware
   or protocol change. **Host-tested only** (simulated targets); no GUI or CLI yet. See `docs/ux.md`.
+- Workflows compare screens by structure (normalised correlation) by default, optionally in a region of the screen; brightness
+  comparison found real Windows 11 OOBE screens 96-98 % alike. VM-verified on the first four Windows 11 25H2 OOBE screens
+  (Proxmox VM, QEMU harness); not hardware-verified.
 - Video frames handed to scripts now carry the capture's frame number, so a stalled capture card is not mistaken for an
   unchanged screen (used by workflows).
 
