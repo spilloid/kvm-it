@@ -114,8 +114,9 @@ impl RunHandle {
 }
 
 /// Publish a question for the panel and wait for the answer, unless the run was cancelled. The cancel flag is checked
-/// under the same lock `abort` takes, so a run never waits on a question nobody will see.
-fn ask(slot: &ConfirmSlot, cancel: &AtomicBool, msg: &str) -> bool {
+/// under the same lock `abort` takes, so a run never waits on a question nobody will see; the panel is woken only after
+/// the question is in place, so the wake-up cannot come and go before there is anything to show.
+fn ask(slot: &ConfirmSlot, cancel: &AtomicBool, msg: &str, wake: impl FnOnce()) -> bool {
     let rx = {
         let mut s = slot.lock().unwrap();
         if cancel.load(Ordering::SeqCst) {
@@ -125,6 +126,7 @@ fn ask(slot: &ConfirmSlot, cancel: &AtomicBool, msg: &str) -> bool {
         *s = Some((msg.to_string(), tx));
         rx
     };
+    wake();
     rx.recv().unwrap_or(false)
 }
 
@@ -187,13 +189,23 @@ pub struct App {
     workflow: Option<kvmit_script::Workflow>,
     wf_secrets: BTreeMap<String, String>,
     wf_run: Option<Arc<Mutex<WfShared>>>,
-    /// Text-edit states to remove on the next frame (secret fields of a selection that changed).
+    /// Text-edit states to remove (secret fields of a selection that changed), and the selection generation in the ids.
     purge_ids: Vec<egui::Id>,
+    wf_generation: u64,
 }
 
-/// The id of a workflow secret's password field: explicit, so its state can be found and removed.
-fn secret_field_id(name: &str) -> egui::Id {
-    egui::Id::new(("kvmit-workflow-secret", name))
+/// The id of a workflow secret's password field: explicit, so its state can be found and removed, and tied to the
+/// selection's generation, so a newly selected workflow's fields never share state (undo history) with the last one's.
+fn secret_field_id(generation: u64, name: &str) -> egui::Id {
+    egui::Id::new(("kvmit-workflow-secret", generation, name))
+}
+
+/// Which library entry a run came from: its file path, or a built-in's name.
+fn entry_source(e: &Entry) -> String {
+    match &e.path {
+        Some(p) => format!("file:{}", p.display()),
+        None => format!("builtin:{}", e.name),
+    }
 }
 
 /// Remove the text-edit state (cursor and undo history, which egui keeps in clear text) of these fields.
@@ -210,6 +222,8 @@ struct WfShared {
     /// The definition this run ran, and whether it was a dry run: the panel shows a run only for the very definition it
     /// ran, and only a live run's checkpoint can seed a live resume.
     wf: kvmit_script::Workflow,
+    /// Which library entry it came from (its file, or its built-in name).
+    source: String,
     dry: bool,
     trace: Vec<kvmit_script::workflow::TraceEntry>,
     inspect: Vec<kvmit_script::workflow::VarView>,
@@ -267,6 +281,7 @@ impl App {
             wf_secrets: BTreeMap::new(),
             wf_run: None,
             purge_ids: Vec::new(),
+            wf_generation: 0,
             cfg,
         };
         // Zero-step reconnect: the last adapter and capture device come back on their own.
@@ -753,8 +768,9 @@ impl App {
     fn forget_workflow_secrets(&mut self) {
         for (name, mut v) in std::mem::take(&mut self.wf_secrets) {
             zeroize::Zeroize::zeroize(&mut v);
-            self.purge_ids.push(secret_field_id(&name));
+            self.purge_ids.push(secret_field_id(self.wf_generation, &name));
         }
+        self.wf_generation += 1;
         // A finished run belongs to the selection that started it.
         if !self.run_handle.as_ref().is_some_and(|r| r.running()) {
             self.wf_run = None;
@@ -814,10 +830,7 @@ impl App {
                 capture: Some(capture),
                 base_dir,
                 cancel,
-                confirm: Box::new(move |msg| {
-                    ctx3.request_repaint();
-                    ask(&confirm, &cancel2, msg)
-                }),
+                confirm: Box::new(move |msg| ask(&confirm, &cancel2, msg, || ctx3.request_repaint())),
                 on_event: Box::new(move |ev| {
                     let line = match &ev {
                         RunEvent::Started { steps } => format!("started, {steps} steps"),
@@ -844,7 +857,8 @@ impl App {
     /// It shares the script run's handle, so Esc, Abort, the confirm dialog and the run log behave the same.
     fn start_workflow(
         &mut self,
-        wf: kvmit_script::Workflow,
+        // The definition and the library entry it came from: they travel together.
+        (wf, source): (kvmit_script::Workflow, String),
         base_dir: std::path::PathBuf,
         secrets: Vars,
         dry: bool,
@@ -878,6 +892,7 @@ impl App {
         };
         let shared = Arc::new(Mutex::new(WfShared {
             wf: wf.clone(),
+            source,
             dry,
             trace: Vec::new(),
             inspect: Vec::new(),
@@ -895,10 +910,7 @@ impl App {
                 capture: Some(capture),
                 base_dir,
                 cancel,
-                confirm: Box::new(move |msg| {
-                    ctx3.request_repaint();
-                    ask(&confirm, &cancel2, msg)
-                }),
+                confirm: Box::new(move |msg| ask(&confirm, &cancel2, msg, || ctx3.request_repaint())),
                 // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
                 on_event: Box::new(|_| {}),
             };
@@ -953,13 +965,14 @@ impl App {
             let v = self.wf_secrets.entry(name.clone()).or_default();
             ui.horizontal(|ui| {
                 ui.label(prompt);
-                ui.add(egui::TextEdit::singleline(v).password(true).id(secret_field_id(name)));
+                ui.add(egui::TextEdit::singleline(v).password(true).id(secret_field_id(self.wf_generation, name)));
             });
         }
         if !wf.secrets.is_empty() {
             ui.small("Secrets: held in memory only, never saved, logged or exported.");
         }
         let external = self.library[sel].path.is_some();
+        let source = entry_source(&self.library[sel]);
         if external {
             ui.checkbox(&mut self.trust_ack, "I wrote or reviewed this workflow — it will type into the target");
         }
@@ -982,7 +995,7 @@ impl App {
         // A stopped run with a known state can be resumed: the engine looks at the screen again first, never replays.
         let checkpoint = (!running).then_some(self.wf_run.as_ref()).flatten().and_then(|s| {
             let s = s.lock().unwrap();
-            crate::wf_view::resume_point(s.dry, &s.wf, &wf, s.report.as_ref())
+            crate::wf_view::resume_point(s.dry, (&s.wf, &s.source), (&wf, &source), s.report.as_ref())
         });
         ui.horizontal(|ui| {
             let r = ui.add_enabled(why_run.is_none(), egui::Button::new("▶ Run"));
@@ -990,14 +1003,14 @@ impl App {
                 r.clone().on_disabled_hover_text(w);
             }
             if r.clicked() {
-                self.start_workflow(wf.clone(), base.clone(), secrets.clone(), false, None, ctx.clone());
+                self.start_workflow((wf.clone(), source.clone()), base.clone(), secrets.clone(), false, None, ctx.clone());
             }
             let r = ui.add_enabled(why_dry.is_none(), egui::Button::new("Dry run"));
             if let Some(w) = &why_dry {
                 r.clone().on_disabled_hover_text(w);
             }
             if r.clicked() {
-                self.start_workflow(wf.clone(), base.clone(), secrets.clone(), true, None, ctx.clone());
+                self.start_workflow((wf.clone(), source.clone()), base.clone(), secrets.clone(), true, None, ctx.clone());
             }
             if let Some(cp) = &checkpoint {
                 let r = ui.add_enabled(why_run.is_none(), egui::Button::new(format!("Resume from {}", cp.state)));
@@ -1006,7 +1019,7 @@ impl App {
                     r.clone().on_disabled_hover_text(w);
                 }
                 if r.clicked() {
-                    self.start_workflow(wf.clone(), base.clone(), secrets.clone(), false, Some(cp.clone()), ctx.clone());
+                    self.start_workflow((wf.clone(), source.clone()), base.clone(), secrets.clone(), false, Some(cp.clone()), ctx.clone());
                 }
             }
             let r = ui.add_enabled(running, egui::Button::new("■ Abort"));
@@ -1020,7 +1033,7 @@ impl App {
         let Some(shared) = self.wf_run.clone() else { return };
         let (chip_state, rows, inspect, exports) = {
             let s = shared.lock().unwrap();
-            if s.wf != wf {
+            if s.wf != wf || s.source != source {
                 return; // a run of another definition (or of this file before it changed) is not this one's
             }
             let exports = s.report.as_ref().map(|r| {
@@ -1589,8 +1602,9 @@ impl App {
         }
         let names: Vec<String> = self.library.iter().map(|e| e.name.clone()).collect();
         for (i, n) in names.iter().enumerate() {
-            if ui.selectable_label(self.selected == Some(i), n).clicked() {
+            if ui.selectable_label(self.selected == Some(i), n).clicked() && self.selected != Some(i) {
                 self.select_script(i);
+                purge_secret_fields(ctx, &std::mem::take(&mut self.purge_ids));
             }
         }
         if ui.button("Reload folder").clicked() {
@@ -1831,8 +1845,22 @@ mod tests {
         let slot: ConfirmSlot = Arc::default();
         let cancel = AtomicBool::new(true);
         // Cancelled first: nothing is published, the answer is no, and nothing waits.
-        assert!(!ask(&slot, &cancel, "go?"));
+        let mut woke = false;
+        assert!(!ask(&slot, &cancel, "go?", || woke = true));
         assert!(slot.lock().unwrap().is_none());
+        assert!(!woke, "nothing to wake for");
+        // Not cancelled: by the time the panel is woken, the question is already in place.
+        let live: ConfirmSlot = Arc::default();
+        let (live2, seen) = (live.clone(), Arc::new(AtomicBool::new(false)));
+        let seen2 = seen.clone();
+        let waiter = std::thread::spawn(move || {
+            ask(&live2, &AtomicBool::new(false), "ready?", || {
+                seen2.store(live2.lock().unwrap().is_some(), Ordering::SeqCst);
+                answer(&live2, true);
+            })
+        });
+        assert!(waiter.join().unwrap());
+        assert!(seen.load(Ordering::SeqCst), "woken only after publishing");
         // Answering takes the pending question before replying: a question published after the answer stays.
         let (tx1, rx1) = std_mpsc::channel();
         *slot.lock().unwrap() = Some(("first".into(), tx1));
@@ -1850,7 +1878,8 @@ mod tests {
     #[test]
     fn purging_a_secret_field_removes_its_undo_history() {
         let ctx = egui::Context::default();
-        let id = secret_field_id("wifi");
+        let id = secret_field_id(3, "wifi");
+        assert_ne!(id, secret_field_id(4, "wifi"), "a new selection's field is a different field");
         ctx.data_mut(|d| d.insert_temp(id, egui::text_edit::TextEditState::default()));
         assert!(ctx.data(|d| d.get_temp::<egui::text_edit::TextEditState>(id)).is_some());
         purge_secret_fields(&ctx, &[id]);
