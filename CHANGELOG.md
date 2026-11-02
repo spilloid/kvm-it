@@ -13,6 +13,9 @@
 - Workflows compare screens by structure (normalised correlation) by default, optionally in a region of the screen; brightness
   comparison found real Windows 11 OOBE screens 96-98 % alike. VM-verified on the first four Windows 11 25H2 OOBE screens
   (Proxmox VM, QEMU harness); not hardware-verified.
+- Workflows in the app: `[workflow]` files in the Scripts list, with secret prompts, Run, Dry run, Resume from a stopped
+  run, a live state chip, a transition timeline, a variables table with each value's source, and Save trace and notes /
+  Copy notes. Built and unit-tested; not yet looked at on screen.
 - Video frames say when the capture backend received them; a workflow never accepts a picture received before a
   decision (an approval, or keys sent) as evidence after it. Host-tested on Windows; Linux and macOS type-checked only.
 - Video frames handed to scripts now carry the capture's frame number, so a stalled capture card is not mistaken for an

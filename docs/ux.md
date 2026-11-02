@@ -190,6 +190,15 @@ what `wait_for` uses) found Windows 11 OOBE screens 96-98 % alike. A state can c
 **VM-verified (2026-11-02):** the first four Windows 11 25H2 OOBE screens, on a Proxmox VM through a QEMU harness (keys via
 `qm sendkey`, screen via `screendump`), recognised and verified end to end. Not hardware-verified.
 
+**In the app (2026-11-02):** workflow files in the scripts folder appear in the Scripts list as `[workflow] name.toml`.
+Selecting one shows its states, its approved profile (read-only), a password box for each prompted secret (held in memory
+only, cleared when the selection changes), and Run, Dry run (needs a video source: it still watches the screen), Resume
+(after a stopped run with a known state: it looks at the screen first) and Abort (Esc works as for scripts). While it runs:
+a state chip (current state and attempt), a timeline of entered states, keys sent, verified transitions, questions and
+stops, and a variables table with each value's source. When it ends: **Save trace and notes** (JSONL and Markdown in the
+scripts folder) and **Copy notes**. None of these contains a prompted secret. **Built and unit-tested (the chip, timeline,
+export names, outcome); not looked at on screen yet:** the screenshot harness needs a connected adapter.
+
 **Status: engine built and host-tested** against simulated targets (synthetic frames and a mocked host). No real OOBE
 screen, capture card or adapter has run it. The GUI (state chip, timeline, live variable inspector, export buttons) and
 the CLI are not built yet.

@@ -964,3 +964,13 @@ masked the latency floor's own test. The frozen-queue test now delivers its pict
 pictures released from the driver's queue), so only the floor catches them; its mutant was re-run and fails. (2) The
 residual is now described as a mitigation, not a bound. Also taken: a frame must be received strictly *after* a boundary
 (equal instants prove nothing).
+
+## 2026-11-02 - Workflows in the GUI (`feat/workflow-gui`, issue #46 part 2)
+
+`library.rs` lists `workflow_format` files as `[workflow]` entries. `wf_view.rs` derives what the panel shows from a
+run's trace (state chip, timeline, export file names, run outcome): pure and unit-tested (4 tests), like `uistate`.
+`gui.rs` draws it and runs a workflow on the same handle as scripts (Esc, Abort, confirm dialog, run log). Secrets come
+from password boxes, are cleared when the selection changes, and never reach the trace, the variables table or the
+exports (the engine's guarantees). Built, clippy-clean, unit-tested on Windows. **Not looked at on screen:** the screenshot
+harness needs a connected adapter, and launching the GUI here would write the maintainer's own settings (config and
+scripts folder are per-user, with no override). **Not yet reviewed.**
