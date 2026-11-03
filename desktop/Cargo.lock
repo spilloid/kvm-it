@@ -2296,6 +2296,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "windows",
+ "zeroize",
 ]
 
 [[package]]

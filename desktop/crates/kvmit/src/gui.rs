@@ -103,10 +103,37 @@ impl RunHandle {
     /// Stop the run: raise the cancel flag and decline a pending confirm so the run thread is not stuck waiting for it.
     /// The run itself ends with release-all (kvmit-script `run`).
     fn abort(&self) {
+        // Under the slot's lock: a question being published either is seen here and declined, or sees the cancel flag
+        // and is never shown (see `ask`).
+        let mut slot = self.confirm.lock().unwrap();
         self.cancel.store(true, Ordering::SeqCst);
-        if let Some((_, tx)) = self.confirm.lock().unwrap().take() {
+        if let Some((_, tx)) = slot.take() {
             let _ = tx.send(false);
         }
+    }
+}
+
+/// Publish a question for the panel and wait for the answer, unless the run was cancelled. The cancel flag is checked
+/// under the same lock `abort` takes, so a run never waits on a question nobody will see.
+fn ask(slot: &ConfirmSlot, cancel: &AtomicBool, msg: &str) -> bool {
+    let rx = {
+        let mut s = slot.lock().unwrap();
+        if cancel.load(Ordering::SeqCst) {
+            return false;
+        }
+        let (tx, rx) = std_mpsc::channel();
+        *s = Some((msg.to_string(), tx));
+        rx
+    };
+    rx.recv().unwrap_or(false)
+}
+
+/// Answer the pending question: take it from the slot first, then reply, so a question the run publishes right after
+/// this answer is never cleared by it.
+fn answer(slot: &ConfirmSlot, yes: bool) {
+    let pending = slot.lock().unwrap().take();
+    if let Some((_, tx)) = pending {
+        let _ = tx.send(yes);
     }
 }
 
@@ -160,11 +187,30 @@ pub struct App {
     workflow: Option<kvmit_script::Workflow>,
     wf_secrets: BTreeMap<String, String>,
     wf_run: Option<Arc<Mutex<WfShared>>>,
+    /// Text-edit states to remove on the next frame (secret fields of a selection that changed).
+    purge_ids: Vec<egui::Id>,
+}
+
+/// The id of a workflow secret's password field: explicit, so its state can be found and removed.
+fn secret_field_id(name: &str) -> egui::Id {
+    egui::Id::new(("kvmit-workflow-secret", name))
+}
+
+/// Remove the text-edit state (cursor and undo history, which egui keeps in clear text) of these fields.
+pub(crate) fn purge_secret_fields(ctx: &egui::Context, ids: &[egui::Id]) {
+    ctx.data_mut(|d| {
+        for id in ids {
+            d.remove::<egui::text_edit::TextEditState>(*id);
+        }
+    });
 }
 
 /// What a workflow run shares with the panel while it runs, and keeps once it ends.
-#[derive(Default)]
 struct WfShared {
+    /// The definition this run ran, and whether it was a dry run: the panel shows a run only for the very definition it
+    /// ran, and only a live run's checkpoint can seed a live resume.
+    wf: kvmit_script::Workflow,
+    dry: bool,
     trace: Vec<kvmit_script::workflow::TraceEntry>,
     inspect: Vec<kvmit_script::workflow::VarView>,
     /// Set when the run ends: everything the exports need.
@@ -220,6 +266,7 @@ impl App {
             workflow: None,
             wf_secrets: BTreeMap::new(),
             wf_run: None,
+            purge_ids: Vec::new(),
             cfg,
         };
         // Zero-step reconnect: the last adapter and capture device come back on their own.
@@ -666,12 +713,16 @@ impl App {
 
     fn select_script(&mut self, i: usize) {
         self.selected = Some(i);
-        // A workflow's secrets are cleared whenever the selection changes: nothing typed for one carries to another.
-        self.wf_secrets.clear();
+        // Nothing typed for one selection carries to another: secrets are wiped (and their fields' undo history, in
+        // `purge_secret_fields`), and the script caches are cleared before either kind is loaded.
+        self.forget_workflow_secrets();
         self.workflow = None;
+        self.trust_ack = false;
+        self.preview = None;
+        self.preview_key = None;
+        self.var_values.clear();
         if self.library[i].workflow {
             self.script = None;
-            self.trust_ack = false;
             match kvmit_script::Workflow::parse(&self.library[i].source) {
                 Ok(w) => {
                     self.script_err = None;
@@ -694,6 +745,19 @@ impl App {
                 self.script_err = Some(e);
                 self.script = None;
             }
+        }
+    }
+
+    /// Wipe the typed workflow secrets and queue their fields' text-edit state (which keeps undo history in clear text)
+    /// for removal on the next frame.
+    fn forget_workflow_secrets(&mut self) {
+        for (name, mut v) in std::mem::take(&mut self.wf_secrets) {
+            zeroize::Zeroize::zeroize(&mut v);
+            self.purge_ids.push(secret_field_id(&name));
+        }
+        // A finished run belongs to the selection that started it.
+        if !self.run_handle.as_ref().is_some_and(|r| r.running()) {
+            self.wf_run = None;
         }
     }
 
@@ -743,6 +807,7 @@ impl App {
         std::thread::spawn(move || {
             let log2 = log.clone();
             let ctx3 = ctx2.clone();
+            let cancel2 = cancel.clone();
             let mut host = ScriptHost {
                 rt,
                 dev,
@@ -750,10 +815,8 @@ impl App {
                 base_dir,
                 cancel,
                 confirm: Box::new(move |msg| {
-                    let (tx, rx) = std_mpsc::channel();
-                    *confirm.lock().unwrap() = Some((msg.to_string(), tx));
                     ctx3.request_repaint();
-                    rx.recv().unwrap_or(false)
+                    ask(&confirm, &cancel2, msg)
                 }),
                 on_event: Box::new(move |ev| {
                     let line = match &ev {
@@ -813,12 +876,19 @@ impl App {
             dry,
             outcome: Arc::default(),
         };
-        let shared = Arc::new(Mutex::new(WfShared::default()));
+        let shared = Arc::new(Mutex::new(WfShared {
+            wf: wf.clone(),
+            dry,
+            trace: Vec::new(),
+            inspect: Vec::new(),
+            report: None,
+        }));
         let (cancel, done, log, confirm, outcome) =
             (handle.cancel.clone(), handle.done.clone(), handle.log.clone(), handle.confirm.clone(), handle.outcome.clone());
         let (rt, capture, shared2) = (self.rt.handle().clone(), self.capture.clone(), shared.clone());
         std::thread::spawn(move || {
             let ctx3 = ctx.clone();
+            let cancel2 = cancel.clone();
             let mut host = ScriptHost {
                 rt,
                 dev,
@@ -826,10 +896,8 @@ impl App {
                 base_dir,
                 cancel,
                 confirm: Box::new(move |msg| {
-                    let (tx, rx) = std_mpsc::channel();
-                    *confirm.lock().unwrap() = Some((msg.to_string(), tx));
                     ctx3.request_repaint();
-                    rx.recv().unwrap_or(false)
+                    ask(&confirm, &cancel2, msg)
                 }),
                 // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
                 on_event: Box::new(|_| {}),
@@ -885,7 +953,7 @@ impl App {
             let v = self.wf_secrets.entry(name.clone()).or_default();
             ui.horizontal(|ui| {
                 ui.label(prompt);
-                ui.add(egui::TextEdit::singleline(v).password(true));
+                ui.add(egui::TextEdit::singleline(v).password(true).id(secret_field_id(name)));
             });
         }
         if !wf.secrets.is_empty() {
@@ -912,10 +980,10 @@ impl App {
             None
         });
         // A stopped run with a known state can be resumed: the engine looks at the screen again first, never replays.
-        let checkpoint = (!running)
-            .then_some(self.wf_run.as_ref())
-            .flatten()
-            .and_then(|s| s.lock().unwrap().report.as_ref().filter(|r| r.result.is_err()).and_then(|r| r.checkpoint(&wf)));
+        let checkpoint = (!running).then_some(self.wf_run.as_ref()).flatten().and_then(|s| {
+            let s = s.lock().unwrap();
+            crate::wf_view::resume_point(s.dry, &s.wf, &wf, s.report.as_ref())
+        });
         ui.horizontal(|ui| {
             let r = ui.add_enabled(why_run.is_none(), egui::Button::new("▶ Run"));
             if let Some(w) = &why_run {
@@ -952,10 +1020,13 @@ impl App {
         let Some(shared) = self.wf_run.clone() else { return };
         let (chip_state, rows, inspect, exports) = {
             let s = shared.lock().unwrap();
+            if s.wf != wf {
+                return; // a run of another definition (or of this file before it changed) is not this one's
+            }
             let exports = s.report.as_ref().map(|r| {
                 (
                     kvmit_script::workflow::trace_jsonl(r),
-                    kvmit_script::workflow::trace_markdown(&wf, r),
+                    kvmit_script::workflow::trace_markdown(&s.wf, r),
                 )
             });
             (crate::wf_view::state_chip(&s.trace, running), crate::wf_view::timeline(&s.trace), s.inspect.clone(), exports)
@@ -994,12 +1065,8 @@ impl App {
             ui.horizontal(|ui| {
                 if ui.button("Save trace and notes").on_hover_text("JSONL trace and Markdown notes, in the scripts folder. No secrets.").clicked() {
                     let dir = self.cfg.script_dir();
-                    let stem = crate::wf_view::export_stem(&wf.name, &kvmit_record::naming::stamp_now());
-                    let saved = std::fs::create_dir_all(&dir)
-                        .and_then(|_| std::fs::write(dir.join(format!("{stem}.trace.jsonl")), &jsonl))
-                        .and_then(|_| std::fs::write(dir.join(format!("{stem}.notes.md")), &md));
-                    match saved {
-                        Ok(()) => self.set_notice(format!("Saved {stem}.trace.jsonl and {stem}.notes.md in {}", dir.display())),
+                    match crate::wf_view::save_exports(&dir, &kvmit_record::naming::stamp_now(), &jsonl, &md) {
+                        Ok(stem) => self.set_notice(format!("Saved {stem}.trace.jsonl and {stem}.notes.md in {}", dir.display())),
                         Err(e) => self.set_notice(format!("Could not save the trace: {e}")),
                     }
                 }
@@ -1220,8 +1287,8 @@ impl eframe::App for App {
                     ui.label(msg);
                     ui.horizontal(|ui| {
                         if ui.button("Continue").clicked() {
-                            let _ = tx.send(true);
-                            *h.confirm.lock().unwrap() = None;
+                            let _ = &tx;
+                            answer(&h.confirm, true);
                         }
                         if ui.button("Abort").clicked() {
                             h.abort();
@@ -1517,6 +1584,9 @@ impl App {
     }
 
     fn scripts_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if !self.purge_ids.is_empty() {
+            purge_secret_fields(ctx, &std::mem::take(&mut self.purge_ids));
+        }
         let names: Vec<String> = self.library.iter().map(|e| e.name.clone()).collect();
         for (i, n) in names.iter().enumerate() {
             if ui.selectable_label(self.selected == Some(i), n).clicked() {
@@ -1528,7 +1598,7 @@ impl App {
             self.selected = None;
             self.script = None;
             self.workflow = None;
-            self.wf_secrets.clear();
+            self.forget_workflow_secrets();
             // nothing of the previous selection may linger
             self.script_err = None;
             self.preview = None;
@@ -1755,6 +1825,37 @@ pub fn run_gui() -> eframe::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_question_is_never_published_after_abort_and_answering_never_clears_the_next_one() {
+        let slot: ConfirmSlot = Arc::default();
+        let cancel = AtomicBool::new(true);
+        // Cancelled first: nothing is published, the answer is no, and nothing waits.
+        assert!(!ask(&slot, &cancel, "go?"));
+        assert!(slot.lock().unwrap().is_none());
+        // Answering takes the pending question before replying: a question published after the answer stays.
+        let (tx1, rx1) = std_mpsc::channel();
+        *slot.lock().unwrap() = Some(("first".into(), tx1));
+        answer(&slot, true);
+        assert_eq!(rx1.recv().ok(), Some(true));
+        let (tx2, _rx2) = std_mpsc::channel();
+        *slot.lock().unwrap() = Some(("second".into(), tx2));
+        answer(&slot, true); // answers "second" only
+        assert!(slot.lock().unwrap().is_none());
+        let (tx3, _rx3) = std_mpsc::channel();
+        *slot.lock().unwrap() = Some(("third".into(), tx3));
+        assert_eq!(slot.lock().unwrap().as_ref().map(|(m, _)| m.clone()).as_deref(), Some("third"));
+    }
+
+    #[test]
+    fn purging_a_secret_field_removes_its_undo_history() {
+        let ctx = egui::Context::default();
+        let id = secret_field_id("wifi");
+        ctx.data_mut(|d| d.insert_temp(id, egui::text_edit::TextEditState::default()));
+        assert!(ctx.data(|d| d.get_temp::<egui::text_edit::TextEditState>(id)).is_some());
+        purge_secret_fields(&ctx, &[id]);
+        assert!(ctx.data(|d| d.get_temp::<egui::text_edit::TextEditState>(id)).is_none());
+    }
 
     fn key(k: egui::Key, pressed: bool, repeat: bool) -> egui::Event {
         egui::Event::Key { key: k, physical_key: Some(k), pressed, repeat, modifiers: egui::Modifiers::NONE }
