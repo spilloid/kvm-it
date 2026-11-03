@@ -87,6 +87,10 @@ pub fn timeline(trace: &[TraceEntry]) -> Vec<Row> {
 pub fn save_exports(dir: &std::path::Path, stamp: &str, jsonl: &str, md: &str) -> std::io::Result<String> {
     use std::io::Write;
     std::fs::create_dir_all(dir)?;
+    // Removing a file this call created: if that fails, say which file is left, rather than carry on as if it were not.
+    let undo = |p: &std::path::Path| {
+        std::fs::remove_file(p).map_err(|e| std::io::Error::new(e.kind(), format!("{} was left behind: {e}", p.display())))
+    };
     for n in 0..1000 {
         let stem = if n == 0 { format!("workflow-run-{stamp}") } else { format!("workflow-run-{stamp}-{n}") };
         let (a, b) = (dir.join(format!("{stem}.trace.jsonl")), dir.join(format!("{stem}.notes.md")));
@@ -100,7 +104,7 @@ pub fn save_exports(dir: &std::path::Path, stamp: &str, jsonl: &str, md: &str) -
             Ok(f) => f,
             Err(e) => {
                 drop(fa);
-                let _ = std::fs::remove_file(&a);
+                undo(&a)?;
                 if e.kind() == std::io::ErrorKind::AlreadyExists {
                     continue;
                 }
@@ -110,8 +114,8 @@ pub fn save_exports(dir: &std::path::Path, stamp: &str, jsonl: &str, md: &str) -
         let written = fa.write_all(jsonl.as_bytes()).and_then(|_| fb.write_all(md.as_bytes()));
         if let Err(e) = written {
             drop((fa, fb));
-            let _ = std::fs::remove_file(&a);
-            let _ = std::fs::remove_file(&b);
+            undo(&a)?;
+            undo(&b)?;
             return Err(e);
         }
         return Ok(stem);
@@ -136,16 +140,17 @@ pub fn export_stem(workflow: &str, stamp: &str) -> String {
 /// What a Resume button may resume from: only a stopped **live** run (a dry run sent nothing, so its attempt counts mean
 /// nothing to a live one) of **exactly** the selected definition (another workflow's facts and history, or this file's
 /// before it was edited, mean nothing here).
+/// `ran` and `selected` are (definition, source): two files with the same contents are still two workflows.
 pub fn resume_point(
     dry: bool,
-    ran: &kvmit_script::Workflow,
-    selected: &kvmit_script::Workflow,
+    ran: (&kvmit_script::Workflow, &str),
+    selected: (&kvmit_script::Workflow, &str),
     report: Option<&kvmit_script::WorkflowReport>,
 ) -> Option<kvmit_script::Checkpoint> {
     if dry || ran != selected {
         return None;
     }
-    report.filter(|r| r.result.is_err()).and_then(|r| r.checkpoint(ran))
+    report.filter(|r| r.result.is_err()).and_then(|r| r.checkpoint(ran.0))
 }
 
 /// A run's outcome for the run-log header: the operator stopping it is Aborted, anything else Failed.
@@ -256,11 +261,13 @@ mod tests {
             context: Context { current: Some("A".into()), ..Default::default() },
         };
         let done = WorkflowReport { result: Ok(()), ..stopped.clone() };
-        assert!(resume_point(false, &wf, &wf, Some(&stopped)).is_some());
-        assert!(resume_point(true, &wf, &wf, Some(&stopped)).is_none(), "a dry run never seeds a live resume");
-        assert!(resume_point(false, &wf, &other, Some(&stopped)).is_none(), "another definition's run");
-        assert!(resume_point(false, &wf, &wf, Some(&done)).is_none(), "a completed run");
-        assert!(resume_point(false, &wf, &wf, None).is_none());
+        let (a, b) = ("file:a.toml", "file:b.toml");
+        assert!(resume_point(false, (&wf, a), (&wf, a), Some(&stopped)).is_some());
+        assert!(resume_point(true, (&wf, a), (&wf, a), Some(&stopped)).is_none(), "a dry run never seeds a live resume");
+        assert!(resume_point(false, (&wf, a), (&other, a), Some(&stopped)).is_none(), "another definition's run");
+        assert!(resume_point(false, (&wf, a), (&wf, b), Some(&stopped)).is_none(), "same contents, another file");
+        assert!(resume_point(false, (&wf, a), (&wf, a), Some(&done)).is_none(), "a completed run");
+        assert!(resume_point(false, (&wf, a), (&wf, a), None).is_none());
     }
 
     #[test]

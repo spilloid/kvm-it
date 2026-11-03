@@ -991,4 +991,22 @@ separate branch (PR #50 had been reported complete).
 | 7 | Low | Workflow detection by line prefix misclassified nested or quoted keys and text in strings | **Confirmed.** It parses the document and checks for a real top-level `workflow_format` key (`kvmit_script::workflow::is_workflow_source`). Tested with nested, quoted and in-string cases. |
 
 Mutants (6, each alone, restored): all caught. The abort-race mutant made its test hang (the very bug); the hung test
-process was ended and counted as caught. **Not yet reviewed again; still not looked at on screen.**
+process was ended and counted as caught.
+
+## 2026-11-02 - Round-50 fixes (PR #51): review round 51 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static, over `ad50c5a`. **NO SIGN-OFF.** Judged complete: secret export names, both original
+confirm races, dry-run resume, TOML detection. Remaining: 4 Medium and 1 Low, all confirmed. Fixed on a third branch
+(PR #52), since #50 and #51 were reported complete.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Med | Two files with identical contents could share a run, so Resume could take the other file's checkpoint | **Confirmed.** A run keeps its source (file path, or built-in name). The panel and `resume_point` require the same source **and** the same definition. Tested. |
+| 2 | Med | The undo purge ran a frame late: a same-frame click plus Ctrl+Z could restore an old secret into the newly selected field (same name, same id) | **Confirmed** by reading egui 0.32.3. Field ids carry a selection generation, so a new selection's fields never share state with the old one's, and a selection change purges at once, before anything is drawn. Tested (ids differ by generation). |
+| 3 | Med | The round-50 `ask` woke the panel *before* publishing the question, so the repaint could come and go with nothing to show | **Confirmed; introduced by round 50.** The question is published, the lock released, then the panel is woken. Tested: by wake-up time the question is in place. |
+| 4 | Med | Clicking the already-selected workflow dropped its finished run (Resume, timeline, exports) | **Confirmed.** Clicking the current row changes nothing. |
+| 5 | Low | A failed export rollback was ignored, so a later suffix could succeed with an orphan file left behind | **Confirmed.** A rollback that fails returns an error naming the file left behind. Not tested (removal cannot be made to fail portably). |
+
+Mutants (3, each alone, restored): all caught. Waking the panel inside the lock deadlocks its test; that hung test
+process was ended and counted as caught. Items 4 and 5 are inline and argued, not tested. **Not yet reviewed again;
+still not looked at on screen.**
