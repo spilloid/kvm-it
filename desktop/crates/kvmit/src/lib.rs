@@ -8,6 +8,7 @@ pub mod library;
 pub mod rec_ui;
 pub mod session;
 pub mod video_state;
+pub mod wf_view;
 pub mod syskeys;
 pub mod theme;
 pub mod uistate;

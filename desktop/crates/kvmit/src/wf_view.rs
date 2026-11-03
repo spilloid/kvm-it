@@ -1,0 +1,179 @@
+//! What the workflow panel shows, derived from a run's trace (no egui widgets, no I/O), so it is unit-tested like
+//! `uistate`: the state chip, the transition timeline, and the names of exported files. `gui.rs` only draws these.
+use crate::uistate::Health;
+use kvmit_script::workflow::{TraceEntry, WorkflowEvent};
+
+/// The current state, from the trace: the last state entered, and how the run stands.
+pub fn state_chip(trace: &[TraceEntry], running: bool) -> (Health, String) {
+    let state = trace.iter().rev().find_map(|t| match &t.event {
+        WorkflowEvent::StateEntered { state, .. } => Some(state.as_str()),
+        _ => None,
+    });
+    let last = trace.last().map(|t| &t.event);
+    match (last, state) {
+        (Some(WorkflowEvent::RunCompleted { state }), _) => (Health::Good, format!("Done: {state}")),
+        (Some(WorkflowEvent::Stopped { .. }), Some(s)) => (Health::Bad, format!("Stopped in {s}")),
+        (Some(WorkflowEvent::Stopped { .. }), None) => (Health::Bad, "Stopped before the first screen".into()),
+        (_, Some(s)) if running => {
+            let attempt = trace.iter().rev().find_map(|t| match &t.event {
+                WorkflowEvent::ActionAttempted { state, attempt, .. } if state == s => Some(*attempt),
+                WorkflowEvent::StateEntered { .. } => Some(0),
+                _ => None,
+            });
+            match attempt {
+                Some(n) if n > 1 => (Health::Working, format!("{s} (attempt {n})")),
+                _ => (Health::Working, s.to_string()),
+            }
+        }
+        (_, None) if running => (Health::Working, "Looking at the screen…".into()),
+        (_, Some(s)) => (Health::Idle, s.to_string()),
+        (_, None) => (Health::Idle, "Not started".into()),
+    }
+}
+
+/// One line of the timeline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    /// Seconds since the run started.
+    pub at: f64,
+    pub text: String,
+    pub health: Health,
+}
+
+/// The events worth a line, in order. Observations and context changes are left to the inspector.
+pub fn timeline(trace: &[TraceEntry]) -> Vec<Row> {
+    trace
+        .iter()
+        .filter_map(|t| {
+            let (text, health) = match &t.event {
+                WorkflowEvent::StateEntered { state, reason, .. } => (format!("Entered {state} ({reason})"), Health::Idle),
+                WorkflowEvent::ActionAttempted { state, attempt, steps, dry_run } => (
+                    format!(
+                        "{} {steps} step(s) in {state}{}",
+                        if *dry_run { "Would send" } else { "Sent" },
+                        if *attempt > 1 { format!(", attempt {attempt}") } else { String::new() }
+                    ),
+                    Health::Working,
+                ),
+                WorkflowEvent::TransitionVerified { from, to, confidence, .. } => {
+                    (format!("Verified {from} → {to} ({:.0}% match)", confidence * 100.0), Health::Good)
+                }
+                WorkflowEvent::TenantVerified { tenant, confidence, .. } => {
+                    (format!("Tenant {tenant} confirmed ({:.0}% match)", confidence * 100.0), Health::Good)
+                }
+                WorkflowEvent::GuardChecked { state, ok: false, detail } => {
+                    (format!("Check failed in {state}: {detail}"), Health::Bad)
+                }
+                WorkflowEvent::HumanGateRequested { message, approved, .. } => (
+                    format!("Asked: {message} — {}", if *approved { "yes" } else { "no" }),
+                    if *approved { Health::Idle } else { Health::Bad },
+                ),
+                WorkflowEvent::StateTimedOut { state, attempts } => {
+                    (format!("{state}: the screen did not move on after {attempts} attempt(s)"), Health::Bad)
+                }
+                WorkflowEvent::Stopped { reason, .. } => (format!("Stopped: {reason}"), Health::Bad),
+                WorkflowEvent::RunCompleted { state } => (format!("Completed in {state}"), Health::Good),
+                _ => return None,
+            };
+            Some(Row { at: t.at_ms as f64 / 1000.0, text, health })
+        })
+        .collect()
+}
+
+/// File names for a run's exports, from the workflow name (made safe for a file name) and a local timestamp.
+pub fn export_stem(workflow: &str, stamp: &str) -> String {
+    let safe: String = workflow
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c.to_ascii_lowercase() } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let safe = if safe.is_empty() { "workflow".to_string() } else { safe.chars().take(60).collect() };
+    format!("{safe}-{stamp}")
+}
+
+/// A run's outcome for the run-log header: the operator stopping it is Aborted, anything else Failed.
+pub fn outcome(result: &Result<(), kvmit_script::WorkflowError>) -> crate::uistate::RunOutcome {
+    use crate::uistate::RunOutcome;
+    use kvmit_script::WorkflowError;
+    match result {
+        Ok(()) => RunOutcome::Finished,
+        Err(e @ (WorkflowError::Cancelled | WorkflowError::GateDeclined { .. } | WorkflowError::ResumeDeclined { .. })) => {
+            RunOutcome::Aborted(e.to_string())
+        }
+        Err(e) => RunOutcome::Failed(e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::uistate::RunOutcome;
+    use kvmit_script::WorkflowError;
+
+    fn at(ms: u64, event: WorkflowEvent) -> TraceEntry {
+        TraceEntry { at_ms: ms, event }
+    }
+    fn entered(s: &str) -> WorkflowEvent {
+        WorkflowEvent::StateEntered { state: s.into(), from: None, reason: "observed at start".into() }
+    }
+
+    #[test]
+    fn the_chip_follows_the_run() {
+        assert_eq!(state_chip(&[], false), (Health::Idle, "Not started".into()));
+        assert_eq!(state_chip(&[], true).0, Health::Working);
+        let mut t = vec![at(0, entered("REGION"))];
+        assert_eq!(state_chip(&t, true), (Health::Working, "REGION".into()));
+        t.push(at(10, WorkflowEvent::ActionAttempted { state: "REGION".into(), attempt: 2, steps: 1, dry_run: false }));
+        assert_eq!(state_chip(&t, true), (Health::Working, "REGION (attempt 2)".into()));
+        t.push(at(20, WorkflowEvent::Stopped { state: Some("REGION".into()), reason: "x".into() }));
+        assert_eq!(state_chip(&t, false), (Health::Bad, "Stopped in REGION".into()));
+        let done = vec![at(0, entered("A")), at(5, WorkflowEvent::RunCompleted { state: "A".into() })];
+        assert_eq!(state_chip(&done, false), (Health::Good, "Done: A".into()));
+        let early = vec![at(0, WorkflowEvent::Stopped { state: None, reason: "x".into() })];
+        assert_eq!(state_chip(&early, false).1, "Stopped before the first screen");
+    }
+
+    #[test]
+    fn the_timeline_keeps_the_events_that_matter() {
+        let t = vec![
+            at(0, WorkflowEvent::Started { workflow: "w".into(), dry_run: false, resumed_from: None }),
+            at(100, entered("REGION")),
+            at(1500, WorkflowEvent::ActionAttempted { state: "REGION".into(), attempt: 1, steps: 2, dry_run: true }),
+            at(3000, WorkflowEvent::TransitionVerified { from: "REGION".into(), to: "KEYBOARD".into(), confidence: 0.995, duration_ms: 1 }),
+            at(3000, WorkflowEvent::ContextChanged { key: "derived.x".into(), from: None, to: "y".into() }),
+            at(9000, WorkflowEvent::StateTimedOut { state: "KEYBOARD".into(), attempts: 1 }),
+        ];
+        let rows = timeline(&t);
+        let texts: Vec<&str> = rows.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "Entered REGION (observed at start)",
+                "Would send 2 step(s) in REGION",
+                "Verified REGION → KEYBOARD (100% match)",
+                "KEYBOARD: the screen did not move on after 1 attempt(s)"
+            ]
+        );
+        assert_eq!(rows[2].health, Health::Good);
+        assert_eq!(rows[3].health, Health::Bad);
+        assert_eq!(rows[1].at, 1.5);
+    }
+
+    #[test]
+    fn export_names_are_safe_file_names() {
+        assert_eq!(export_stem("Windows 11 OOBE (Autopilot)", "20261102-1530"), "windows-11-oobe-autopilot-20261102-1530");
+        assert_eq!(export_stem("../../etc/passwd", "s"), "etc-passwd-s");
+        assert_eq!(export_stem("", "s"), "workflow-s");
+    }
+
+    #[test]
+    fn declining_or_aborting_is_not_a_failure() {
+        assert_eq!(outcome(&Ok(())), RunOutcome::Finished);
+        assert!(matches!(outcome(&Err(WorkflowError::Cancelled)), RunOutcome::Aborted(_)));
+        assert!(matches!(outcome(&Err(WorkflowError::GateDeclined { state: "A".into() })), RunOutcome::Aborted(_)));
+        assert!(matches!(outcome(&Err(WorkflowError::NoFrameNumbers)), RunOutcome::Failed(_)));
+    }
+}

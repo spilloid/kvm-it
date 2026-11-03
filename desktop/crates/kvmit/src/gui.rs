@@ -156,6 +156,19 @@ pub struct App {
     type_text: String,
     type_secret: bool,
     flash: Option<crate::flashwiz::Wizard>,
+    /// The selected workflow (`[workflow]` entries), its prompted secrets, and its latest run.
+    workflow: Option<kvmit_script::Workflow>,
+    wf_secrets: BTreeMap<String, String>,
+    wf_run: Option<Arc<Mutex<WfShared>>>,
+}
+
+/// What a workflow run shares with the panel while it runs, and keeps once it ends.
+#[derive(Default)]
+struct WfShared {
+    trace: Vec<kvmit_script::workflow::TraceEntry>,
+    inspect: Vec<kvmit_script::workflow::VarView>,
+    /// Set when the run ends: everything the exports need.
+    report: Option<kvmit_script::WorkflowReport>,
 }
 
 impl App {
@@ -204,6 +217,9 @@ impl App {
             type_text: String::new(),
             type_secret: false,
             flash: None,
+            workflow: None,
+            wf_secrets: BTreeMap::new(),
+            wf_run: None,
             cfg,
         };
         // Zero-step reconnect: the last adapter and capture device come back on their own.
@@ -650,6 +666,21 @@ impl App {
 
     fn select_script(&mut self, i: usize) {
         self.selected = Some(i);
+        // A workflow's secrets are cleared whenever the selection changes: nothing typed for one carries to another.
+        self.wf_secrets.clear();
+        self.workflow = None;
+        if self.library[i].workflow {
+            self.script = None;
+            self.trust_ack = false;
+            match kvmit_script::Workflow::parse(&self.library[i].source) {
+                Ok(w) => {
+                    self.script_err = None;
+                    self.workflow = Some(w);
+                }
+                Err(e) => self.script_err = Some(e),
+            }
+            return;
+        }
         self.trust_ack = false;
         self.preview = None;
         self.preview_key = None;
@@ -744,6 +775,240 @@ impl App {
         self.run_log.clear();
         self.run_handle = Some(handle);
         true
+    }
+
+    /// Start a workflow run (or a dry run, which sends nothing but still watches the screen); returns whether it started.
+    /// It shares the script run's handle, so Esc, Abort, the confirm dialog and the run log behave the same.
+    fn start_workflow(
+        &mut self,
+        wf: kvmit_script::Workflow,
+        base_dir: std::path::PathBuf,
+        secrets: Vars,
+        dry: bool,
+        resume: Option<kvmit_script::Checkpoint>,
+        ctx: egui::Context,
+    ) -> bool {
+        let dev = if dry {
+            if self.run_handle.as_ref().is_some_and(|r| r.running()) {
+                self.set_notice("A script is already running: abort it first (Esc).");
+                return false;
+            }
+            None
+        } else {
+            let connected = self.device();
+            if let Some(why) = uistate::send_block_reason(connected.is_some(), self.input_idle()) {
+                self.set_notice(why);
+                return false;
+            }
+            connected
+        };
+        if !dry {
+            self.end_capture(&ctx);
+        }
+        let handle = RunHandle {
+            cancel: Arc::new(AtomicBool::new(false)),
+            done: Arc::new(AtomicBool::new(false)),
+            log: Arc::default(),
+            confirm: Arc::default(),
+            dry,
+            outcome: Arc::default(),
+        };
+        let shared = Arc::new(Mutex::new(WfShared::default()));
+        let (cancel, done, log, confirm, outcome) =
+            (handle.cancel.clone(), handle.done.clone(), handle.log.clone(), handle.confirm.clone(), handle.outcome.clone());
+        let (rt, capture, shared2) = (self.rt.handle().clone(), self.capture.clone(), shared.clone());
+        std::thread::spawn(move || {
+            let ctx3 = ctx.clone();
+            let mut host = ScriptHost {
+                rt,
+                dev,
+                capture: Some(capture),
+                base_dir,
+                cancel,
+                confirm: Box::new(move |msg| {
+                    let (tx, rx) = std_mpsc::channel();
+                    *confirm.lock().unwrap() = Some((msg.to_string(), tx));
+                    ctx3.request_repaint();
+                    rx.recv().unwrap_or(false)
+                }),
+                // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
+                on_event: Box::new(|_| {}),
+            };
+            let mut opts = kvmit_script::WorkflowOptions::default();
+            opts.run.dry_run = dry;
+            let (log2, ctx4, sh) = (log.clone(), ctx.clone(), shared2.clone());
+            let report = kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume.as_ref(), &mut |t, c| {
+                let mut s = sh.lock().unwrap();
+                s.trace.push(t.clone());
+                s.inspect = c.inspect();
+                if let Some(row) = crate::wf_view::timeline(std::slice::from_ref(t)).pop() {
+                    log2.lock().unwrap().push(row.text);
+                }
+                ctx4.request_repaint();
+            });
+            *outcome.lock().unwrap() = Some(crate::wf_view::outcome(&report.result));
+            {
+                let mut s = shared2.lock().unwrap();
+                s.inspect = report.context.inspect();
+                s.report = Some(report);
+            }
+            done.store(true, Ordering::SeqCst);
+            ctx.request_repaint();
+        });
+        self.run_log.clear();
+        self.run_handle = Some(handle);
+        self.wf_run = Some(shared);
+        true
+    }
+
+    /// The selected workflow: what it will do, its secrets, run controls, and the live state, timeline and variables.
+    fn workflow_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, wf: kvmit_script::Workflow, sel: usize) {
+        ui.separator();
+        ui.strong(if wf.name.is_empty() { "Workflow" } else { wf.name.as_str() });
+        if !wf.description.is_empty() {
+            ui.label(&wf.description);
+        }
+        let path: Vec<&str> = wf.states.iter().map(|s| s.name.as_str()).collect();
+        ui.small(format!("States: {}", path.join(" · ")));
+        if !wf.config.is_empty() {
+            egui::CollapsingHeader::new("Approved profile").id_salt("wf_config").show(ui, |ui| {
+                egui::Grid::new("wf_config_grid").striped(true).show(ui, |ui| {
+                    for (k, v) in &wf.config {
+                        ui.label(k);
+                        ui.monospace(v);
+                        ui.end_row();
+                    }
+                });
+            });
+        }
+        for (name, prompt) in &wf.secrets {
+            let v = self.wf_secrets.entry(name.clone()).or_default();
+            ui.horizontal(|ui| {
+                ui.label(prompt);
+                ui.add(egui::TextEdit::singleline(v).password(true));
+            });
+        }
+        if !wf.secrets.is_empty() {
+            ui.small("Secrets: held in memory only, never saved, logged or exported.");
+        }
+        let external = self.library[sel].path.is_some();
+        if external {
+            ui.checkbox(&mut self.trust_ack, "I wrote or reviewed this workflow — it will type into the target");
+        }
+        let running = self.run_handle.as_ref().is_some_and(|r| r.running());
+        let base = self.library[sel].path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.cfg.script_dir());
+        let secrets: Vars = self.wf_secrets.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let missing = wf.secrets.keys().find(|k| !secrets.contains_key(*k)).cloned();
+        let why_ready = if external && !self.trust_ack {
+            Some("Tick \"I wrote or reviewed this workflow\" first.".to_string())
+        } else {
+            missing.map(|k| format!("Enter {} first.", wf.secrets.get(&k).cloned().unwrap_or(k)))
+        };
+        let busy = running.then(|| "A script is already running.".to_string());
+        let why_run = why_ready.clone().or(busy.clone()).or(uistate::send_block_reason(self.device().is_some(), self.input_idle()).map(str::to_string));
+        let why_dry = busy.clone().or(if self.capture.lock().unwrap().is_none() {
+            Some("Open a video source first: a dry run still watches the screen.".to_string())
+        } else {
+            None
+        });
+        // A stopped run with a known state can be resumed: the engine looks at the screen again first, never replays.
+        let checkpoint = (!running)
+            .then_some(self.wf_run.as_ref())
+            .flatten()
+            .and_then(|s| s.lock().unwrap().report.as_ref().filter(|r| r.result.is_err()).and_then(|r| r.checkpoint(&wf)));
+        ui.horizontal(|ui| {
+            let r = ui.add_enabled(why_run.is_none(), egui::Button::new("▶ Run"));
+            if let Some(w) = &why_run {
+                r.clone().on_disabled_hover_text(w);
+            }
+            if r.clicked() {
+                self.start_workflow(wf.clone(), base.clone(), secrets.clone(), false, None, ctx.clone());
+            }
+            let r = ui.add_enabled(why_dry.is_none(), egui::Button::new("Dry run"));
+            if let Some(w) = &why_dry {
+                r.clone().on_disabled_hover_text(w);
+            }
+            if r.clicked() {
+                self.start_workflow(wf.clone(), base.clone(), secrets.clone(), true, None, ctx.clone());
+            }
+            if let Some(cp) = &checkpoint {
+                let r = ui.add_enabled(why_run.is_none(), egui::Button::new(format!("Resume from {}", cp.state)));
+                r.clone().on_hover_text("Looks at the screen first; continues only if it shows that state or one that may follow it.");
+                if let Some(w) = &why_run {
+                    r.clone().on_disabled_hover_text(w);
+                }
+                if r.clicked() {
+                    self.start_workflow(wf.clone(), base.clone(), secrets.clone(), false, Some(cp.clone()), ctx.clone());
+                }
+            }
+            let r = ui.add_enabled(running, egui::Button::new("■ Abort"));
+            r.clone().on_hover_text("Esc").on_disabled_hover_text("Nothing is running.");
+            if r.clicked() {
+                if let Some(h) = &self.run_handle {
+                    h.abort();
+                }
+            }
+        });
+        let Some(shared) = self.wf_run.clone() else { return };
+        let (chip_state, rows, inspect, exports) = {
+            let s = shared.lock().unwrap();
+            let exports = s.report.as_ref().map(|r| {
+                (
+                    kvmit_script::workflow::trace_jsonl(r),
+                    kvmit_script::workflow::trace_markdown(&wf, r),
+                )
+            });
+            (crate::wf_view::state_chip(&s.trace, running), crate::wf_view::timeline(&s.trace), s.inspect.clone(), exports)
+        };
+        ui.horizontal(|ui| {
+            ui.label("State:");
+            indicator(ui, chip_state.0, chip_state.1);
+        });
+        egui::CollapsingHeader::new("Timeline").id_salt("wf_timeline").default_open(true).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("wf_timeline_scroll").max_height(160.0).stick_to_bottom(true).show(ui, |ui| {
+                for row in &rows {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.monospace(format!("{:>6.1}s", row.at));
+                        let color = health_color(row.health, ui);
+                        ui.colored_label(color, &row.text);
+                    });
+                }
+            });
+        });
+        egui::CollapsingHeader::new("Variables").id_salt("wf_vars").show(ui, |ui| {
+            egui::Grid::new("wf_vars_grid").striped(true).show(ui, |ui| {
+                ui.strong("Where");
+                ui.strong("Name");
+                ui.strong("Value");
+                ui.end_row();
+                for v in &inspect {
+                    ui.label(format!("{} ({:?})", v.namespace, v.provenance).to_lowercase());
+                    ui.monospace(&v.key);
+                    ui.label(&v.value);
+                    ui.end_row();
+                }
+            });
+            ui.small("Prompted secrets are never listed.");
+        });
+        if let Some((jsonl, md)) = exports.filter(|_| !running) {
+            ui.horizontal(|ui| {
+                if ui.button("Save trace and notes").on_hover_text("JSONL trace and Markdown notes, in the scripts folder. No secrets.").clicked() {
+                    let dir = self.cfg.script_dir();
+                    let stem = crate::wf_view::export_stem(&wf.name, &kvmit_record::naming::stamp_now());
+                    let saved = std::fs::create_dir_all(&dir)
+                        .and_then(|_| std::fs::write(dir.join(format!("{stem}.trace.jsonl")), &jsonl))
+                        .and_then(|_| std::fs::write(dir.join(format!("{stem}.notes.md")), &md));
+                    match saved {
+                        Ok(()) => self.set_notice(format!("Saved {stem}.trace.jsonl and {stem}.notes.md in {}", dir.display())),
+                        Err(e) => self.set_notice(format!("Could not save the trace: {e}")),
+                    }
+                }
+                if ui.button("Copy notes").on_hover_text("Markdown for a ticket. No secrets.").clicked() {
+                    ctx.copy_text(md.clone());
+                    self.set_notice("Notes copied.");
+                }
+            });
+        }
     }
 }
 
@@ -1262,6 +1527,8 @@ impl App {
             self.library = library::load_all(&self.cfg.script_dir());
             self.selected = None;
             self.script = None;
+            self.workflow = None;
+            self.wf_secrets.clear();
             // nothing of the previous selection may linger
             self.script_err = None;
             self.preview = None;
@@ -1272,6 +1539,9 @@ impl App {
         ui.small(format!("Folder: {}", self.cfg.script_dir().display()));
         if let Some(e) = &self.script_err {
             ui.colored_label(theme::palette(ui.visuals().dark_mode).bad_text, e);
+        }
+        if let (Some(wf), Some(sel)) = (self.workflow.clone(), self.selected) {
+            self.workflow_ui(ui, ctx, wf, sel);
         }
         if let (Some(script), Some(sel)) = (self.script.clone(), self.selected) {
             ui.separator();

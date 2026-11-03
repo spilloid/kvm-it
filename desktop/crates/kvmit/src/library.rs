@@ -1,5 +1,5 @@
 //! Script library: built-in examples plus plain files in the user's script folder.
-use kvmit_script::Script;
+use kvmit_script::{Script, Workflow};
 use std::path::{Path, PathBuf};
 
 pub struct Builtin {
@@ -19,20 +19,38 @@ pub struct Entry {
     pub path: Option<PathBuf>, // None = built-in
     pub source: String,
     pub error: Option<String>,
+    /// A stateful workflow (`workflow_format = 1`) rather than a linear script.
+    pub workflow: bool,
+}
+
+/// Whether a file is a workflow: it says `workflow_format` at the top level.
+pub fn is_workflow(source: &str) -> bool {
+    source.lines().any(|l| l.trim_start().starts_with("workflow_format"))
 }
 
 pub fn load_all(dir: &Path) -> Vec<Entry> {
     let mut out: Vec<Entry> = BUILTINS
         .iter()
-        .map(|b| Entry { name: format!("[built-in] {}", b.file), path: None, source: b.source.to_string(), error: None })
+        .map(|b| Entry {
+            name: format!("[built-in] {}", b.file),
+            path: None,
+            source: b.source.to_string(),
+            error: None,
+            workflow: false,
+        })
         .collect();
     if let Ok(rd) = std::fs::read_dir(dir) {
         let mut files: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
         files.sort();
         for p in files {
             let source = std::fs::read_to_string(&p).unwrap_or_default();
-            let error = Script::parse(&source).err();
-            out.push(Entry { name: p.file_name().unwrap().to_string_lossy().into_owned(), path: Some(p), source, error });
+            let workflow = is_workflow(&source);
+            let error = if workflow { Workflow::parse(&source).err() } else { Script::parse(&source).err() };
+            let mut name = p.file_name().unwrap().to_string_lossy().into_owned();
+            if workflow {
+                name = format!("[workflow] {name}");
+            }
+            out.push(Entry { name, path: Some(p), source, error, workflow });
         }
     }
     out
