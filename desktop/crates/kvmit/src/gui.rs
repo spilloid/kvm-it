@@ -200,11 +200,12 @@ fn secret_field_id(generation: u64, name: &str) -> egui::Id {
     egui::Id::new(("kvmit-workflow-secret", generation, name))
 }
 
-/// Which library entry a run came from: its file path, or a built-in's name.
-fn entry_source(e: &Entry) -> String {
+/// Which library entry a run came from: its file path (compared exactly, not through a display string, which would
+/// merge distinct non-Unicode names), or a built-in's name.
+fn entry_source(e: &Entry) -> crate::wf_view::Source {
     match &e.path {
-        Some(p) => format!("file:{}", p.display()),
-        None => format!("builtin:{}", e.name),
+        Some(p) => crate::wf_view::Source::File(p.clone()),
+        None => crate::wf_view::Source::Builtin(e.name.clone()),
     }
 }
 
@@ -223,7 +224,7 @@ struct WfShared {
     /// ran, and only a live run's checkpoint can seed a live resume.
     wf: kvmit_script::Workflow,
     /// Which library entry it came from (its file, or its built-in name).
-    source: String,
+    source: crate::wf_view::Source,
     dry: bool,
     trace: Vec<kvmit_script::workflow::TraceEntry>,
     inspect: Vec<kvmit_script::workflow::VarView>,
@@ -858,7 +859,7 @@ impl App {
     fn start_workflow(
         &mut self,
         // The definition and the library entry it came from: they travel together.
-        (wf, source): (kvmit_script::Workflow, String),
+        (wf, source): (kvmit_script::Workflow, crate::wf_view::Source),
         base_dir: std::path::PathBuf,
         secrets: Vars,
         dry: bool,
