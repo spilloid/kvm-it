@@ -1020,4 +1020,10 @@ wake-after-publish, re-click. Remaining: 1 Medium, 1 Low, both confirmed. Fixed 
 | 1 | Med | The source key was `path.display()`, which is lossy: distinct non-Unicode file names on Linux gave the same key | **Confirmed.** The source is `Source::File(PathBuf)` or `Source::Builtin(name)`, compared exactly. Unix-only test (runs in CI): two such names display alike yet compare different. |
 | 2 | Low | After a write failure, the rollback stopped at the first failed removal and named only that file | **Confirmed; introduced by round 51.** Both removals are attempted; every file left behind is named with the original error. Not tested (removal cannot be made to fail portably). |
 
-**Not yet reviewed again; still not looked at on screen.**
+## 2026-11-02 - Round-52 fixes (PR #53): review round 53 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static, over `d7c877a` and `6ce861e`. **SIGN-OFF.** Both round-52 findings judged complete (exact
+source keys; both rollback removals attempted and every orphan named), and "no additional concrete defect or regression
+found in the reviewed range." CI on #53 failed only because `THIRD_PARTY_LICENSES.html` was stale (its input hash
+changed with #50's manifest edit; the listing itself was unchanged); restamped in a follow-up. The Unix-only
+`sources_compare_paths_exactly` passed on macOS. **Still not looked at on screen.**
