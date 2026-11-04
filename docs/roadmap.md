@@ -17,7 +17,7 @@ Status key: done = built and software-verified; **hw?** = built, awaiting verifi
 | 9 | Live keyboard/mouse capture | built; **hw?** |
 | 10 | Macros + native script engine | host-tested |
 | 10b | Screen-aware `wait_for`, `confirm`, DuckyScript import, dry-run | host-tested on synthetic frames; not on real OOBE |
-| 10c | Stateful workflows (engine, app, CLI), Windows 11 provisioning template | host-tested; first four setup screens VM-verified; the rest not run (0.5.0) |
+| 10c | Stateful workflows (engine, app, CLI), Windows 11 provisioning template | host-tested; work-account path VM-verified from the region screen to the sign-in page; signing in onwards and Autopilot not run (0.5.0) |
 | 11 | Pairing window, bond, BOOT trust reset | done — hardware-verified (15 s power-on window, BOOT window, 10 s trust reset, LED); residual risk in docs/security.md |
 | 12 | Hotplug/reconnect hardening | auto-reconnect built; connect bounded so a power-cycled adapter cannot stall it (0.5.0, not yet run against a power cycle); soak testing outstanding |
 | 13 | Linux release build | done: AppImage since 0.2.1, built and attached by CI |

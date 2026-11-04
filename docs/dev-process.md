@@ -1164,3 +1164,10 @@ resume sends nothing and saves nothing).
 | # | Sev | Finding | Verdict and fix |
 |---|---|---|---|
 | 1 | Low | A refused resume whose checkpoint could not be put back, or whose lock could not be removed, said only "the checkpoint changed" | **Confirmed; introduced by round 60.** `release_claim` attempts both and reports each failure with the file it left; the refusal carries it. |
+
+## 2026-11-04 - Round-61 fix (`667bce4`): review round 62 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static, over `667bce4` and `main...HEAD`. **SIGN-OFF.** The round-61 Low judged complete; no
+defect introduced by it; "no remaining High or Medium defect relative to main substantiated with a concrete failure
+scenario"; the release's verification claims are supported by this log. One note: the roadmap row understated the VM
+coverage; corrected. Eight review rounds (55-62) for this release; every finding confirmed and fixed.
