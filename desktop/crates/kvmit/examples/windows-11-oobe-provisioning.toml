@@ -1,6 +1,6 @@
 workflow_format = 1
 name = "windows-11-oobe-provisioning"
-description = "Windows 11 setup to the user's first sign-in: Windows Autopilot (user-driven) or joining Microsoft Entra with a work or school account. TEMPLATE: REGION to NETWORK are VM-verified (25H2); every later screen is host-tested only. Save your own reference screens first (Reference screens, below)."
+description = "Windows 11 setup to the user's first sign-in: Windows Autopilot (user-driven) or joining Microsoft Entra with a work or school account. TEMPLATE: REGION to the work-or-school sign-in page are VM-verified (25H2); sign-in and every later screen are host-tested only. Save your own reference screens first (Reference screens, below)."
 # Every state may be where a run begins: each is recognised from its screen, so starting mid-way is safe.
 start = ["REGION", "KEYBOARD", "SECOND_KEYBOARD", "NETWORK", "UPDATES", "EULA", "DEVICE_NAME", "SETUP_CHOICE", "AUTOPILOT_SIGNIN", "WORK_SIGNIN", "PASSWORD"]
 match = "structure"
@@ -80,11 +80,13 @@ derive = { license = "accepted" }
 
 [[states]]
 name = "DEVICE_NAME"
-description = "Let's name your device"
+description = "Name your device (Skip: Windows keeps its generated name; Intune or Autopilot naming can set one)"
 detect = { screen = "oobe-win11/device-name.png", region = [0.52, 0.12, 0.40, 0.75] }
-manual = "Type this device's name at the target, or select Skip for now. Then select Next."
 next = ["SETUP_CHOICE", "AUTOPILOT_SIGNIN", "UPDATES"]
-timeout = "15m"
+# Focus starts in the name box; Tab moves it to Skip. (VM-verified, 25H2.)
+actions = [ { key = "TAB" }, { key = "ENTER" } ]
+timeout = "60s"
+derive = { device_name = "skipped (generated name kept)" }
 
 [[states]]
 name = "SETUP_CHOICE"
@@ -92,8 +94,9 @@ description = "How would you like to set up this device? (work or school)"
 detect = { screen = "oobe-win11/setup-choice.png", region = [0.52, 0.12, 0.40, 0.75] }
 require = { deployment_mode = "work_account" }
 next = ["WORK_SIGNIN"]
-# Down moves the selection from "personal use" to "work or school"; Enter is Next.
-actions = [ { key = "DOWN" }, { key = "ENTER" } ]
+# Nothing is selected at first: Down moves focus to "work or school", Space selects it (Next becomes enabled), Enter
+# is Next. (VM-verified, 25H2: Down alone leaves Next disabled.)
+actions = [ { key = "DOWN" }, { key = "SPACE" }, { key = "ENTER" } ]
 timeout = "60s"
 derive = { setup_for = "work or school" }
 

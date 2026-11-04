@@ -1101,3 +1101,14 @@ checkpoints, stepwise reference containment, `waiting` on same-state resume, the
 | 4 | Med | A reference named `.jpg` was saved as PNG bytes and could not be loaded back | **Confirmed.** Only `.png` names are saved (the template uses `.png` throughout). Test. |
 | 5 | Med | The writer's cancellation was not awaited, and the spawned disconnect still ran on an executor worker that a blocking backend could hold | **Confirmed by reading.** The writer is aborted and awaited (1 s), and the disconnect runs on the blocking pool, bounded at 5 s. |
 | 6 | Low | A temp screenshot left behind after a failed rename was not reported | **Confirmed.** The error names the file left behind. |
+
+## 2026-11-04 - Round-57 fixes (`72476ab`): review round 58 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: idle re-read, scripts folder creation, PNG-only names,
+leftover temp reporting, the writer/disconnect defects as reported. New: 1 High, 2 Medium; all confirmed by reading.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | The stale-checkpoint block lived on the selection, so selecting another workflow and back offered the old checkpoint again | **Confirmed; introduced by round 57.** Replaced the whole approach rather than patching its lifetime: a live run **sets the saved checkpoint aside before it sends anything** (`claim_checkpoint`, renamed to `.claimed`, never resumed) and refuses to start if it cannot. A checkpoint on disk is then always the newest run's, in this window, another or `kvmit run`. When the run ends: keys sent or completed, the claimed copy is discarded; nothing sent and nothing saved (it stopped before recognising a screen), it is put back. The block and its fields are gone. Tests. |
+| 2 | Med | A disconnect that never finished, on the blocking pool, made the runtime's shutdown wait for ever (and in the CLI that was before the checkpoint was saved) | **Confirmed by reading tokio 1.53.** The disconnect runs on a thread of its own with its own small runtime, awaited for 5 s and otherwise abandoned (it ends with the process). The CLI saves the checkpoint inside the connection, before teardown. |
+| 3 | Med | After a stale block, a later successful save never cleared it | **Confirmed**; gone with the block (finding 1). |

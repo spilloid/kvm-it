@@ -101,7 +101,7 @@ mod tests {
             }
         }
         let manual: Vec<&str> = w.states.iter().filter(|s| s.manual.is_some()).map(|s| s.name.as_str()).collect();
-        assert_eq!(manual, ["NETWORK", "DEVICE_NAME", "MFA", "PRIVACY"]);
+        assert_eq!(manual, ["NETWORK", "MFA", "PRIVACY"]);
         assert!(st("HANDOFF").terminal);
     }
 
@@ -262,7 +262,7 @@ mod tests {
             ("second-keyboard", Enter),
             ("updates", Looks(8)),
             ("license", Enter),
-            ("device-name", Looks(6)),
+            ("device-name", Enter),
             ("setup-choice", Enter),
             ("work-signin", Enter),
             ("tenant-contoso", Enter),

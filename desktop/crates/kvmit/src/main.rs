@@ -551,7 +551,23 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
             }
         })
     };
-    let report = if a.dry { go(rt().handle(), None) } else { with_device(id, cfg.clone(), |rt, dev| Ok(go(rt.handle(), Some(dev.clone()))))? };
+    // Kept as soon as the run ends, inside the connection: tearing the link down afterwards can be slow.
+    let keep = |report: &kvmit_script::WorkflowReport, claimed: Option<&std::path::Path>| {
+        wf_view::keep_checkpoint(&dir, &source, src, a.dry, &wf, report, claimed)
+    };
+    let (report, kept) = if a.dry {
+        let r = go(rt().handle(), None);
+        let k = keep(&r, None);
+        (r, k)
+    } else {
+        with_device(id, cfg.clone(), |rt, dev| {
+            // Connected; before any key: the saved checkpoint is set aside, so none older than this run can be resumed.
+            let claimed = wf_view::claim_checkpoint(&dir, &source)?;
+            let r = go(rt.handle(), Some(dev.clone()));
+            let k = keep(&r, claimed.as_deref());
+            Ok((r, k))
+        })?
+    };
     for v in secrets.values_mut() {
         zeroize::Zeroize::zeroize(v);
     }
@@ -559,10 +575,9 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     for v in report.context.inspect() {
         println!("  {:<22} {:<20} {}", format!("{} ({:?})", v.namespace, v.provenance).to_lowercase(), v.key, v.value);
     }
-    let kept = wf_view::keep_checkpoint(&dir, &source, src, a.dry, &wf, &report);
-    if let Some(msg) = kept.message {
-        let hint = if report.result.is_err() && msg.starts_with("Saved") { " (`kvmit run <file> --resume`, or Resume in the app)" } else { "" };
-        if kept.stale { eprintln!("warning: {msg}") } else { println!("{msg}{hint}") }
+    if let Some(msg) = kept {
+        let hint = if msg.starts_with("Saved") { " (`kvmit run <file> --resume`, or Resume in the app)" } else { "" };
+        println!("{msg}{hint}");
     }
     if a.save_trace {
         let jsonl = kvmit_script::workflow::trace_jsonl(&report);

@@ -48,13 +48,19 @@ pub const GATT_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 /// lock synchronously, which a pending write can hold) then holds up that task, not the caller, so the 5 s bound holds.
 async fn close_quietly(p: &Peripheral) {
     let p = p.clone();
-    // On the blocking pool, not an executor worker: if the backend blocks its thread, no other task (a writer being
-    // cancelled, the timeout itself) is held up behind it.
-    let rt = tokio::runtime::Handle::current();
-    let close = tokio::task::spawn_blocking(move || {
-        let _ = rt.block_on(p.disconnect());
+    // On a thread of its own, outside the runtime's workers and its blocking pool: a backend that blocks there holds up
+    // neither other tasks nor the runtime's shutdown (which waits for its blocking pool). The thread drives the future
+    // with a small runtime of its own; if it never finishes, it is abandoned and ends with the process.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let started = std::thread::Builder::new().name("kvmit-ble-disconnect".into()).spawn(move || {
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            let _ = rt.block_on(p.disconnect());
+        }
+        let _ = tx.send(());
     });
-    let _ = tokio::time::timeout(Duration::from_secs(5), close).await;
+    if started.is_ok() {
+        let _ = tokio::time::timeout(Duration::from_secs(5), rx).await;
+    }
 }
 
 fn err<T>(s: impl Into<String>) -> Result<T> {

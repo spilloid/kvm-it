@@ -198,8 +198,6 @@ pub struct App {
     wf_saved: Option<(String, kvmit_script::Checkpoint)>,
     /// When the saved checkpoint was last read: it is read again every second, so one saved by `kvmit run` shows up.
     wf_saved_read: Option<std::time::Instant>,
-    /// Why Resume is not offered for this selection (a run here could not save or remove its checkpoint).
-    wf_resume_blocked: Option<String>,
     /// The reference image "Save this screen as" writes (an index into the workflow's references).
     wf_snap: usize,
 }
@@ -260,8 +258,6 @@ struct WfShared {
     report: Option<kvmit_script::WorkflowReport>,
     /// The run's checkpoint has been saved or cleared and the panel has not yet read it back.
     saved_pending: bool,
-    /// The checkpoint could be neither saved nor removed: the one on disk may be older than this run.
-    saved_stale: bool,
 }
 
 impl App {
@@ -317,7 +313,6 @@ impl App {
             wf_generation: 0,
             wf_saved: None,
             wf_saved_read: None,
-            wf_resume_blocked: None,
             wf_snap: 0,
             cfg,
         };
@@ -771,7 +766,6 @@ impl App {
         self.workflow = None;
         self.wf_saved = None;
         self.wf_saved_read = None;
-        self.wf_resume_blocked = None;
         self.trust_ack = false;
         self.preview = None;
         self.preview_key = None;
@@ -924,7 +918,17 @@ impl App {
             }
             connected
         };
+        let mut claimed: Option<std::path::PathBuf> = None;
         if !dry {
+            // Before any key: the saved checkpoint is set aside, so none older than this run can be resumed later.
+            match crate::wf_view::claim_checkpoint(&files.script_dir, &files.saved) {
+                Ok(held) => claimed = held,
+                Err(e) => {
+                    self.set_notice(format!("Not started: {e}"));
+                    return false;
+                }
+            }
+            self.wf_saved = None;
             self.end_capture(&ctx);
         }
         let handle = RunHandle {
@@ -942,7 +946,6 @@ impl App {
             inspect: Vec::new(),
             report: None,
             saved_pending: false,
-            saved_stale: false,
         }));
         let (cancel, done, log, confirm, outcome) =
             (handle.cancel.clone(), handle.done.clone(), handle.log.clone(), handle.confirm.clone(), handle.outcome.clone());
@@ -973,16 +976,14 @@ impl App {
                 ctx4.request_repaint();
             });
             *outcome.lock().unwrap() = Some(crate::wf_view::outcome(&report.result));
-            let kept = crate::wf_view::keep_checkpoint(&files.script_dir, &files.saved, &files.text, dry, &wf, &report);
-            if let Some(msg) = &kept.message {
-                log.lock().unwrap().push(msg.clone());
+            if let Some(msg) = crate::wf_view::keep_checkpoint(&files.script_dir, &files.saved, &files.text, dry, &wf, &report, claimed.as_deref()) {
+                log.lock().unwrap().push(msg);
             }
             {
                 let mut s = shared2.lock().unwrap();
                 s.inspect = report.context.inspect();
                 s.report = Some(report);
                 s.saved_pending = true;
-                s.saved_stale = kept.stale;
             }
             done.store(true, Ordering::SeqCst);
             ctx.request_repaint();
@@ -1102,23 +1103,17 @@ impl App {
             saved: saved_source(&self.library[sel]),
             text: self.library[sel].source.clone(),
         };
-        // A run of this definition in the app just ended and saved (or cleared) its checkpoint: read it back once.
-        // A run of this definition in the app just ended and saved (or cleared) its checkpoint: read it back now.
-        let ended = self.wf_run.as_ref().and_then(|s| {
+        // A run of this definition in the app just ended and saved its checkpoint (or left none): read it back now.
+        let ended = self.wf_run.as_ref().is_some_and(|s| {
             let mut s = s.lock().unwrap();
             let mine = s.wf == wf && s.source == source && s.report.is_some() && s.saved_pending;
             if mine {
                 s.saved_pending = false;
             }
-            mine.then_some(s.saved_stale)
+            mine
         });
-        if ended == Some(true) {
-            // The checkpoint on disk may predate keys this run sent: never offer it in this selection.
-            self.wf_resume_blocked = Some("This run's checkpoint could not be saved, and an older one is still on disk (see the run log).".into());
-            self.wf_saved = None;
-        }
-        let due = ended.is_some() || self.wf_saved_read.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1));
-        if !running && due && self.wf_resume_blocked.is_none() {
+        let due = ended || self.wf_saved_read.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1));
+        if !running && due {
             self.wf_saved_read = Some(std::time::Instant::now());
             match crate::wf_view::load_checkpoint_raw(&files.script_dir, &files.saved, &files.text) {
                 Ok(cp) => self.wf_saved = cp,
@@ -1134,7 +1129,7 @@ impl App {
         }
         // A stopped run with a known state can be resumed: the engine looks at the screen again first, never replays.
         // What is resumable is the saved checkpoint (written by a stopped live run here or by `kvmit run`).
-        let checkpoint = if running || self.wf_resume_blocked.is_some() { None } else { self.wf_saved.clone() };
+        let checkpoint = if running { None } else { self.wf_saved.clone() };
         ui.horizontal(|ui| {
             let r = ui.add_enabled(why_run.is_none(), egui::Button::new("▶ Run"));
             if let Some(w) = &why_run {
