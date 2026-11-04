@@ -1086,3 +1086,18 @@ Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: per-writer che
 | 5 | Med | Resuming on the same waiting state cleared `waiting`, so a second stop lost the pending transition | **Confirmed; introduced by round 55.** The same-state resume keeps `waiting`. Test. |
 | 6 | Med | btleplug's WinRT disconnect takes a lock synchronously that a pending write can hold, so the 5 s timeout could not bound it | **Confirmed by reading btleplug 0.11.8.** The writer task is cancelled before disconnecting, and the disconnect runs on its own task, so a blocked backend holds up that task and not the caller. |
 | 7 | Low | getting-started promised reconnecting "within a few seconds" | **Confirmed.** Reworded: it keeps retrying; a stuck attempt gives up after 15 s; not timed on hardware. |
+
+## 2026-11-04 - Round-56 fixes (`c9f5211`): review round 57 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: the decoded secret check, text comparison of
+checkpoints, stepwise reference containment, `waiting` on same-state resume, the reconnect wording. Partial or new:
+1 High, 4 Medium, 1 Low; all confirmed by reading the code.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | If a run could not replace its checkpoint (disk full, denied), the panel read the older one back and offered it, so keys this run sent could be sent again without "send them again?" | **Confirmed; introduced by round 56** (the in-memory report used to disagree). `keep_checkpoint` returns `Kept { message, stale }`: a checkpoint that cannot be saved is removed instead; if that fails too it is `stale`, the app blocks Resume for that selection, and the CLI warns with the file to delete. |
+| 2 | Med | A checkpoint saved by `kvmit run` while the panel showed none never appeared | **Confirmed.** The panel reads the saved checkpoint again every second while idle (and at once when a run ends). |
+| 3 | Med | Save this screen as failed on a fresh install whose scripts folder did not exist yet | **Confirmed; introduced by round 56.** The workflow's folder is created first, then resolved. Test. |
+| 4 | Med | A reference named `.jpg` was saved as PNG bytes and could not be loaded back | **Confirmed.** Only `.png` names are saved (the template uses `.png` throughout). Test. |
+| 5 | Med | The writer's cancellation was not awaited, and the spawned disconnect still ran on an executor worker that a blocking backend could hold | **Confirmed by reading.** The writer is aborted and awaited (1 s), and the disconnect runs on the blocking pool, bounded at 5 s. |
+| 6 | Low | A temp screenshot left behind after a failed rename was not reported | **Confirmed.** The error names the file left behind. |

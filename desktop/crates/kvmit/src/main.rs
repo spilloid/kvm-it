@@ -559,9 +559,10 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     for v in report.context.inspect() {
         println!("  {:<22} {:<20} {}", format!("{} ({:?})", v.namespace, v.provenance).to_lowercase(), v.key, v.value);
     }
-    if let Some(msg) = wf_view::keep_checkpoint(&dir, &source, src, a.dry, &wf, &report) {
+    let kept = wf_view::keep_checkpoint(&dir, &source, src, a.dry, &wf, &report);
+    if let Some(msg) = kept.message {
         let hint = if report.result.is_err() && msg.starts_with("Saved") { " (`kvmit run <file> --resume`, or Resume in the app)" } else { "" };
-        println!("{msg}{hint}");
+        if kept.stale { eprintln!("warning: {msg}") } else { println!("{msg}{hint}") }
     }
     if a.save_trace {
         let jsonl = kvmit_script::workflow::trace_jsonl(&report);

@@ -135,6 +135,12 @@ pub fn reference_path(base: &std::path::Path, name: &str) -> Result<std::path::P
 /// destination hard-linked elsewhere is replaced, never written through. Returns where it was saved.
 pub fn save_reference(base: &std::path::Path, name: &str, w: usize, h: usize, rgba: &[u8]) -> Result<std::path::PathBuf, String> {
     let path = reference_path(base, name)?;
+    // Saved as PNG, so only a .png name reads back as what was saved.
+    if !path.extension().is_some_and(|x| x.eq_ignore_ascii_case("png")) {
+        return Err(format!("{name:?}: reference screens are saved as PNG; give the state a .png name"));
+    }
+    // The workflow's own folder (for a built-in, the scripts folder, which may not exist yet on a fresh install).
+    std::fs::create_dir_all(base).map_err(|e| e.to_string())?;
     let root = std::fs::canonicalize(base).map_err(|e| e.to_string())?;
     let outside = || format!("{name:?} leads outside the workflow's folder (through a link); not saved");
     let rel = path.strip_prefix(base).map_err(|_| outside())?;
@@ -165,10 +171,14 @@ pub fn save_reference(base: &std::path::Path, name: &str, w: usize, h: usize, rg
     let saved = kvmit_video::convert::save_png(&tmp, w, h, rgba)
         .map_err(|e| e.to_string())
         .and_then(|_| std::fs::rename(&tmp, &dest).map_err(|e| e.to_string()));
-    if saved.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    if let Err(e) = saved {
+        // Say so if the screenshot is left behind under its temporary name.
+        return Err(match std::fs::remove_file(&tmp) {
+            Err(r) if r.kind() != std::io::ErrorKind::NotFound => format!("{e}; {} was left behind: {r}", tmp.display()),
+            _ => e,
+        });
     }
-    saved.map(|_| dest)
+    Ok(dest)
 }
 
 /// Every reference image of a workflow, in file order (states, then tenants), each listed once.
@@ -370,8 +380,19 @@ pub fn clear_checkpoint(dir: &std::path::Path, source: &Source) -> std::io::Resu
     }
 }
 
+/// What keeping a run's checkpoint came to.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Kept {
+    /// What to tell the user, if anything.
+    pub message: Option<String>,
+    /// The checkpoint on disk may be older than this run (it could be neither replaced nor removed): resuming from it
+    /// could skip "send them again?" for keys this run sent, so it must not be offered.
+    pub stale: bool,
+}
+
 /// After a run: a stopped live run with a known state saves its checkpoint, a completed one clears it, and a dry run
-/// changes nothing (it sent nothing, so its attempt counts mean nothing to a live run). Returns what to tell the user.
+/// changes nothing (it sent nothing, so its attempt counts mean nothing to a live run). A checkpoint that cannot be
+/// saved is removed instead (no resume beats a wrong one); if that fails too, the result says it is stale.
 pub fn keep_checkpoint(
     dir: &std::path::Path,
     source: &Source,
@@ -379,18 +400,38 @@ pub fn keep_checkpoint(
     dry: bool,
     wf: &kvmit_script::Workflow,
     report: &kvmit_script::WorkflowReport,
-) -> Option<String> {
+) -> Kept {
+    let where_ = || checkpoint_path(dir, source).map(|p| p.display().to_string()).unwrap_or_default();
+    let stale = |what: String, e: std::io::Error| Kept {
+        message: Some(format!(
+            "{what}, and the old checkpoint could not be removed ({e}): delete {} before resuming this workflow",
+            where_()
+        )),
+        stale: true,
+    };
     if dry {
-        return None;
+        return Kept::default();
     }
     if report.result.is_ok() {
-        return clear_checkpoint(dir, source).err().map(|e| format!("Could not remove the old checkpoint: {e}"));
+        return match clear_checkpoint(dir, source) {
+            Ok(()) => Kept::default(),
+            Err(e) => stale("The run completed".into(), e),
+        };
     }
-    let cp = report.checkpoint(wf)?;
-    Some(match save_checkpoint(dir, source, text, &cp) {
-        Ok(_) => format!("Saved a checkpoint at {}: Resume continues from there after looking at the screen.", cp.state),
-        Err(e) => format!("Could not save a checkpoint: {e}"),
-    })
+    let Some(cp) = report.checkpoint(wf) else { return Kept::default() };
+    match save_checkpoint(dir, source, text, &cp) {
+        Ok(_) => Kept {
+            message: Some(format!("Saved a checkpoint at {}: Resume continues from there after looking at the screen.", cp.state)),
+            stale: false,
+        },
+        Err(e) => match clear_checkpoint(dir, source) {
+            Ok(()) => Kept {
+                message: Some(format!("Could not save a checkpoint ({e}), so this run cannot be resumed: run it again from the start.")),
+                stale: false,
+            },
+            Err(e2) => stale(format!("Could not save a checkpoint ({e})"), e2),
+        },
+    }
 }
 
 /// A run's outcome for the run-log header: the operator stopping it is Aborted, anything else Failed.
@@ -498,6 +539,9 @@ mod tests {
         let saved = save_reference(&dir, "sub/new.png", 2, 1, &[0; 8]).unwrap();
         assert!(saved.is_file() && saved.ends_with("new.png"));
         assert!(save_reference(&dir, "../escape.png", 2, 1, &[0; 8]).is_err());
+        assert!(save_reference(&dir, "screen.jpg", 2, 1, &[0; 8]).unwrap_err().contains("PNG"));
+        let fresh = dir.join("not-yet");
+        assert!(save_reference(&fresh, "first.png", 2, 1, &[0; 8]).is_ok(), "a scripts folder that does not exist yet is made");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -626,19 +670,29 @@ terminal = true
             trace: vec![],
             context: Context { current: Some("A".into()), ..Default::default() },
         };
-        assert_eq!(keep_checkpoint(&dir, &a, text, true, &wf, &stopped), None, "a dry run saves nothing");
+        assert_eq!(keep_checkpoint(&dir, &a, text, true, &wf, &stopped), Kept::default(), "a dry run saves nothing");
         assert_eq!(load_checkpoint(&dir, &a, text), Ok(None));
-        assert!(keep_checkpoint(&dir, &a, text, false, &wf, &stopped).unwrap().starts_with("Saved a checkpoint at A"));
+        assert!(keep_checkpoint(&dir, &a, text, false, &wf, &stopped).message.unwrap().starts_with("Saved a checkpoint at A"));
         assert_eq!(load_checkpoint(&dir, &a, text).unwrap().map(|c| c.state), Some("A".into()));
         assert_eq!(load_checkpoint(&dir, &b, text), Ok(None), "another source");
         assert_eq!(load_checkpoint(&dir, &a, &format!("{text}# edited
 ")), Ok(None), "the file changed since");
         let done = WorkflowReport { result: Ok(()), ..stopped.clone() };
-        assert_eq!(keep_checkpoint(&dir, &a, text, false, &wf, &done), None);
+        assert_eq!(keep_checkpoint(&dir, &a, text, false, &wf, &done), Kept::default());
         assert_eq!(load_checkpoint(&dir, &a, text), Ok(None), "a completed run clears it");
         std::fs::create_dir_all(dir.join("checkpoints")).unwrap();
         std::fs::write(checkpoint_path(&dir, &a).unwrap(), "{ not json").unwrap();
         assert!(load_checkpoint(&dir, &a, text).is_err(), "a corrupt checkpoint is reported, not ignored");
+        // A checkpoint that cannot be written (a folder is in the way of its temporary file's rename) is removed, not
+        // left to be resumed as if it were this run's.
+        std::fs::remove_file(checkpoint_path(&dir, &a).unwrap()).unwrap();
+        save_checkpoint(&dir, &a, text, &stopped.checkpoint(&wf).unwrap()).unwrap();
+        let blocker = dir.join("checkpoints-blocker");
+        std::fs::rename(dir.join("checkpoints"), &blocker).unwrap();
+        std::fs::write(dir.join("checkpoints"), b"not a folder").unwrap();
+        let k = keep_checkpoint(&dir, &a, text, false, &wf, &stopped);
+        assert!(k.message.unwrap().contains("Could not save a checkpoint"));
+        std::fs::remove_file(dir.join("checkpoints")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

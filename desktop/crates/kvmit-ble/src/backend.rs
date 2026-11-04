@@ -48,7 +48,13 @@ pub const GATT_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 /// lock synchronously, which a pending write can hold) then holds up that task, not the caller, so the 5 s bound holds.
 async fn close_quietly(p: &Peripheral) {
     let p = p.clone();
-    let _ = tokio::time::timeout(Duration::from_secs(5), tokio::spawn(async move { p.disconnect().await })).await;
+    // On the blocking pool, not an executor worker: if the backend blocks its thread, no other task (a writer being
+    // cancelled, the timeout itself) is held up behind it.
+    let rt = tokio::runtime::Handle::current();
+    let close = tokio::task::spawn_blocking(move || {
+        let _ = rt.block_on(p.disconnect());
+    });
+    let _ = tokio::time::timeout(Duration::from_secs(5), close).await;
 }
 
 fn err<T>(s: impl Into<String>) -> Result<T> {
@@ -239,7 +245,7 @@ pub struct Connection {
     peripheral: Peripheral,
     /// The task writing frames to the adapter: cancelled before disconnecting, so no write of ours is still pending
     /// (holding the backend's service lock) when the backend tears the link down.
-    writer: tokio::task::JoinHandle<()>,
+    writer: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Windows: holds the fast-connection request for as long as the link is open.
     #[cfg(windows)]
     _fast: Option<FastLink>,
@@ -252,7 +258,13 @@ impl Connection {
     /// Bounded (see [`close_quietly`]): after the adapter lost power, the platform may never confirm, and the caller's
     /// reconnect must go on.
     pub async fn disconnect(&self) {
-        self.writer.abort();
+        // Cancel our writer and wait (briefly) until it is gone, so no write of ours still holds the backend's lock
+        // when the link is torn down.
+        let writer = self.writer.lock().unwrap().take();
+        if let Some(w) = writer {
+            w.abort();
+            let _ = tokio::time::timeout(Duration::from_secs(1), w).await;
+        }
         close_quietly(&self.peripheral).await;
     }
 }
@@ -340,7 +352,7 @@ pub async fn connect(id: &str) -> Result<Connection> {
     Ok(Connection {
         io: Some(LinkIo { tx: client_tx, rx: client_rx }),
         peripheral: p,
-        writer: writer_task,
+        writer: std::sync::Mutex::new(Some(writer_task)),
         #[cfg(windows)]
         _fast: fast,
     })
