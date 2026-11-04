@@ -1133,3 +1133,13 @@ REGION → KEYBOARD → SECOND_KEYBOARD → UPDATES → DEVICE_NAME → SETUP_CH
 Not verified: typing the user name or password (no test tenant; nothing was sent to Microsoft's sign-in), MFA, privacy,
 enrolment, handoff, the tenant check, the licence screen, Autopilot; any capture card or adapter. The screenshots are
 Microsoft's UI and are not committed.
+
+## 2026-11-04 - Round-58 fixes (`925bd50`): review round 59 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: the disconnect thread, the removed block. Partial or
+new: 1 High, 1 Low; both confirmed.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | A claim gave no exclusive ownership: a second process running the same workflow found nothing to claim, sent keys, and the first then restored the older checkpoint | **Confirmed**, and it showed a design gap for running several targets at once: checkpoints were per workflow file, so runs of one file on several adapters shared one. Checkpoints are now per **workflow and adapter** (`Slot`, recorded in the file and compared on load), and a live run takes the slot's lock (a file created new) before setting its checkpoint aside and holds it until the run's checkpoint is kept. A second run of the same slot is refused, in any window or process; runs on other adapters are not affected. A lock left by a crash stays (fail closed) and the refusal names it. The CLI looks up the adapter before reading a checkpoint; a dry run without `--resume` still needs none. Tests. |
+| 2 | Low | A restore that failed was silent (and the message could say "the earlier one is kept") | **Confirmed.** The restore's result is reported with the path left behind. |

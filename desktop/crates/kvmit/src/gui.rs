@@ -465,6 +465,14 @@ impl App {
         self.cfg_update(|c| c.last_device = None);
     }
 
+    /// The connected adapter's id: checkpoints belong to a workflow on one adapter.
+    fn adapter_id(&self) -> Option<String> {
+        match &*self.link.lock().unwrap() {
+            Link::Connected { dev, id, .. } if dev.is_connected() => Some(id.clone()),
+            _ => None,
+        }
+    }
+
     fn device(&self) -> Option<Device> {
         match &*self.link.lock().unwrap() {
             Link::Connected { dev, .. } if dev.is_connected() => Some(dev.clone()),
@@ -775,11 +783,6 @@ impl App {
             match kvmit_script::Workflow::parse(&self.library[i].source) {
                 Ok(w) => {
                     self.script_err = None;
-                    let saved = saved_source(&self.library[i]);
-                    match crate::wf_view::load_checkpoint_raw(&self.cfg.script_dir(), &saved, &self.library[i].source) {
-                        Ok(cp) => self.wf_saved = cp,
-                        Err(e) => self.set_notice(format!("Could not read this workflow's saved checkpoint: {e}")),
-                    }
                     self.workflow = Some(w);
                 }
                 Err(e) => self.script_err = Some(e),
@@ -918,16 +921,25 @@ impl App {
             }
             connected
         };
-        let mut claimed: Option<std::path::PathBuf> = None;
+        // This run's slot (the workflow on the connected adapter) and its claim on it.
+        let mut slot: Option<crate::wf_view::Slot> = None;
+        let mut claim: Option<crate::wf_view::Claim> = None;
         if !dry {
-            // Before any key: the saved checkpoint is set aside, so none older than this run can be resumed later.
-            match crate::wf_view::claim_checkpoint(&files.script_dir, &files.saved) {
-                Ok(held) => claimed = held,
+            let Some(adapter) = self.adapter_id() else {
+                self.set_notice(uistate::WHY_NO_ADAPTER);
+                return false;
+            };
+            let s = crate::wf_view::Slot { source: files.saved.clone(), adapter };
+            // Before any key: the slot is locked and its saved checkpoint set aside, so none older than this run can be
+            // resumed later, and no second run of it starts meanwhile.
+            match crate::wf_view::claim_checkpoint(&files.script_dir, &s) {
+                Ok(c) => claim = c,
                 Err(e) => {
                     self.set_notice(format!("Not started: {e}"));
                     return false;
                 }
             }
+            slot = Some(s);
             self.wf_saved = None;
             self.end_capture(&ctx);
         }
@@ -976,7 +988,8 @@ impl App {
                 ctx4.request_repaint();
             });
             *outcome.lock().unwrap() = Some(crate::wf_view::outcome(&report.result));
-            if let Some(msg) = crate::wf_view::keep_checkpoint(&files.script_dir, &files.saved, &files.text, dry, &wf, &report, claimed.as_deref()) {
+            let kept = slot.as_ref().and_then(|s| crate::wf_view::keep_checkpoint(&files.script_dir, s, &files.text, dry, &wf, &report, claim.as_ref()));
+            if let Some(msg) = kept {
                 log.lock().unwrap().push(msg);
             }
             {
@@ -1112,10 +1125,15 @@ impl App {
             }
             mine
         });
+        // The checkpoint shown is the one of this workflow on the connected adapter.
+        let slot = self.adapter_id().map(|adapter| crate::wf_view::Slot { source: files.saved.clone(), adapter });
         let due = ended || self.wf_saved_read.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1));
-        if !running && due {
+        if slot.is_none() {
+            self.wf_saved = None;
+        }
+        if let (false, true, Some(slot)) = (running, due, &slot) {
             self.wf_saved_read = Some(std::time::Instant::now());
-            match crate::wf_view::load_checkpoint_raw(&files.script_dir, &files.saved, &files.text) {
+            match crate::wf_view::load_checkpoint_raw(&files.script_dir, slot, &files.text) {
                 Ok(cp) => self.wf_saved = cp,
                 Err(e) => {
                     self.wf_saved = None;
@@ -1156,7 +1174,11 @@ impl App {
                     // saved a newer one since, and resuming an older copy would skip "send them again?".
                     // The file's exact text is compared (not the parsed values, whose numbers need not read back bit
                     // for bit).
-                    match crate::wf_view::load_checkpoint_raw(&files.script_dir, &files.saved, &files.text) {
+                    let reread = match &slot {
+                        Some(slot) => crate::wf_view::load_checkpoint_raw(&files.script_dir, slot, &files.text),
+                        None => Ok(None),
+                    };
+                    match reread {
                         Ok(Some((now, _))) if now == *shown => {
                             self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), false, Some(cp.clone()), ctx.clone());
                         }

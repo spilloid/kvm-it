@@ -213,10 +213,15 @@ scripts folder. `--check` connects to nothing: it parses the file and lists ever
 `--var` is refused for workflows: their values are the `[config]` and the prompted `[secrets]`.
 
 **Resuming across runs (0.5.0):** when a live run stops in a known state, its checkpoint (no secrets, no images) is saved
-under `<scripts folder>/checkpoints/`, one per workflow file, bound to that file's exact text. **Resume** in the app and
+under `<scripts folder>/checkpoints/`, one per workflow file **and adapter** (several targets can run the same workflow at
+once, each on its own adapter, and a checkpoint is never resumed on another target), bound to that file's exact text. **Resume** in the app and
 `kvmit run <file> --resume` both use it, so a run stopped in a terminal can be resumed in the app and the other way round.
 A completed run deletes it; a dry run never writes one; an edited file never resumes an old checkpoint. Resume reads it
-again at the moment you click, so a newer checkpoint saved by another run is never overtaken by an older copy. A run that
+again at the moment you click, so a newer checkpoint saved by another run is never overtaken by an older copy. A live run
+locks its workflow-and-adapter pair and sets the saved checkpoint aside **before it sends anything**: a second run of the
+same pair is refused, and a checkpoint older than keys a run sent can never be resumed. If that run sends nothing (it
+stops before recognising a screen), the checkpoint is put back. A run that crashed leaves its lock behind; the next run
+says which file to delete, after checking the target. A run that
 stopped while waiting on a manual step, and finds on resume that the step was done (the next screen is showing), records
 that step's transition and facts and carries on; it sends nothing for it.
 
