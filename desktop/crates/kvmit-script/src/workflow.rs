@@ -1240,6 +1240,9 @@ impl Engine<'_> {
                 // Unknown (an older checkpoint) counts as everything spent in that state: ask rather than replay.
                 spent = cp.attempted.unwrap_or_else(|| cp.attempts.get(&first).copied().unwrap_or(0));
                 self.ctx.visit_attempts = spent;
+                // Still the same visit: a pending wait stays pending until a verified transition, even if this resumed
+                // run stops again before it starts watching.
+                self.ctx.visit_waiting = cp.waiting;
             }
             Some(cp) if cp.attempted.unwrap_or(0) == 0 && !cp.waiting => {
                 // Nothing was sent in that visit (it stopped at a guard, a gate or a look), so the screen moving on is
@@ -1356,6 +1359,17 @@ impl Engine<'_> {
 /// The most a single key may be held, or a gap between keys may last. Typing is the action itself; these timings
 /// only shape it, and a long one would be a pause the engine does not look through.
 pub const MAX_KEY_TIMING: Duration = Duration::from_millis(100);
+
+/// Whether any prompted secret's value appears in the workflow or the checkpoint, field by field (decoded values, not
+/// the file's text, so an escape such as `s` cannot hide one). A caller that prints anything from either checks
+/// this first; the error names only where, never the value.
+pub fn check_secrets(wf: &Workflow, secrets: &Vars, resume: Option<&Checkpoint>) -> Result<(), WorkflowError> {
+    let values = Secrets(wf.secrets.keys().filter_map(|k| secrets.get(k).cloned()).collect());
+    match secret_place(wf, &values, resume) {
+        Some(place) => Err(WorkflowError::SecretInFile { place }),
+        None => Ok(()),
+    }
+}
 
 /// Checks before a run that need no screen: timing options, the pause budget of every state, and that no prompted
 /// secret's value appears anywhere in the workflow or the checkpoint (both are published: inspector, trace, exports).

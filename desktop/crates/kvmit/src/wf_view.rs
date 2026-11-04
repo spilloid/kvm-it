@@ -129,25 +129,46 @@ pub fn reference_path(base: &std::path::Path, name: &str) -> Result<std::path::P
     Ok(base.join(p))
 }
 
-/// Save a picture as a reference image, only inside `base`: the folders on the way are created, then resolved, and
-/// must still be inside `base` (a link or junction pointing elsewhere is refused), and an existing destination must be a
-/// plain file, not a link. Returns where it was saved.
+/// Save a picture as a reference image, only inside `base`. Each folder on the way is checked before the next is
+/// created: one that resolves outside `base` (a link or junction) stops the save before anything is made there. An
+/// existing destination must be a plain file. The picture is written to a new file beside it and renamed over it, so a
+/// destination hard-linked elsewhere is replaced, never written through. Returns where it was saved.
 pub fn save_reference(base: &std::path::Path, name: &str, w: usize, h: usize, rgba: &[u8]) -> Result<std::path::PathBuf, String> {
     let path = reference_path(base, name)?;
-    let parent = path.parent().ok_or("no folder")?;
-    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    let (root, dir) = (std::fs::canonicalize(base).map_err(|e| e.to_string())?, std::fs::canonicalize(parent).map_err(|e| e.to_string())?);
-    if !dir.starts_with(&root) {
-        return Err(format!("{name:?} leads outside the workflow's folder (through a link); not saved"));
+    let root = std::fs::canonicalize(base).map_err(|e| e.to_string())?;
+    let outside = || format!("{name:?} leads outside the workflow's folder (through a link); not saved");
+    let rel = path.strip_prefix(base).map_err(|_| outside())?;
+    let mut dir = root.clone();
+    let folders: Vec<_> = rel.parent().map(|p| p.components().collect()).unwrap_or_default();
+    for c in folders {
+        if matches!(c, std::path::Component::CurDir) {
+            continue;
+        }
+        let next = dir.join(c);
+        if std::fs::symlink_metadata(&next).is_err() {
+            std::fs::create_dir(&next).map_err(|e| e.to_string())?;
+        }
+        dir = std::fs::canonicalize(&next).map_err(|e| e.to_string())?;
+        if !dir.starts_with(&root) || !dir.is_dir() {
+            return Err(outside());
+        }
     }
-    let dest = dir.join(path.file_name().ok_or("no file name")?);
+    let file = path.file_name().ok_or("no file name")?;
+    let dest = dir.join(file);
     if let Ok(m) = std::fs::symlink_metadata(&dest) {
         if !m.is_file() {
             return Err(format!("{} is a link or a folder, not a picture; not saved", dest.display()));
         }
     }
-    kvmit_video::convert::save_png(&dest, w, h, rgba).map_err(|e| e.to_string())?;
-    Ok(dest)
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let tmp = dir.join(format!(".{}.{}-{nanos}.tmp.png", file.to_string_lossy(), std::process::id()));
+    let saved = kvmit_video::convert::save_png(&tmp, w, h, rgba)
+        .map_err(|e| e.to_string())
+        .and_then(|_| std::fs::rename(&tmp, &dest).map_err(|e| e.to_string()));
+    if saved.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    saved.map(|_| dest)
 }
 
 /// Every reference image of a workflow, in file order (states, then tenants), each listed once.
@@ -321,6 +342,16 @@ pub fn save_checkpoint(
 /// The saved checkpoint for exactly this source and text, if there is one. A checkpoint of an earlier version of the
 /// file is not returned (`Ok(None)`); an unreadable one is an error, so it is reported rather than silently ignored.
 pub fn load_checkpoint(dir: &std::path::Path, source: &Source, text: &str) -> Result<Option<kvmit_script::Checkpoint>, String> {
+    Ok(load_checkpoint_raw(dir, source, text)?.map(|(_, cp)| cp))
+}
+
+/// [`load_checkpoint`], with the checkpoint file's exact text: what a later look compares to tell whether another run
+/// saved a new one in between.
+pub fn load_checkpoint_raw(
+    dir: &std::path::Path,
+    source: &Source,
+    text: &str,
+) -> Result<Option<(String, kvmit_script::Checkpoint)>, String> {
     let Some(path) = checkpoint_path(dir, source) else { return Ok(None) };
     let json = match std::fs::read_to_string(&path) {
         Ok(j) => j,
@@ -328,7 +359,7 @@ pub fn load_checkpoint(dir: &std::path::Path, source: &Source, text: &str) -> Re
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
     let saved: SavedCheckpoint = serde_json::from_str(&json).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok((saved.source == *source && saved.definition == fnv(text.as_bytes())).then_some(saved.checkpoint))
+    Ok((saved.source == *source && saved.definition == fnv(text.as_bytes())).then_some((json, saved.checkpoint)))
 }
 
 /// Forget this source's checkpoint (its run completed). A checkpoint that is not there is not an error.
@@ -470,6 +501,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn saving_over_a_hard_linked_picture_replaces_it() {
+        let root = std::env::temp_dir().join(format!("kvmit-hardlink-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (base, outside) = (root.join("wf"), root.join("outside"));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("shared.png"), b"keep").unwrap();
+        std::fs::hard_link(outside.join("shared.png"), base.join("h.png")).unwrap();
+        let saved = save_reference(&base, "h.png", 2, 1, &[0; 8]).unwrap();
+        assert_eq!(std::fs::read(outside.join("shared.png")).unwrap(), b"keep", "the other name is untouched");
+        assert_ne!(std::fs::read(saved).unwrap(), b"keep");
+        assert_eq!(std::fs::read_dir(&base).unwrap().count(), 1, "no temporary file left");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A folder inside the workflow's folder that links elsewhere is not followed when saving.
     #[cfg(unix)]
     #[test]
@@ -484,6 +531,14 @@ mod tests {
         assert!(!outside.join("x.png").exists());
         std::os::unix::fs::symlink(outside.join("y.png"), base.join("y.png")).unwrap();
         assert!(save_reference(&base, "y.png", 2, 1, &[0; 8]).is_err(), "a linked destination is refused");
+        // A folder below a link that points outside is never created out there.
+        assert!(save_reference(&base, "refs/new/deeper/z.png", 2, 1, &[0; 8]).is_err());
+        assert!(!outside.join("new").exists());
+        // A picture hard-linked to a file outside is replaced, not written through.
+        std::fs::write(outside.join("shared.png"), b"keep").unwrap();
+        std::fs::hard_link(outside.join("shared.png"), base.join("h.png")).unwrap();
+        save_reference(&base, "h.png", 2, 1, &[0; 8]).unwrap();
+        assert_eq!(std::fs::read(outside.join("shared.png")).unwrap(), b"keep");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -1071,3 +1071,18 @@ the code. Fixed on the same branch.
 | 4 | Med | Two writers shared one `.json.tmp` name, so concurrent saves could mix | **Confirmed.** Each writer creates its own temporary file (process id and time, created new), syncs it and renames it over the checkpoint. |
 | 5 | Med | A manual or waiting state that stopped (say, timed out) left `attempted = 0`, so resuming on its next screen skipped the transition and lost its facts (`network = connected`), which a later guard may need | **Confirmed; introduced by round 54.** Checkpoints carry `waiting` (the state passed its checks and was watching for the screen to move on, sending nothing); a resume that finds a permitted next screen records that transition and its facts. Never a reason to send. Older checkpoints read as not waiting. Test added. |
 | 6 | Med | After the 15 s bound, the cleanup `disconnect` itself could wait forever (CoreBluetooth waits for a callback) | **Confirmed.** Every disconnect of a failed attempt, and `Connection::disconnect` (also used after a lost link), is bounded at 5 s. |
+
+## 2026-11-04 - Round-55 fixes (`eba636a`): review round 56 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: per-writer checkpoint temp files. Partial or new:
+6 Medium, 1 Low; every finding was confirmed by reading the code (the float one by the locked `serde_json` features).
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Med | The CLI's secret check searched the file's text, so an escaped value (`pass`) passed and the decoded name was printed | **Confirmed.** `workflow::check_secrets` (the engine's field-by-field check of decoded values, workflow and checkpoint) runs before anything from either is printed. Prompt text and parse errors still come from the file before secrets exist, as in the app. Test with an escaped name. |
+| 2 | Med | After a run in the app, Resume took the in-memory report first, so a newer checkpoint saved by `kvmit run` could never be resumed; reselecting the same row did nothing | **Confirmed.** The saved checkpoint is the only thing Resume starts from; the panel reads it back when a run of that workflow ends. |
+| 3 | Med | Resume compared parsed checkpoints, and floats need not read back bit for bit, so the app could refuse its own checkpoint | **Confirmed.** The checkpoint file's exact text is compared. |
+| 4 | Med | Saving over a reference hard-linked elsewhere wrote through to the other name; folders under an outside link were created before the check | **Confirmed.** Each folder is checked before the next is created; the picture is written to a new file and renamed over the destination. Tests: hard link (all platforms), link folder and nested creation (Unix). |
+| 5 | Med | Resuming on the same waiting state cleared `waiting`, so a second stop lost the pending transition | **Confirmed; introduced by round 55.** The same-state resume keeps `waiting`. Test. |
+| 6 | Med | btleplug's WinRT disconnect takes a lock synchronously that a pending write can hold, so the 5 s timeout could not bound it | **Confirmed by reading btleplug 0.11.8.** The writer task is cancelled before disconnecting, and the disconnect runs on its own task, so a blocked backend holds up that task and not the caller. |
+| 7 | Low | getting-started promised reconnecting "within a few seconds" | **Confirmed.** Reworded: it keeps retrying; a stuck attempt gives up after 15 s; not timed on hardware. |

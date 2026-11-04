@@ -1100,3 +1100,30 @@ fn resuming_after_a_manual_step_finished_while_stopped_keeps_its_facts() {
     let old = cp.to_json().replace("\"waiting\": true,", "");
     assert!(!Checkpoint::from_json(&old).unwrap().waiting);
 }
+
+#[test]
+fn an_interrupted_resume_keeps_a_pending_wait() {
+    let w = Workflow::parse(MANUAL).unwrap();
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), ..Default::default() };
+    let cp = go(&w, &mut sim, &opts(), None).checkpoint(&w).unwrap();
+    assert!(cp.waiting);
+    // Resumed on the same screen, then stopped again before the step was done: the wait is still pending.
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), ..Default::default() };
+    let again = go(&w, &mut sim, &opts(), Some(&cp)).checkpoint(&w).unwrap();
+    assert!(again.waiting, "{again:?}");
+}
+
+#[test]
+fn the_secret_check_reads_decoded_fields() {
+    // A TOML unicode escape (backslash, u, 0073) decodes to `s`: the file's text does not contain the secret, its name does.
+    let src = MANUAL.replace("name = \"manual\"", "name = \"pa\\u0073s-word\"").replace(
+        "match = \"luma\"",
+        "match = \"luma\"\n[secrets]\nwifi = { prompt = \"Wi-Fi\" }",
+    );
+    let w = Workflow::parse(&src).unwrap();
+    let s: Vars = [("wifi".to_string(), "pass-word".to_string())].into();
+    assert!(!src.contains("pass-word"));
+    assert!(matches!(check_secrets(&w, &s, None), Err(WorkflowError::SecretInFile { .. })));
+    let s: Vars = [("wifi".to_string(), "other".to_string())].into();
+    assert_eq!(check_secrets(&w, &s, None), Ok(()));
+}

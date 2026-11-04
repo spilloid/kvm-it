@@ -43,8 +43,12 @@ pub const GATT_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Close a connection attempt that failed, without waiting forever on it: a platform that never confirms the disconnect
 /// (CoreBluetooth waits for a callback) must not stall the caller's next attempt.
+///
+/// The disconnect runs on a task of its own: a backend that blocks its thread inside it (btleplug's WinRT backend takes a
+/// lock synchronously, which a pending write can hold) then holds up that task, not the caller, so the 5 s bound holds.
 async fn close_quietly(p: &Peripheral) {
-    let _ = tokio::time::timeout(Duration::from_secs(5), p.disconnect()).await;
+    let p = p.clone();
+    let _ = tokio::time::timeout(Duration::from_secs(5), tokio::spawn(async move { p.disconnect().await })).await;
 }
 
 fn err<T>(s: impl Into<String>) -> Result<T> {
@@ -233,6 +237,9 @@ async fn find(ad: &Adapter, id: &str, wait: Duration) -> Result<Peripheral> {
 pub struct Connection {
     pub io: Option<LinkIo>,
     peripheral: Peripheral,
+    /// The task writing frames to the adapter: cancelled before disconnecting, so no write of ours is still pending
+    /// (holding the backend's service lock) when the backend tears the link down.
+    writer: tokio::task::JoinHandle<()>,
     /// Windows: holds the fast-connection request for as long as the link is open.
     #[cfg(windows)]
     _fast: Option<FastLink>,
@@ -245,6 +252,7 @@ impl Connection {
     /// Bounded (see [`close_quietly`]): after the adapter lost power, the platform may never confirm, and the caller's
     /// reconnect must go on.
     pub async fn disconnect(&self) {
+        self.writer.abort();
         close_quietly(&self.peripheral).await;
     }
 }
@@ -316,7 +324,7 @@ pub async fn connect(id: &str) -> Result<Connection> {
         // stream end = disconnect; dropping `to_client` tells the client the link is gone
     });
     let writer = p.clone();
-    tokio::spawn(async move {
+    let writer_task = tokio::spawn(async move {
         let debug = std::env::var_os("KVMIT_DEBUG").is_some();
         while let Some(frame) = from_client.recv().await {
             let t = std::time::Instant::now();
@@ -332,6 +340,7 @@ pub async fn connect(id: &str) -> Result<Connection> {
     Ok(Connection {
         io: Some(LinkIo { tx: client_tx, rx: client_rx }),
         peripheral: p,
+        writer: writer_task,
         #[cfg(windows)]
         _fast: fast,
     })

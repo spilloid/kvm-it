@@ -505,10 +505,8 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
         secrets.insert(name.clone(), v);
     }
     let saved = if a.resume { wf_view::load_checkpoint(&dir, &source, src)? } else { None };
-    let saved_json = saved.as_ref().map(|c| c.to_json()).unwrap_or_default();
-    if secrets.values().any(|v| src.contains(v.as_str()) || saved_json.contains(v.as_str())) {
-        return Err("the workflow file (or its checkpoint) contains the value of a prompted secret; remove it from the file".into());
-    }
+    // Field by field, decoded (an escape in the file cannot hide a value), as the engine checks before it publishes.
+    kvmit_script::workflow::check_secrets(&wf, &secrets, saved.as_ref())?;
     let name = if wf.name.is_empty() { "(unnamed)" } else { wf.name.as_str() };
     println!("workflow: {name}");
     if !wf.description.is_empty() {

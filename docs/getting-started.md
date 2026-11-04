@@ -176,8 +176,10 @@ From a terminal the whole run is `kvmit run <your copy>.toml` (add `--save-trace
 - **The app will not start and shows an OpenGL message:** update the graphics driver. (A virtual machine with no GPU needs a software
   OpenGL.)
 - **Video says *not opened*, or stops:** is the card plugged in, and is nothing else using it? On Windows, check the camera setting above.
-- **The adapter lost power (you moved it to another machine):** leave the app open. It reconnects by itself within a few
-  seconds of the adapter starting up again; the chip says *not connected (retrying)* meanwhile. No need to click Connect.
+- **The adapter lost power (you moved it to another machine):** leave the app open. It keeps retrying by itself and
+  reconnects once the adapter is back; the chip says *not connected (retrying)* meanwhile, and there is no need to click
+  Connect. (Since 0.5.0 a stuck attempt gives up after 15 s and the next one starts. Reconnecting after a real power
+  cycle has not been timed on hardware yet.)
 - **The adapter never appears in a scan:** replug it (15-second window) or press **BOOT**, then scan again. More in the
   [hardware guide](hardware.md).
 - **Keys stuck on the target:** *Release all keys* in the **Adapter** popup. If the app crashes, the adapter lets go of everything by

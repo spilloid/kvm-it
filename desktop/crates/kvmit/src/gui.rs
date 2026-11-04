@@ -193,7 +193,9 @@ pub struct App {
     purge_ids: Vec<egui::Id>,
     wf_generation: u64,
     /// The checkpoint saved when the selected workflow last stopped (by the app or `kvmit run`), read on selection.
-    wf_saved: Option<kvmit_script::Checkpoint>,
+    /// Kept with the file's exact text, so Resume can tell whether it changed since it was shown. It is the only thing
+    /// Resume starts from: a run in the app saves its checkpoint there too.
+    wf_saved: Option<(String, kvmit_script::Checkpoint)>,
     /// The reference image "Save this screen as" writes (an index into the workflow's references).
     wf_snap: usize,
 }
@@ -243,16 +245,17 @@ struct WfFiles {
 
 /// What a workflow run shares with the panel while it runs, and keeps once it ends.
 struct WfShared {
-    /// The definition this run ran, and whether it was a dry run: the panel shows a run only for the very definition it
-    /// ran, and only a live run's checkpoint can seed a live resume.
+    /// The definition this run ran: the panel shows a run only for the very definition it ran. (What Resume starts from
+    /// is the saved checkpoint, which only a stopped live run writes.)
     wf: kvmit_script::Workflow,
     /// Which library entry it came from (its file, or its built-in name).
     source: crate::wf_view::Source,
-    dry: bool,
     trace: Vec<kvmit_script::workflow::TraceEntry>,
     inspect: Vec<kvmit_script::workflow::VarView>,
     /// Set when the run ends: everything the exports need.
     report: Option<kvmit_script::WorkflowReport>,
+    /// The run's checkpoint has been saved or cleared and the panel has not yet read it back.
+    saved_pending: bool,
 }
 
 impl App {
@@ -769,7 +772,7 @@ impl App {
                 Ok(w) => {
                     self.script_err = None;
                     let saved = saved_source(&self.library[i]);
-                    match crate::wf_view::load_checkpoint(&self.cfg.script_dir(), &saved, &self.library[i].source) {
+                    match crate::wf_view::load_checkpoint_raw(&self.cfg.script_dir(), &saved, &self.library[i].source) {
                         Ok(cp) => self.wf_saved = cp,
                         Err(e) => self.set_notice(format!("Could not read this workflow's saved checkpoint: {e}")),
                     }
@@ -925,10 +928,10 @@ impl App {
         let shared = Arc::new(Mutex::new(WfShared {
             wf: wf.clone(),
             source,
-            dry,
             trace: Vec::new(),
             inspect: Vec::new(),
             report: None,
+            saved_pending: false,
         }));
         let (cancel, done, log, confirm, outcome) =
             (handle.cancel.clone(), handle.done.clone(), handle.log.clone(), handle.confirm.clone(), handle.outcome.clone());
@@ -966,6 +969,7 @@ impl App {
                 let mut s = shared2.lock().unwrap();
                 s.inspect = report.context.inspect();
                 s.report = Some(report);
+                s.saved_pending = true;
             }
             done.store(true, Ordering::SeqCst);
             ctx.request_repaint();
@@ -1079,27 +1083,30 @@ impl App {
         } else {
             None
         });
-        // A stopped run with a known state can be resumed: the engine looks at the screen again first, never replays.
-        // This session's own run of this definition decides; without one, the checkpoint saved when it last stopped
-        // (here or by `kvmit run`).
-        let this_run = self.wf_run.as_ref().filter(|s| {
-            let s = s.lock().unwrap();
-            s.wf == wf && s.source == source && s.report.is_some()
-        });
-        let checkpoint = if running {
-            None
-        } else if let Some(s) = this_run {
-            let s = s.lock().unwrap();
-            crate::wf_view::resume_point(s.dry, (&s.wf, &s.source), (&wf, &source), s.report.as_ref())
-        } else {
-            self.wf_saved.clone()
-        };
         let files = WfFiles {
             base_dir: base.clone(),
             script_dir: self.cfg.script_dir(),
             saved: saved_source(&self.library[sel]),
             text: self.library[sel].source.clone(),
         };
+        // A run of this definition in the app just ended and saved (or cleared) its checkpoint: read it back once.
+        let ended = self.wf_run.as_ref().is_some_and(|s| {
+            let mut s = s.lock().unwrap();
+            let mine = s.wf == wf && s.source == source && s.report.is_some() && s.saved_pending;
+            if mine {
+                s.saved_pending = false;
+            }
+            mine
+        });
+        if ended {
+            match crate::wf_view::load_checkpoint_raw(&files.script_dir, &files.saved, &files.text) {
+                Ok(cp) => self.wf_saved = cp,
+                Err(e) => self.set_notice(format!("Could not read this workflow's saved checkpoint: {e}")),
+            }
+        }
+        // A stopped run with a known state can be resumed: the engine looks at the screen again first, never replays.
+        // What is resumable is the saved checkpoint (written by a stopped live run here or by `kvmit run`).
+        let checkpoint = if running { None } else { self.wf_saved.clone() };
         ui.horizontal(|ui| {
             let r = ui.add_enabled(why_run.is_none(), egui::Button::new("▶ Run"));
             if let Some(w) = &why_run {
@@ -1115,7 +1122,7 @@ impl App {
             if r.clicked() {
                 self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), true, None, ctx.clone());
             }
-            if let Some(cp) = &checkpoint {
+            if let Some((shown, cp)) = &checkpoint {
                 let r = ui.add_enabled(why_run.is_none(), egui::Button::new(format!("Resume from {}", cp.state)));
                 r.clone().on_hover_text("Looks at the screen first; continues only if it shows that state or one that may follow it.");
                 if let Some(w) = &why_run {
@@ -1124,13 +1131,15 @@ impl App {
                 if r.clicked() {
                     // Read the saved checkpoint again now: another run (`kvmit run`, another window) may have sent keys and
                     // saved a newer one since, and resuming an older copy would skip "send them again?".
-                    match crate::wf_view::load_checkpoint(&files.script_dir, &files.saved, &files.text) {
-                        Ok(Some(now)) if now == *cp => {
-                            self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), false, Some(now), ctx.clone());
+                    // The file's exact text is compared (not the parsed values, whose numbers need not read back bit
+                    // for bit).
+                    match crate::wf_view::load_checkpoint_raw(&files.script_dir, &files.saved, &files.text) {
+                        Ok(Some((now, _))) if now == *shown => {
+                            self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), false, Some(cp.clone()), ctx.clone());
                         }
                         Ok(now) => {
                             self.wf_saved = now;
-                            self.set_notice("This workflow's checkpoint changed since it was shown (another run?). Select the workflow again to see where it stands, then Resume.");
+                            self.set_notice("This workflow's checkpoint changed since it was shown (another run saved one). The panel now shows the new one: check the target, then Resume.");
                         }
                         Err(e) => self.set_notice(format!("Could not read this workflow's saved checkpoint: {e}")),
                     }
