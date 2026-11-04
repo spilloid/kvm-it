@@ -1154,3 +1154,13 @@ Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: restore failur
 | 1 | High | Adapter ids were case-sensitive in slots but not when connecting, so `aa:…` and `AA:…` had two checkpoints and two locks | **Confirmed.** `Slot::new` trims and capitalises the id; every slot is made through it. Test. |
 | 2 | High | A resume read its checkpoint before taking the lock, so another run could send keys and save a newer one in between, and the older copy was resumed | **Confirmed** (a residual of round 59's finding 1). The resume now starts from the checkpoint the claim set aside, read under the lock (`Claim::held`), and only if its text is the one shown; otherwise the claim is given back and the resume refused (`resume_from_claim`). App and CLI. Test. |
 | 3 | Low | Switching adapters within a second could show the previous adapter's checkpoint (not resumable: the click re-read refused it) | **Confirmed.** The panel remembers whose checkpoint it shows and drops it when the slot changes. |
+
+## 2026-11-04 - Round-60 fixes (`6c424d4`): review round 61 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF**, on one Low. All three round-60 findings judged **complete**; no other
+defect found in scope (refusal branches release their claims; the GUI refuses before replacing the run; the CLI dry-run
+resume sends nothing and saves nothing).
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Low | A refused resume whose checkpoint could not be put back, or whose lock could not be removed, said only "the checkpoint changed" | **Confirmed; introduced by round 60.** `release_claim` attempts both and reports each failure with the file it left; the refusal carries it. |

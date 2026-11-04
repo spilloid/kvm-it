@@ -448,12 +448,18 @@ impl Claim {
 }
 
 /// Give a claim back without running (the run was refused after claiming): the checkpoint is put back and the slot
-/// unlocked.
-pub fn release_claim(dir: &std::path::Path, slot: &Slot, claim: Claim) {
+/// unlocked. Both are attempted; whatever failed is reported with the file it left behind.
+pub fn release_claim(dir: &std::path::Path, slot: &Slot, claim: Claim) -> Result<(), String> {
+    let mut failed = Vec::new();
     if let (Some(held), Some(path)) = (&claim.held, checkpoint_path(dir, slot)) {
-        let _ = std::fs::rename(held, path);
+        if let Err(e) = std::fs::rename(held, path) {
+            failed.push(format!("the checkpoint is left at {} ({e})", held.display()));
+        }
     }
-    let _ = std::fs::remove_file(&claim.lock);
+    if let Err(e) = std::fs::remove_file(&claim.lock) {
+        failed.push(format!("the lock {} could not be removed ({e}): delete it before running", claim.lock.display()));
+    }
+    if failed.is_empty() { Ok(()) } else { Err(failed.join("; ")) }
 }
 
 /// The checkpoint a resume starts from, taken under the slot's lock: it must be the very one that was shown (its file's
@@ -470,10 +476,13 @@ pub fn resume_from_claim(
     match claim.held(slot, text) {
         Ok(Some((now, cp))) if now == shown => Ok((Some(claim), cp)),
         other => {
-            release_claim(dir, slot, claim);
-            Err(match other {
+            let why = match other {
                 Err(e) => e,
                 _ => changed.into(),
+            };
+            Err(match release_claim(dir, slot, claim) {
+                Ok(()) => why,
+                Err(left) => format!("{why}; and {left}"),
             })
         }
     }
