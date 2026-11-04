@@ -1112,3 +1112,24 @@ leftover temp reporting, the writer/disconnect defects as reported. New: 1 High,
 | 1 | High | The stale-checkpoint block lived on the selection, so selecting another workflow and back offered the old checkpoint again | **Confirmed; introduced by round 57.** Replaced the whole approach rather than patching its lifetime: a live run **sets the saved checkpoint aside before it sends anything** (`claim_checkpoint`, renamed to `.claimed`, never resumed) and refuses to start if it cannot. A checkpoint on disk is then always the newest run's, in this window, another or `kvmit run`. When the run ends: keys sent or completed, the claimed copy is discarded; nothing sent and nothing saved (it stopped before recognising a screen), it is put back. The block and its fields are gone. Tests. |
 | 2 | Med | A disconnect that never finished, on the blocking pool, made the runtime's shutdown wait for ever (and in the CLI that was before the checkpoint was saved) | **Confirmed by reading tokio 1.53.** The disconnect runs on a thread of its own with its own small runtime, awaited for 5 s and otherwise abandoned (it ends with the process). The CLI saves the checkpoint inside the connection, before teardown. |
 | 3 | Med | After a stale block, a later successful save never cleared it | **Confirmed**; gone with the block (finding 1). |
+
+## 2026-11-04 - Provisioning template in the VM (round 54, VM)
+
+VM 120 (Windows 11 25H2, the round-40 VM) rolled back to its `oobe_region` snapshot, with an e1000e network card
+hot-plugged on `vmbr0` (authorised by the maintainer). Driven through `kvmit-video/examples/qemu_workflow.rs` with a copy
+of the template cut down to the states whose screens had been saved (`deployment_mode = "work_account"`), screens saved
+one by one as they appeared.
+
+**What the real screens showed:** with a network the network screen is skipped; "Thanks for your patience", then updates
+and "Your PC will restart before you continue"; this build shows **no licence screen**; then "Name your device" (focus in
+the name box: **Tab, Enter** is Skip); then "How would you like to set up this device?" with **nothing selected and Next
+disabled**: the template's Down, Enter would have done nothing. **Down, Space, Enter** selects work or school and goes on.
+Esc and Alt+Left do not go back from the sign-in page. The template was corrected (DEVICE_NAME is now typed, not manual).
+
+**VM-verified run** (fresh rollback, nothing done by hand, the sign-in page made terminal so nothing was typed there):
+REGION → KEYBOARD → SECOND_KEYBOARD → UPDATES → DEVICE_NAME → SETUP_CHOICE → WORK_SIGNIN, each transition verified at
+0.998-1.000, the guard on `deployment_mode` passed, completed in 408 s (265 s of it updates and the restart).
+
+Not verified: typing the user name or password (no test tenant; nothing was sent to Microsoft's sign-in), MFA, privacy,
+enrolment, handoff, the tenant check, the licence screen, Autopilot; any capture card or adapter. The screenshots are
+Microsoft's UI and are not committed.

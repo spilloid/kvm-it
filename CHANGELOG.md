@@ -22,8 +22,10 @@
   first sign-in, by Windows Autopilot (user-driven) or by joining Microsoft Entra with a work or school account, chosen by
   `deployment_mode` in its approved profile. A device showing the other path's screen stops the run before anything is
   typed; the password is typed only after the organisation's branding is checked; the licence is accepted only if the
-  profile says so. User name and password are prompted secrets. **Template:** REGION to NETWORK are VM-verified; both
-  paths are simulated end to end (host-tested); no later screen has been run on a real or virtual machine.
+  profile says so. User name and password are prompted secrets. **Template:** the work-account path is VM-verified from the region
+  screen to the work-or-school sign-in page (Windows 11 25H2, the workflow driving every screen, updates and restart
+  included); both paths are simulated end to end (host-tested); signing in and everything after it, and Autopilot, have
+  not been run.
 - **Manual workflow states** (`manual = "..."`): the operator does the step (connect the network, approve MFA on a phone),
   nothing is typed, and the run continues when the screen moves on to a permitted state. States that send nothing go
   straight to watching for the next screen, and never count as a send to replay on resume.

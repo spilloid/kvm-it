@@ -231,20 +231,24 @@ setup from the region screen to the user's first sign-in, by one of two paths ch
 | `deployment_mode` | Path |
 |---|---|
 | `autopilot` | Windows Autopilot, user-driven: the organisation's sign-in after the network, user name, password, MFA by the user, enrolment status page, handoff |
-| `work_account` | Not registered for Autopilot: licence (only if `accept_license = "yes"`), device name by hand, **Set up for work or school**, user name, password, MFA, privacy choices by hand, enrolment, handoff (Microsoft Entra join) |
+| `work_account` | Not registered for Autopilot: licence (only if `accept_license = "yes"`), device name skipped (Windows keeps its generated name), **Set up for work or school**, user name, password, MFA, privacy choices by hand, enrolment, handoff (Microsoft Entra join) |
 
 A device that shows the other path's screen stops the run before anything is typed there. The password is typed only after
 the organisation's branding is checked on the password page (`[tenants]`). The user name and password are prompted
-secrets. The network, device name, MFA and privacy screens are `manual`. Its reference images live in
+secrets. The network, MFA and privacy screens are `manual`. Its reference images live in
 `<scripts folder>/oobe-win11/`. To use it for real, copy the file into your scripts folder, set the profile and tenant,
 and save your own screens. Personal Microsoft accounts, Autopilot pre-provisioning (technician flow) and self-deploying
 mode are not covered yet.
 
 **Status: built and host-tested** against simulated targets (synthetic frames and a mocked host), including the
-provisioning template's two paths end to end, the wrong-path stop and another tenant's page. **VM-verified:** the first
-four Windows 11 25H2 screens (REGION to NETWORK). **Not verified anywhere:** every screen after the network screen, the key
-presses chosen for them (licence: Enter; work or school: Down, Enter), a real tenant, Autopilot, and any run with a
-capture card and an adapter. The app's workflow panel has not been looked at on screen. **While a run waits on a
+provisioning template's two paths end to end, the wrong-path stop and another tenant's page. **VM-verified
+(2026-11-04, Windows 11 25H2, Proxmox VM with a network card, QEMU harness):** the work-account path from the region
+screen to the work-or-school sign-in page, driven by the template itself with nothing done by hand: REGION → KEYBOARD →
+SECOND_KEYBOARD → UPDATES (updates and a restart) → DEVICE_NAME (Skip: Tab, Enter) → SETUP_CHOICE (Down, Space,
+Enter) → WORK_SIGNIN, each transition verified at 99.8-100 %, in about 7 minutes. With a network the network screen
+does not appear, and this build showed no licence screen. **Not verified anywhere:** typing the user name or password
+(the run stopped on the sign-in page), the licence, network, MFA, privacy, enrolment and handoff screens, the tenant
+check, Autopilot, and any run with a capture card and an adapter. The app's workflow panel has not been looked at on screen. **While a run waits on a
 manual step, the app's keyboard and mouse capture stays locked** (a run owns the input): do the step at the target, or
 Abort, do it through the app, and Resume.
 

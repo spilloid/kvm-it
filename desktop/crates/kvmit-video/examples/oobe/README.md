@@ -14,5 +14,9 @@ cargo run -p kvmit-video --example qemu_workflow -- root@<proxmox-host> <vmid> e
 then rename `<dir>/screen.png` to the name the state's `detect.screen` gives (`oobe-region.png`, `oobe-keyboard.png`,
 `oobe-second-keyboard.png`, `oobe-network.png`) next to the workflow file.
 
+The built-in provisioning workflow (`desktop/crates/kvmit/examples/windows-11-oobe-provisioning.toml`) was run the same
+way on 2026-11-04, with a network card added, from the region screen to the work-or-school sign-in page; its screens are
+saved as `oobe-win11/<name>.png` (the names its states give). See `docs/dev-process.md`, round 54 (VM).
+
 A run here is VM-verified, not hardware-verified: QEMU's virtual keyboard is not the adapter's USB HID, and a screendump is
 not an HDMI capture.

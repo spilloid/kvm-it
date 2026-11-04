@@ -54,8 +54,9 @@ self-test types into the machine it is plugged into.
 
 ## Things to re-verify before trusting them (dated, STD-003 rule 4)
 
-- 2026-11-04 (0.5.0, workflows and reconnect): the Windows 11 provisioning workflow past the NETWORK screen has never run
-  on a real or virtual machine; its key presses there (licence: Enter; work or school: Down, Enter) are unverified. The
+- 2026-11-04 (0.5.0, workflows and reconnect): the Windows 11 provisioning workflow is VM-verified only from REGION to
+  WORK_SIGNIN (work-account path, 25H2); typing on the sign-in pages, the licence (Enter), network, MFA, privacy, ESP,
+  handoff, the tenant check and the whole Autopilot path have never run anywhere. The
   workflow panel (reference screens, Save this screen as, saved-checkpoint Resume) has not been looked at on screen.
   The 15 s BLE connect bound (`kvmit-ble/src/backend.rs`) is built and linted on Windows only; reconnect after a real
   adapter power cycle has not been run; the non-Windows `cfg` branch was type-checked for macOS only (CI builds Linux).
