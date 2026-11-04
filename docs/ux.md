@@ -219,7 +219,8 @@ once, each on its own adapter, and a checkpoint is never resumed on another targ
 A completed run deletes it; a dry run never writes one; an edited file never resumes an old checkpoint. Resume reads it
 again at the moment you click, so a newer checkpoint saved by another run is never overtaken by an older copy. A live run
 locks its workflow-and-adapter pair and sets the saved checkpoint aside **before it sends anything**: a second run of the
-same pair is refused, and a checkpoint older than keys a run sent can never be resumed. If that run sends nothing (it
+same pair is refused, and a resume starts only from the checkpoint as read while holding that lock, and only if it is the
+one that was shown (adapter ids are compared without regard to case). If that run sends nothing (it
 stops before recognising a screen), the checkpoint is put back. A run that crashed leaves its lock behind; the next run
 says which file to delete, after checking the target. A run that
 stopped while waiting on a manual step, and finds on resume that the step was done (the next screen is showing), records

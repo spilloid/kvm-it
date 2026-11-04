@@ -198,6 +198,8 @@ pub struct App {
     wf_saved: Option<(String, kvmit_script::Checkpoint)>,
     /// When the saved checkpoint was last read: it is read again every second, so one saved by `kvmit run` shows up.
     wf_saved_read: Option<std::time::Instant>,
+    /// Whose checkpoint `wf_saved` is (this workflow on the adapter connected when it was read).
+    wf_saved_slot: Option<crate::wf_view::Slot>,
     /// The reference image "Save this screen as" writes (an index into the workflow's references).
     wf_snap: usize,
 }
@@ -313,6 +315,7 @@ impl App {
             wf_generation: 0,
             wf_saved: None,
             wf_saved_read: None,
+            wf_saved_slot: None,
             wf_snap: 0,
             cfg,
         };
@@ -904,7 +907,8 @@ impl App {
         files: WfFiles,
         secrets: Vars,
         dry: bool,
-        resume: Option<kvmit_script::Checkpoint>,
+        // The checkpoint to resume from, with the exact text of the file it was read from (as shown).
+        mut resume: Option<(String, kvmit_script::Checkpoint)>,
         ctx: egui::Context,
     ) -> bool {
         let dev = if dry {
@@ -929,7 +933,7 @@ impl App {
                 self.set_notice(uistate::WHY_NO_ADAPTER);
                 return false;
             };
-            let s = crate::wf_view::Slot { source: files.saved.clone(), adapter };
+            let s = crate::wf_view::Slot::new(files.saved.clone(), &adapter);
             // Before any key: the slot is locked and its saved checkpoint set aside, so none older than this run can be
             // resumed later, and no second run of it starts meanwhile.
             match crate::wf_view::claim_checkpoint(&files.script_dir, &s) {
@@ -937,6 +941,21 @@ impl App {
                 Err(e) => {
                     self.set_notice(format!("Not started: {e}"));
                     return false;
+                }
+            }
+            // A resume starts from the checkpoint as read under the lock, and only if it is the one that was shown.
+            if let Some((shown, _)) = &resume {
+                match crate::wf_view::resume_from_claim(&files.script_dir, &s, &files.text, claim.take(), shown) {
+                    Ok((c, cp)) => {
+                        claim = c;
+                        resume = Some((shown.clone(), cp));
+                    }
+                    Err(e) => {
+                        self.wf_saved = None;
+                        self.wf_saved_read = None;
+                        self.set_notice(format!("Not resumed: {e}"));
+                        return false;
+                    }
                 }
             }
             slot = Some(s);
@@ -978,7 +997,7 @@ impl App {
             let mut opts = kvmit_script::WorkflowOptions::default();
             opts.run.dry_run = dry;
             let (log2, ctx4, sh) = (log.clone(), ctx.clone(), shared2.clone());
-            let report = kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume.as_ref(), &mut |t, c| {
+            let report = kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume.as_ref().map(|(_, cp)| cp), &mut |t, c| {
                 let mut s = sh.lock().unwrap();
                 s.trace.push(t.clone());
                 s.inspect = c.inspect();
@@ -1126,11 +1145,14 @@ impl App {
             mine
         });
         // The checkpoint shown is the one of this workflow on the connected adapter.
-        let slot = self.adapter_id().map(|adapter| crate::wf_view::Slot { source: files.saved.clone(), adapter });
-        let due = ended || self.wf_saved_read.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1));
-        if slot.is_none() {
+        let slot = self.adapter_id().map(|adapter| crate::wf_view::Slot::new(files.saved.clone(), &adapter));
+        // Another adapter (or none): what was shown belonged to the previous one.
+        if slot != self.wf_saved_slot {
             self.wf_saved = None;
+            self.wf_saved_read = None;
+            self.wf_saved_slot = slot.clone();
         }
+        let due = ended || self.wf_saved_read.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1));
         if let (false, true, Some(slot)) = (running, due, &slot) {
             self.wf_saved_read = Some(std::time::Instant::now());
             match crate::wf_view::load_checkpoint_raw(&files.script_dir, slot, &files.text) {
@@ -1180,7 +1202,7 @@ impl App {
                     };
                     match reread {
                         Ok(Some((now, _))) if now == *shown => {
-                            self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), false, Some(cp.clone()), ctx.clone());
+                            self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), false, Some((now, cp.clone())), ctx.clone());
                         }
                         Ok(now) => {
                             self.wf_saved = now;

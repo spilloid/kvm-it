@@ -307,8 +307,15 @@ fn fnv(bytes: &[u8]) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Slot {
     pub source: Source,
-    /// The adapter's id (its Bluetooth address; on macOS the id macOS gave it).
+    /// The adapter's id (its Bluetooth address; on macOS the id macOS gave it), in capitals: ids are compared without
+    /// regard to case when connecting, so `aa:…` and `AA:…` must be one slot.
     pub adapter: String,
+}
+
+impl Slot {
+    pub fn new(source: Source, adapter: &str) -> Slot {
+        Slot { source, adapter: adapter.trim().to_ascii_uppercase() }
+    }
 }
 
 /// A stopped run's checkpoint, saved so a later run (in the app or `kvmit run`) can resume it. It holds no secrets
@@ -373,7 +380,12 @@ pub fn load_checkpoint_raw(
     text: &str,
 ) -> Result<Option<(String, kvmit_script::Checkpoint)>, String> {
     let Some(path) = checkpoint_path(dir, slot) else { return Ok(None) };
-    let json = match std::fs::read_to_string(&path) {
+    read_saved(&path, slot, text)
+}
+
+/// A checkpoint file, if it is this slot's and of this very text.
+fn read_saved(path: &std::path::Path, slot: &Slot, text: &str) -> Result<Option<(String, kvmit_script::Checkpoint)>, String> {
+    let json = match std::fs::read_to_string(path) {
         Ok(j) => j,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("{}: {e}", path.display())),
@@ -420,6 +432,49 @@ pub fn claim_checkpoint(dir: &std::path::Path, slot: &Slot) -> Result<Option<Cla
                 "the workflow's saved checkpoint {} cannot be set aside ({e}); fix that (or delete it) before running",
                 path.display()
             ))
+        }
+    }
+}
+
+impl Claim {
+    /// The checkpoint this claim set aside, read while the slot is locked (so no other run can change it meanwhile):
+    /// what a resume must start from. `None` if there was none.
+    pub fn held(&self, slot: &Slot, text: &str) -> Result<Option<(String, kvmit_script::Checkpoint)>, String> {
+        match &self.held {
+            Some(p) => read_saved(p, slot, text),
+            None => Ok(None),
+        }
+    }
+}
+
+/// Give a claim back without running (the run was refused after claiming): the checkpoint is put back and the slot
+/// unlocked.
+pub fn release_claim(dir: &std::path::Path, slot: &Slot, claim: Claim) {
+    if let (Some(held), Some(path)) = (&claim.held, checkpoint_path(dir, slot)) {
+        let _ = std::fs::rename(held, path);
+    }
+    let _ = std::fs::remove_file(&claim.lock);
+}
+
+/// The checkpoint a resume starts from, taken under the slot's lock: it must be the very one that was shown (its file's
+/// exact text), or the claim is given back and the resume refused.
+pub fn resume_from_claim(
+    dir: &std::path::Path,
+    slot: &Slot,
+    text: &str,
+    claim: Option<Claim>,
+    shown: &str,
+) -> Result<(Option<Claim>, kvmit_script::Checkpoint), String> {
+    let changed = "the checkpoint changed since it was shown (another run saved one): look at the target and resume again";
+    let Some(claim) = claim else { return Err(changed.into()) };
+    match claim.held(slot, text) {
+        Ok(Some((now, cp))) if now == shown => Ok((Some(claim), cp)),
+        other => {
+            release_claim(dir, slot, claim);
+            Err(match other {
+                Err(e) => e,
+                _ => changed.into(),
+            })
         }
     }
 }
@@ -699,7 +754,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let text = "workflow_format = 1\nname = \"w\"\nstart = [\"A\"]\nmatch = \"luma\"\n[[states]]\nname = \"A\"\ndetect = { screen = \"a.png\" }\nterminal = true\n";
         let wf = Workflow::parse(text).unwrap();
-        let slot = |s: Source, ad: &str| Slot { source: s, adapter: ad.into() };
+        let slot = Slot::new;
         let a = slot(Source::File(dir.join("a.toml")), "AA:01");
         let other_file = slot(Source::Builtin("[built-in] a.toml".into()), "AA:01");
         let other_adapter = slot(Source::File(dir.join("a.toml")), "BB:02");
@@ -745,6 +800,40 @@ mod tests {
         assert_eq!(keep_checkpoint(&dir, &a, text, false, &wf, &done, Some(&claim)), None, "a completed run leaves none");
         assert_eq!(load_checkpoint(&dir, &a, text), Ok(None));
         assert!(claim_checkpoint(&dir, &a).is_ok(), "and releases the slot");
+        // Ids differing only in case are one adapter: one checkpoint, one lock.
+        let lower = slot(Source::File(dir.join("a.toml")), " aa:01 ");
+        assert_eq!(lower, a);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_resume_starts_from_the_checkpoint_read_under_the_lock() {
+        use kvmit_script::workflow::Context;
+        use kvmit_script::{Workflow, WorkflowReport};
+        let dir = std::env::temp_dir().join(format!("kvmit-cp-resume-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let text = "workflow_format = 1\nname = \"w\"\nstart = [\"A\"]\nmatch = \"luma\"\n[[states]]\nname = \"A\"\ndetect = { screen = \"a.png\" }\nnext = [\"B\"]\n[[states]]\nname = \"B\"\ndetect = { screen = \"b.png\" }\nterminal = true\n";
+        let wf = Workflow::parse(text).unwrap();
+        let a = Slot::new(Source::File(dir.join("a.toml")), "AA:01");
+        let at = |state: &str| WorkflowReport {
+            result: Err(WorkflowError::Cancelled),
+            trace: vec![],
+            context: Context { current: Some(state.into()), ..Default::default() },
+        };
+        keep_checkpoint(&dir, &a, text, false, &wf, &at("A"), None);
+        let (shown, _) = load_checkpoint_raw(&dir, &a, text).unwrap().unwrap();
+        // Unchanged: the resume starts from the copy taken under the lock.
+        let claim = claim_checkpoint(&dir, &a).unwrap();
+        let (claim, cp) = resume_from_claim(&dir, &a, text, claim, &shown).unwrap();
+        assert_eq!(cp.state, "A");
+        keep_checkpoint(&dir, &a, text, false, &wf, &at("A"), claim.as_ref());
+        // Another run saved a newer one after it was shown: refused, the newer one put back, the slot free.
+        let (shown, _) = load_checkpoint_raw(&dir, &a, text).unwrap().unwrap();
+        keep_checkpoint(&dir, &a, text, false, &wf, &at("B"), None);
+        let claim = claim_checkpoint(&dir, &a).unwrap();
+        assert!(resume_from_claim(&dir, &a, text, claim, &shown).unwrap_err().contains("changed"));
+        assert_eq!(load_checkpoint(&dir, &a, text).unwrap().map(|c| c.state), Some("B".into()));
+        assert!(claim_checkpoint(&dir, &a).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -752,7 +841,7 @@ mod tests {
     fn a_corrupt_or_stuck_checkpoint_is_reported() {
         let dir = std::env::temp_dir().join(format!("kvmit-cp-stuck-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let a = Slot { source: Source::File(dir.join("a.toml")), adapter: "AA:01".into() };
+        let a = Slot::new(Source::File(dir.join("a.toml")), "AA:01");
         let path = checkpoint_path(&dir, &a).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{ not json").unwrap();

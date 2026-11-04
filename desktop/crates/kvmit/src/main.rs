@@ -507,10 +507,12 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     // Checkpoints belong to a workflow on one adapter: the one this run will use.
     // (A dry run sends nothing and saves no checkpoint: it needs an adapter only to look one up for --resume.)
     let adapter = if a.dry && !a.resume { String::new() } else { rt().block_on(session::resolve(id.clone(), cfg.last_device.clone()))? };
-    let slot = wf_view::Slot { source: source.clone(), adapter: adapter.clone() };
-    let saved = if a.resume { wf_view::load_checkpoint(&dir, &slot, src)? } else { None };
+    let slot = wf_view::Slot::new(source.clone(), &adapter);
+    // Read now to show it and check it; the run itself starts from the copy taken under the slot's lock, and only if it
+    // is still this one.
+    let saved = if a.resume { wf_view::load_checkpoint_raw(&dir, &slot, src)? } else { None };
     // Field by field, decoded (an escape in the file cannot hide a value), as the engine checks before it publishes.
-    kvmit_script::workflow::check_secrets(&wf, &secrets, saved.as_ref())?;
+    kvmit_script::workflow::check_secrets(&wf, &secrets, saved.as_ref().map(|(_, cp)| cp))?;
     let name = if wf.name.is_empty() { "(unnamed)" } else { wf.name.as_str() };
     println!("workflow: {name}");
     if !wf.description.is_empty() {
@@ -520,10 +522,10 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     for (k, v) in &wf.config {
         println!("  approved profile: {k} = {v}");
     }
-    let checkpoint = if a.resume {
-        let cp = saved.ok_or("no saved checkpoint for this workflow (none was saved, the run completed, or the file changed since)")?;
+    let shown = if a.resume {
+        let (raw, cp) = saved.ok_or("no saved checkpoint for this workflow on this adapter (none was saved, the run completed, or the file changed since)")?;
         println!("resuming from {} (the screen is looked at first)", cp.state);
-        Some(cp)
+        Some(raw)
     } else {
         None
     };
@@ -536,7 +538,7 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     let c2 = cancel.clone();
     ctrlc::set_handler(move || c2.store(true, Ordering::SeqCst)).ok();
     let base = a.file.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
-    let go = |rt: &tokio::runtime::Handle, dev: Option<kvmit_ble::Device>| {
+    let go = |rt: &tokio::runtime::Handle, dev: Option<kvmit_ble::Device>, resume: Option<&kvmit_script::Checkpoint>| {
         let mut host = ScriptHost {
             rt: rt.clone(),
             dev,
@@ -549,7 +551,7 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
         };
         let mut opts = kvmit_script::WorkflowOptions::default();
         opts.run.dry_run = a.dry;
-        kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, checkpoint.as_ref(), &mut |t, _| {
+        kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume, &mut |t, _| {
             for line in wf_view::cli_lines(t) {
                 println!("{line}");
             }
@@ -560,15 +562,31 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
         wf_view::keep_checkpoint(&dir, &slot, src, a.dry, &wf, report, claim)
     };
     let (report, kept) = if a.dry {
-        let r = go(rt().handle(), None);
+        // A dry run sends nothing and takes no lock: it may follow the checkpoint as read.
+        let dry_from = shown.as_ref().and_then(|raw| {
+            wf_view::load_checkpoint_raw(&dir, &slot, src).ok().flatten().filter(|(now, _)| now == raw).map(|(_, cp)| cp)
+        });
+        if shown.is_some() && dry_from.is_none() {
+            return Err("the checkpoint changed since it was read (another run saved one): run again".into());
+        }
+        let r = go(rt().handle(), None, dry_from.as_ref());
         let k = keep(&r, None);
         (r, k)
     } else {
         with_device(Some(adapter), cfg.clone(), |rt, dev| {
             // Connected; before any key: the slot is locked and its saved checkpoint set aside, so none older than this
             // run can be resumed, and no second run of this workflow on this adapter starts meanwhile.
-            let claim = wf_view::claim_checkpoint(&dir, &slot)?;
-            let r = go(rt.handle(), Some(dev.clone()));
+            let mut claim = wf_view::claim_checkpoint(&dir, &slot)?;
+            // A resume starts from the checkpoint as read under the lock, and only if it is the one shown above.
+            let resume = match &shown {
+                Some(raw) => {
+                    let (c, cp) = wf_view::resume_from_claim(&dir, &slot, src, claim.take(), raw)?;
+                    claim = c;
+                    Some(cp)
+                }
+                None => None,
+            };
+            let r = go(rt.handle(), Some(dev.clone()), resume.as_ref());
             let k = keep(&r, claim.as_ref());
             Ok((r, k))
         })?

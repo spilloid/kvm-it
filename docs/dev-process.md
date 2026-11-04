@@ -1143,3 +1143,14 @@ new: 1 High, 1 Low; both confirmed.
 |---|---|---|---|
 | 1 | High | A claim gave no exclusive ownership: a second process running the same workflow found nothing to claim, sent keys, and the first then restored the older checkpoint | **Confirmed**, and it showed a design gap for running several targets at once: checkpoints were per workflow file, so runs of one file on several adapters shared one. Checkpoints are now per **workflow and adapter** (`Slot`, recorded in the file and compared on load), and a live run takes the slot's lock (a file created new) before setting its checkpoint aside and holds it until the run's checkpoint is kept. A second run of the same slot is refused, in any window or process; runs on other adapters are not affected. A lock left by a crash stays (fail closed) and the refusal names it. The CLI looks up the adapter before reading a checkpoint; a dry run without `--resume` still needs none. Tests. |
 | 2 | Low | A restore that failed was silent (and the message could say "the earlier one is kept") | **Confirmed.** The restore's result is reported with the path left behind. |
+
+## 2026-11-04 - Round-59 fixes (`a9b0819`): review round 60 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: restore failures reported. Partial or new: 2 High,
+1 Low; all confirmed.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | Adapter ids were case-sensitive in slots but not when connecting, so `aa:…` and `AA:…` had two checkpoints and two locks | **Confirmed.** `Slot::new` trims and capitalises the id; every slot is made through it. Test. |
+| 2 | High | A resume read its checkpoint before taking the lock, so another run could send keys and save a newer one in between, and the older copy was resumed | **Confirmed** (a residual of round 59's finding 1). The resume now starts from the checkpoint the claim set aside, read under the lock (`Claim::held`), and only if its text is the one shown; otherwise the claim is given back and the resume refused (`resume_from_claim`). App and CLI. Test. |
+| 3 | Low | Switching adapters within a second could show the previous adapter's checkpoint (not resumable: the click re-read refused it) | **Confirmed.** The panel remembers whose checkpoint it shows and drops it when the slot changes. |
