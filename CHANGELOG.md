@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0] - 2026-11-04 (stateful workflows, Windows 11 provisioning, reconnect after power loss)
 
 ### Added
 - **Stateful workflows** (issue #46): a separate `workflow_format = 1` file of named states, each with
