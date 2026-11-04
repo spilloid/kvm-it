@@ -192,6 +192,10 @@ pub struct App {
     /// Text-edit states to remove (secret fields of a selection that changed), and the selection generation in the ids.
     purge_ids: Vec<egui::Id>,
     wf_generation: u64,
+    /// The checkpoint saved when the selected workflow last stopped (by the app or `kvmit run`), read on selection.
+    wf_saved: Option<kvmit_script::Checkpoint>,
+    /// The reference image "Save this screen as" writes (an index into the workflow's references).
+    wf_snap: usize,
 }
 
 /// The id of a workflow secret's password field: explicit, so its state can be found and removed, and tied to the
@@ -209,6 +213,15 @@ fn entry_source(e: &Entry) -> crate::wf_view::Source {
     }
 }
 
+/// Which library entry a saved checkpoint belongs to: a file by its full path (as `kvmit run` names it), a built-in by
+/// its name.
+fn saved_source(e: &Entry) -> crate::wf_view::Source {
+    match &e.path {
+        Some(p) => crate::wf_view::file_source(p),
+        None => crate::wf_view::Source::Builtin(e.name.clone()),
+    }
+}
+
 /// Remove the text-edit state (cursor and undo history, which egui keeps in clear text) of these fields.
 pub(crate) fn purge_secret_fields(ctx: &egui::Context, ids: &[egui::Id]) {
     ctx.data_mut(|d| {
@@ -216,6 +229,16 @@ pub(crate) fn purge_secret_fields(ctx: &egui::Context, ids: &[egui::Id]) {
             d.remove::<egui::text_edit::TextEditState>(*id);
         }
     });
+}
+
+/// The files a workflow run uses: its reference images' folder, and where its checkpoint is kept when it stops (the
+/// scripts folder, the entry it is saved for, and the file's text, which binds the checkpoint to this very version).
+#[derive(Clone)]
+struct WfFiles {
+    base_dir: std::path::PathBuf,
+    script_dir: std::path::PathBuf,
+    saved: crate::wf_view::Source,
+    text: String,
 }
 
 /// What a workflow run shares with the panel while it runs, and keeps once it ends.
@@ -283,6 +306,8 @@ impl App {
             wf_run: None,
             purge_ids: Vec::new(),
             wf_generation: 0,
+            wf_saved: None,
+            wf_snap: 0,
             cfg,
         };
         // Zero-step reconnect: the last adapter and capture device come back on their own.
@@ -733,6 +758,7 @@ impl App {
         // `purge_secret_fields`), and the script caches are cleared before either kind is loaded.
         self.forget_workflow_secrets();
         self.workflow = None;
+        self.wf_saved = None;
         self.trust_ack = false;
         self.preview = None;
         self.preview_key = None;
@@ -742,6 +768,11 @@ impl App {
             match kvmit_script::Workflow::parse(&self.library[i].source) {
                 Ok(w) => {
                     self.script_err = None;
+                    let saved = saved_source(&self.library[i]);
+                    match crate::wf_view::load_checkpoint(&self.cfg.script_dir(), &saved, &self.library[i].source) {
+                        Ok(cp) => self.wf_saved = cp,
+                        Err(e) => self.set_notice(format!("Could not read this workflow's saved checkpoint: {e}")),
+                    }
                     self.workflow = Some(w);
                 }
                 Err(e) => self.script_err = Some(e),
@@ -860,7 +891,7 @@ impl App {
         &mut self,
         // The definition and the library entry it came from: they travel together.
         (wf, source): (kvmit_script::Workflow, crate::wf_view::Source),
-        base_dir: std::path::PathBuf,
+        files: WfFiles,
         secrets: Vars,
         dry: bool,
         resume: Option<kvmit_script::Checkpoint>,
@@ -909,7 +940,7 @@ impl App {
                 rt,
                 dev,
                 capture: Some(capture),
-                base_dir,
+                base_dir: files.base_dir.clone(),
                 cancel,
                 confirm: Box::new(move |msg| ask(&confirm, &cancel2, msg, || ctx3.request_repaint())),
                 // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
@@ -928,6 +959,9 @@ impl App {
                 ctx4.request_repaint();
             });
             *outcome.lock().unwrap() = Some(crate::wf_view::outcome(&report.result));
+            if let Some(msg) = crate::wf_view::keep_checkpoint(&files.script_dir, &files.saved, &files.text, dry, &wf, &report) {
+                log.lock().unwrap().push(msg);
+            }
             {
                 let mut s = shared2.lock().unwrap();
                 s.inspect = report.context.inspect();
@@ -940,6 +974,63 @@ impl App {
         self.run_handle = Some(handle);
         self.wf_run = Some(shared);
         true
+    }
+
+    /// The workflow's reference screens, which are present, and saving the current video frame as one of them: walk
+    /// the target through setup by hand once, saving each screen under the name its state expects.
+    fn references_ui(&mut self, ui: &mut egui::Ui, wf: &kvmit_script::Workflow, base: &std::path::Path) {
+        let refs = crate::wf_view::references(wf, base);
+        let missing = refs.iter().filter(|r| !r.present).count();
+        let title = if missing == 0 { "Reference screens (all present)".to_string() } else { format!("Reference screens ({missing} of {} missing)", refs.len()) };
+        egui::CollapsingHeader::new(title).id_salt("wf_refs").default_open(missing > 0).show(ui, |ui| {
+            for r in &refs {
+                ui.horizontal_wrapped(|ui| {
+                    let (h, t) = if r.present { (Health::Good, "ok") } else { (Health::Bad, "missing") };
+                    ui.colored_label(health_color(h, ui), t);
+                    ui.monospace(&r.image);
+                    ui.small(r.used_by.join(", "));
+                });
+            }
+            if refs.is_empty() {
+                return;
+            }
+            self.wf_snap = self.wf_snap.min(refs.len() - 1);
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("wf_snap").selected_text(&refs[self.wf_snap].image).show_ui(ui, |ui| {
+                    for (i, r) in refs.iter().enumerate() {
+                        let label = format!("{}{}", r.image, if r.present { " (replace)" } else { "" });
+                        ui.selectable_value(&mut self.wf_snap, i, label);
+                    }
+                });
+                let frame = self.capture.lock().unwrap().as_ref().and_then(|c| c.latest());
+                let why = match &frame {
+                    None => Some("Open a video source first."),
+                    Some(f) if f.is_blank() => Some("The video is blank (no signal yet)."),
+                    _ => None,
+                };
+                let b = ui.add_enabled(why.is_none(), egui::Button::new("Save this screen as"));
+                let b = match why {
+                    Some(w) => b.on_disabled_hover_text(w),
+                    None => b.on_hover_text("Saves the current video frame as this reference image, beside the workflow."),
+                };
+                if b.clicked() {
+                    let r = &refs[self.wf_snap];
+                    let saved = r.path.clone().and_then(|p| {
+                        let f = frame.expect("enabled only with a frame");
+                        if let Some(d) = p.parent() {
+                            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+                        }
+                        kvmit_video::convert::save_png(&p, f.width, f.height, &f.rgba).map_err(|e| e.to_string())?;
+                        Ok(p)
+                    });
+                    match saved {
+                        Ok(p) => self.set_notice(format!("Saved {}", p.display())),
+                        Err(e) => self.set_notice(format!("Could not save {}: {e}", r.image)),
+                    }
+                }
+            });
+            ui.small("Each state is recognised by its screen: bring the target to it (by hand, or a dry run up to it) and save it.");
+        });
     }
 
     /// The selected workflow: what it will do, its secrets, run controls, and the live state, timeline and variables.
@@ -972,13 +1063,14 @@ impl App {
         if !wf.secrets.is_empty() {
             ui.small("Secrets: held in memory only, never saved, logged or exported.");
         }
+        let base = self.library[sel].path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.cfg.script_dir());
+        self.references_ui(ui, &wf, &base);
         let external = self.library[sel].path.is_some();
         let source = entry_source(&self.library[sel]);
         if external {
             ui.checkbox(&mut self.trust_ack, "I wrote or reviewed this workflow — it will type into the target");
         }
         let running = self.run_handle.as_ref().is_some_and(|r| r.running());
-        let base = self.library[sel].path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.cfg.script_dir());
         let secrets: Vars = self.wf_secrets.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
         let missing = wf.secrets.keys().find(|k| !secrets.contains_key(*k)).cloned();
         let why_ready = if external && !self.trust_ack {
@@ -994,24 +1086,40 @@ impl App {
             None
         });
         // A stopped run with a known state can be resumed: the engine looks at the screen again first, never replays.
-        let checkpoint = (!running).then_some(self.wf_run.as_ref()).flatten().and_then(|s| {
+        // This session's own run of this definition decides; without one, the checkpoint saved when it last stopped
+        // (here or by `kvmit run`).
+        let this_run = self.wf_run.as_ref().filter(|s| {
+            let s = s.lock().unwrap();
+            s.wf == wf && s.source == source && s.report.is_some()
+        });
+        let checkpoint = if running {
+            None
+        } else if let Some(s) = this_run {
             let s = s.lock().unwrap();
             crate::wf_view::resume_point(s.dry, (&s.wf, &s.source), (&wf, &source), s.report.as_ref())
-        });
+        } else {
+            self.wf_saved.clone()
+        };
+        let files = WfFiles {
+            base_dir: base.clone(),
+            script_dir: self.cfg.script_dir(),
+            saved: saved_source(&self.library[sel]),
+            text: self.library[sel].source.clone(),
+        };
         ui.horizontal(|ui| {
             let r = ui.add_enabled(why_run.is_none(), egui::Button::new("▶ Run"));
             if let Some(w) = &why_run {
                 r.clone().on_disabled_hover_text(w);
             }
             if r.clicked() {
-                self.start_workflow((wf.clone(), source.clone()), base.clone(), secrets.clone(), false, None, ctx.clone());
+                self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), false, None, ctx.clone());
             }
             let r = ui.add_enabled(why_dry.is_none(), egui::Button::new("Dry run"));
             if let Some(w) = &why_dry {
                 r.clone().on_disabled_hover_text(w);
             }
             if r.clicked() {
-                self.start_workflow((wf.clone(), source.clone()), base.clone(), secrets.clone(), true, None, ctx.clone());
+                self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), true, None, ctx.clone());
             }
             if let Some(cp) = &checkpoint {
                 let r = ui.add_enabled(why_run.is_none(), egui::Button::new(format!("Resume from {}", cp.state)));
@@ -1020,7 +1128,7 @@ impl App {
                     r.clone().on_disabled_hover_text(w);
                 }
                 if r.clicked() {
-                    self.start_workflow((wf.clone(), source.clone()), base.clone(), secrets.clone(), false, Some(cp.clone()), ctx.clone());
+                    self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), false, Some(cp.clone()), ctx.clone());
                 }
             }
             let r = ui.add_enabled(running, egui::Button::new("■ Abort"));

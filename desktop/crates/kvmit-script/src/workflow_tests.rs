@@ -981,3 +981,98 @@ fn a_picture_received_before_a_decision_is_never_evidence_after_it() {
     assert!(matches!(r.result, Err(WorkflowError::TenantMismatch { .. })), "{:?}", r.result);
     assert_eq!(enters(&sim), 3, "nothing typed on the enrollment screen");
 }
+
+const MANUAL: &str = r#"
+workflow_format = 1
+name = "manual"
+start = ["REGION"]
+match = "luma"
+
+[[states]]
+name = "REGION"
+detect = { screen = "region.png" }
+manual = "Connect the network cable, then click Next on the target"
+next = ["DONE"]
+timeout = "3s"
+derive = { network = "connected by hand" }
+
+[[states]]
+name = "DONE"
+detect = { screen = "done.png" }
+terminal = true
+"#;
+
+#[test]
+fn a_manual_state_types_nothing_and_waits_for_the_operator() {
+    let w = Workflow::parse(MANUAL).unwrap();
+    // The operator acts on the target: the screen moves on by itself after a while.
+    let timeline: Vec<Frame> = std::iter::repeat_n(solid(20), 8).chain(std::iter::repeat_n(solid(225), 20)).collect();
+    let mut sim = Sim { timeline: Some(timeline), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()), "{:?}", r.trace);
+    assert_eq!(sim.keys, ["release_all"], "nothing typed, only the run's own cleanup");
+    assert!(sim.asked.is_empty(), "a manual step is not a question: the screen moving on is the answer");
+    let ev = events(&r);
+    assert!(ev.iter().any(|e| matches!(e, WorkflowEvent::ManualStepRequested { state, timeout_ms: 3000, .. } if state == "REGION")));
+    assert!(!ev.iter().any(|e| matches!(e, WorkflowEvent::ActionAttempted { .. })));
+    assert_eq!(r.context.derived["network"].0, "connected by hand", "a verified transition records its facts");
+    // Nothing was sent, so a stop in a manual state never asks to "send again" on resume.
+    assert_eq!(r.context.history[0].from, "REGION");
+}
+
+#[test]
+fn a_manual_step_that_never_happens_times_out_without_typing() {
+    let w = Workflow::parse(MANUAL).unwrap();
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::TimedOut { state, .. }) if state == "REGION"), "{:?}", r.result);
+    assert_eq!(sim.keys, ["release_all"]);
+    let cp = r.checkpoint(&w).unwrap();
+    assert_eq!(cp.attempted, Some(0), "a manual step sends nothing, so a resume has nothing to replay");
+}
+
+#[test]
+fn manual_states_cannot_type_ask_first_or_retry() {
+    let bad = |from: &str, to: &str| {
+        assert!(MANUAL.contains(from), "{from}");
+        Workflow::parse(&MANUAL.replace(from, to)).unwrap_err()
+    };
+    let with = "timeout = \"3s\"\nderive";
+    assert!(bad(with, "actions = [ { key = \"ENTER\" } ]\ntimeout = \"3s\"\nderive").contains("types nothing"));
+    assert!(bad(with, "gate = \"sure?\"\ntimeout = \"3s\"\nderive").contains("types nothing"));
+    assert!(bad(with, "retry_safe = true\nretries = 1\ntimeout = \"3s\"\nderive").contains("types nothing"));
+    assert!(bad("manual = \"Connect the network cable, then click Next on the target\"", "manual = \"  \"").contains("must say"));
+}
+
+#[test]
+fn a_secret_in_a_manual_message_is_refused() {
+    let src = MANUAL.replace("start = [\"REGION\"]", "start = [\"REGION\"]\n[secrets]\nwifi = { prompt = \"Wi-Fi\" }\n")
+        .replace("Connect the network cable", "Type hunter2-wifi");
+    // [secrets] must come after the top-level keys: move it below match.
+    let src = src.replace("[secrets]\nwifi = { prompt = \"Wi-Fi\" }\n\nmatch = \"luma\"", "match = \"luma\"\n[secrets]\nwifi = { prompt = \"Wi-Fi\" }");
+    let w = Workflow::parse(&src).unwrap();
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::SecretInFile { .. })), "{:?}", r.result);
+}
+
+#[test]
+fn a_manual_step_done_before_the_engine_looks_again_still_counts() {
+    let w = Workflow::parse(MANUAL).unwrap();
+    // The operator was quick: the screen moves on right after it was recognised, before any further look.
+    let timeline: Vec<Frame> = std::iter::repeat_n(solid(20), 2).chain(std::iter::repeat_n(solid(225), 30)).collect();
+    let mut sim = Sim { timeline: Some(timeline), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()), "{:?}", r.trace);
+    assert_eq!(r.context.history[0].to, "DONE");
+}
+
+#[test]
+fn waiting_in_a_state_that_types_nothing_is_never_a_send_to_replay() {
+    let src = MANUAL.replace("manual = \"Connect the network cable, then click Next on the target\"\n", "");
+    let w = Workflow::parse(&src).unwrap();
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::TimedOut { .. })), "{:?}", r.result);
+    assert_eq!(r.checkpoint(&w).unwrap().attempted, Some(0), "nothing was sent: a resume asks nothing");
+}

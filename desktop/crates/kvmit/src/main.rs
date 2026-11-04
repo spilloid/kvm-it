@@ -78,7 +78,8 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
-    /// Run a script file
+    /// Run a script or a workflow file (`workflow_format = 1`: watches the screen, prompts for its secrets, prints
+    /// each state and transition as it happens)
     Run {
         file: PathBuf,
         /// name=value (not for secrets: use the hidden prompt)
@@ -95,6 +96,17 @@ enum Cmd {
         /// otherwise the run stops and asks. With `--device`, one adapter and card pair per process.
         #[arg(long)]
         video: Option<String>,
+        /// Workflows: continue the run saved when this file last stopped. The screen is looked at first; the run goes on
+        /// only if it shows that state or one that may follow it, and actions already sent are not sent again unasked.
+        #[arg(long)]
+        resume: bool,
+        /// Workflows: when the run ends, save its trace (JSONL) and notes (Markdown) in the scripts folder. No secrets.
+        #[arg(long)]
+        save_trace: bool,
+        /// Workflows: check the file and list its reference images (present or missing), without connecting to anything.
+        /// Make a missing one with `kvmit video snap <path>` while the target shows that screen.
+        #[arg(long)]
+        check: bool,
     },
     /// Convert a DuckyScript payload to the native format and list anything untranslatable
     Import {
@@ -282,8 +294,21 @@ fn real_main(cli: Cli) -> R<()> {
             script.steps.push(if keys.len() == 1 { Step::Key(keys[0].clone()) } else { Step::Chord(keys) });
             execute(cli.device, None, cfg, script, PathBuf::from("."), Vars::new(), false, true)
         }
-        Cmd::Run { file, vars, dry_run, yes, video } => {
+        Cmd::Run { file, vars, dry_run, yes, video, resume, save_trace, check } => {
             let src = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            if kvmit_script::workflow::is_workflow_source(&src) {
+                if !vars.is_empty() {
+                    return Err("--var is for scripts: a workflow's values are its [config] (the approved profile) and its prompted [secrets]".into());
+                }
+                if check {
+                    return check_workflow(&file, &src);
+                }
+                let run = WfRun { file, dry: dry_run, yes, resume, save_trace };
+                return run_workflow_cmd(cli.device, video, cfg, &src, run);
+            }
+            if resume || save_trace || check {
+                return Err("--resume, --save-trace and --check are for workflows (files with `workflow_format = 1`)".into());
+            }
             let script = Script::parse(&src)?;
             let mut v: Vars = vars.into_iter().collect();
             for (name, def) in &script.vars {
@@ -406,6 +431,145 @@ fn with_device<T>(id: Option<String>, cfg: Config, f: impl FnOnce(&tokio::runtim
     out
 }
 
+/// The capture card a run watches: `--video`, else the one last opened in the app, else the only one connected.
+fn open_capture(video: Option<&str>, cfg: &Config) -> R<kvmit_video::Capture> {
+    let devices = kvmit_video::list_devices();
+    let d = &devices[kvmit::video_state::run_video(&devices, video, cfg.last_video_key.as_deref())?];
+    let cap = kvmit_video::Capture::open(&d.path).map_err(|e| format!("capture device {}: {e}", d.name))?;
+    // the path is only a handle: if the card was swapped between listing and opening, it names another one
+    if cap.info.key != d.key {
+        return Err(format!("capture device changed while opening {} (now {}): run again", d.key, cap.info.key).into());
+    }
+    Ok(cap)
+}
+
+fn ask_stdin(msg: &str) -> bool {
+    print!("{msg} [y/N] ");
+    let _ = std::io::stdout().flush();
+    let mut a = String::new();
+    std::io::stdin().read_line(&mut a).ok();
+    a.trim().eq_ignore_ascii_case("y")
+}
+
+/// `kvmit run --check`: the file parses, and which reference images are present (the app's workflow panel lists the
+/// same and saves missing ones from the video).
+fn check_workflow(file: &std::path::Path, src: &str) -> R<()> {
+    let wf = kvmit_script::Workflow::parse(src).map_err(|e| format!("{}: {e}", file.display()))?;
+    let base = file.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let refs = kvmit::wf_view::references(&wf, &base);
+    println!("{}: {} states, {} reference images", file.display(), wf.states.len(), refs.len());
+    let mut missing = 0;
+    for r in &refs {
+        let (mark, path) = match &r.path {
+            Ok(p) if r.present => ("ok     ", p.display().to_string()),
+            Ok(p) => ("MISSING", p.display().to_string()),
+            Err(e) => ("INVALID", e.clone()),
+        };
+        missing += usize::from(!r.present);
+        println!("  {mark} {path}  ({})", r.used_by.join(", "));
+    }
+    if missing > 0 {
+        return Err(format!(
+            "{missing} reference image(s) missing: bring the target to each screen and run `kvmit video snap <path>` (or use Save this screen as… in the app)"
+        )
+        .into());
+    }
+    println!("ready: every reference image is present");
+    Ok(())
+}
+
+struct WfRun {
+    file: PathBuf,
+    dry: bool,
+    yes: bool,
+    resume: bool,
+    save_trace: bool,
+}
+
+/// `kvmit run` for a workflow: what the app's workflow panel does, in a terminal. Secrets are prompted without echo,
+/// each state, transition and question is printed as it happens, and the variables are listed at the end. A stopped
+/// live run saves a checkpoint that the app and `--resume` share; a completed one clears it.
+fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src: &str, a: WfRun) -> R<()> {
+    use kvmit::wf_view;
+    let wf = kvmit_script::Workflow::parse(src).map_err(|e| format!("{}: {e}", a.file.display()))?;
+    let source = wf_view::file_source(&a.file);
+    let dir = cfg.script_dir();
+    let name = if wf.name.is_empty() { "(unnamed)" } else { wf.name.as_str() };
+    println!("workflow: {name}");
+    if !wf.description.is_empty() {
+        println!("  {}", wf.description);
+    }
+    println!("states: {}", wf.states.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(" · "));
+    for (k, v) in &wf.config {
+        println!("  approved profile: {k} = {v}");
+    }
+    let checkpoint = if a.resume {
+        let cp = wf_view::load_checkpoint(&dir, &source, src)?
+            .ok_or("no saved checkpoint for this workflow (none was saved, the run completed, or the file changed since)")?;
+        println!("resuming from {} (the screen is looked at first)", cp.state);
+        Some(cp)
+    } else {
+        None
+    };
+    if !a.yes && !a.dry && !ask_stdin("This workflow will type into the target computer. Did you write or review it?") {
+        return Err("cancelled".into());
+    }
+    let mut secrets = Vars::new();
+    for (name, prompt) in &wf.secrets {
+        let v = rpassword::prompt_password(format!("{prompt} (hidden): "))?;
+        if v.is_empty() {
+            return Err(format!("{prompt}: a value is required").into());
+        }
+        secrets.insert(name.clone(), v);
+    }
+    // A workflow always watches the screen, a dry run too.
+    let capture = Arc::new(std::sync::Mutex::new(Some(open_capture(video.as_deref(), &cfg)?)));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let c2 = cancel.clone();
+    ctrlc::set_handler(move || c2.store(true, Ordering::SeqCst)).ok();
+    let base = a.file.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let go = |rt: &tokio::runtime::Handle, dev: Option<kvmit_ble::Device>| {
+        let mut host = ScriptHost {
+            rt: rt.clone(),
+            dev,
+            capture: Some(capture.clone()),
+            base_dir: base.clone(),
+            cancel: cancel.clone(),
+            confirm: Box::new(ask_stdin),
+            // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
+            on_event: Box::new(|_| {}),
+        };
+        let mut opts = kvmit_script::WorkflowOptions::default();
+        opts.run.dry_run = a.dry;
+        kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, checkpoint.as_ref(), &mut |t, _| {
+            for line in wf_view::cli_lines(t) {
+                println!("{line}");
+            }
+        })
+    };
+    let report = if a.dry { go(rt().handle(), None) } else { with_device(id, cfg.clone(), |rt, dev| Ok(go(rt.handle(), Some(dev.clone()))))? };
+    for v in secrets.values_mut() {
+        zeroize::Zeroize::zeroize(v);
+    }
+    println!("variables:");
+    for v in report.context.inspect() {
+        println!("  {:<22} {:<20} {}", format!("{} ({:?})", v.namespace, v.provenance).to_lowercase(), v.key, v.value);
+    }
+    if let Some(msg) = wf_view::keep_checkpoint(&dir, &source, src, a.dry, &wf, &report) {
+        let hint = if report.result.is_err() && msg.starts_with("Saved") { " (`kvmit run <file> --resume`, or Resume in the app)" } else { "" };
+        println!("{msg}{hint}");
+    }
+    if a.save_trace {
+        let jsonl = kvmit_script::workflow::trace_jsonl(&report);
+        let md = kvmit_script::workflow::trace_markdown(&wf, &report);
+        match wf_view::save_exports(&dir, &kvmit_record::naming::stamp_now(), &jsonl, &md) {
+            Ok(stem) => println!("saved {stem}.trace.jsonl and {stem}.notes.md in {}", dir.display()),
+            Err(e) => eprintln!("warning: could not save the trace: {e}"),
+        }
+    }
+    report.result.map_err(|e| e.to_string().into())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute(id: Option<String>, video: Option<String>, cfg: Config, script: Script, base: PathBuf, vars: Vars, dry: bool, yes: bool) -> R<()> {
     let ops = compile(&script, &vars, &UsAnsi)?;
@@ -424,18 +588,7 @@ fn execute(id: Option<String>, video: Option<String>, cfg: Config, script: Scrip
     // Only open a capture device when the script waits on the screen: holding it otherwise blocks other users of
     // the card (e.g. `kvmit video snap`) for no reason.
     // A dry run skips waits, so it neither needs nor holds a card.
-    let video = if kvmit_script::exec::needs_video(&ops) && !dry {
-        let devices = kvmit_video::list_devices();
-        let d = &devices[kvmit::video_state::run_video(&devices, video.as_deref(), cfg.last_video_key.as_deref())?];
-        let cap = kvmit_video::Capture::open(&d.path).map_err(|e| format!("capture device {}: {e}", d.name))?;
-        // the path is only a handle: if the card was swapped between listing and opening, it names another one
-        if cap.info.key != d.key {
-            return Err(format!("capture device changed while opening {} (now {}): run again", d.key, cap.info.key).into());
-        }
-        Some(cap)
-    } else {
-        None
-    };
+    let video = if kvmit_script::exec::needs_video(&ops) && !dry { Some(open_capture(video.as_deref(), &cfg)?) } else { None };
     let capture = Arc::new(std::sync::Mutex::new(video));
     with_device(id, cfg, |rt, dev| {
         let mut host = ScriptHost {
@@ -444,13 +597,7 @@ fn execute(id: Option<String>, video: Option<String>, cfg: Config, script: Scrip
             capture: Some(capture),
             base_dir: base,
             cancel,
-            confirm: Box::new(|msg| {
-                print!("{msg} [y/N] ");
-                let _ = std::io::stdout().flush();
-                let mut a = String::new();
-                std::io::stdin().read_line(&mut a).ok();
-                a.trim().eq_ignore_ascii_case("y")
-            }),
+            confirm: Box::new(ask_stdin),
             on_event: Box::new(|ev| match ev {
                 RunEvent::StepStarted { index, kind, detail } => println!("step {}: {kind} {detail}", index + 1),
                 RunEvent::Finished => println!("done"),

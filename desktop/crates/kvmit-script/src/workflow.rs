@@ -59,6 +59,9 @@ pub struct StateDef {
     pub require: BTreeMap<String, String>,
     /// Ask the operator before acting (the message is shown as written; it must not contain secrets).
     pub gate: Option<String>,
+    /// The operator does this step by hand (connect a network, approve a sign-in on a phone): nothing is typed, and the
+    /// engine waits, watching, for the screen to move on to a permitted next state. Shown as written; no secrets.
+    pub manual: Option<String>,
     /// Before acting, the screen must show the configured tenant's branding (and not another allowed tenant's).
     pub verify_tenant: bool,
     pub actions: Vec<Step>,
@@ -118,6 +121,8 @@ struct RawState {
     require: BTreeMap<String, String>,
     #[serde(default)]
     gate: Option<String>,
+    #[serde(default)]
+    manual: Option<String>,
     #[serde(default)]
     verify_tenant: bool,
     #[serde(default)]
@@ -312,6 +317,17 @@ impl Workflow {
             if !r.terminal && r.next.is_empty() {
                 return Err(format!("state {:?} needs `next` states or `terminal = true`", r.name));
             }
+            if let Some(m) = &r.manual {
+                if m.trim().is_empty() {
+                    return Err(format!("state {:?}: `manual` must say what the operator should do", r.name));
+                }
+                if !r.actions.is_empty() || r.gate.is_some() || r.terminal || r.retries > 0 || r.retry_safe {
+                    return Err(format!(
+                        "state {:?}: a `manual` state types nothing, asks nothing first and is never retried (no actions, gate, retries or terminal)",
+                        r.name
+                    ));
+                }
+            }
             if r.verify_tenant && raw.tenants.is_empty() {
                 return Err(format!("state {:?} verifies the tenant but the workflow lists no tenants", r.name));
             }
@@ -350,6 +366,7 @@ impl Workflow {
                 next: r.next,
                 require: r.require,
                 gate: r.gate,
+                manual: r.manual,
                 verify_tenant: r.verify_tenant,
                 retries: r.retries,
                 retry_safe: r.retry_safe,
@@ -539,6 +556,8 @@ pub enum WorkflowEvent {
     GuardChecked { state: String, ok: bool, detail: String },
     TenantVerified { state: String, tenant: String, confidence: f64 },
     HumanGateRequested { state: String, message: String, approved: bool },
+    /// A `manual` state: the operator was asked to do this by hand; the engine now waits for the screen to move on.
+    ManualStepRequested { state: String, message: String, timeout_ms: u64 },
     ActionAttempted { state: String, attempt: u32, steps: usize, dry_run: bool },
     TransitionVerified { from: String, to: String, confidence: f64, duration_ms: u64 },
     ContextChanged { key: String, from: Option<String>, to: String },
@@ -552,7 +571,9 @@ impl WorkflowEvent {
     /// diagnostic) before the event is published.
     fn scrub(&mut self, secrets: &Secrets) {
         match self {
-            WorkflowEvent::HumanGateRequested { message, .. } => secrets.scrub(message),
+            WorkflowEvent::HumanGateRequested { message, .. } | WorkflowEvent::ManualStepRequested { message, .. } => {
+                secrets.scrub(message)
+            }
             WorkflowEvent::Stopped { reason, .. } => secrets.scrub(reason),
             WorkflowEvent::GuardChecked { detail, .. } => secrets.scrub(detail),
             WorkflowEvent::StateEntered { reason, .. } => secrets.scrub(reason),
@@ -1143,7 +1164,10 @@ impl Engine<'_> {
 
     fn act(&mut self, s: &StateDef, ops: &[(usize, Op)], attempt: u32) -> Result<(), WorkflowError> {
         *self.ctx.attempts.entry(s.name.clone()).or_insert(0) += 1;
-        self.ctx.visit_attempts = attempt;
+        // Only keys sent count against a resume: waiting in a state that types nothing sends nothing to replay.
+        if !ops.is_empty() {
+            self.ctx.visit_attempts = attempt;
+        }
         self.emit(WorkflowEvent::ActionAttempted {
             state: s.name.clone(),
             attempt,
@@ -1264,9 +1288,21 @@ impl Engine<'_> {
             spent = 0;
             let next = loop {
                 attempt += 1;
-                // Every burst of keys, first or retry, follows a fresh look taken now.
-                self.still_on(&s)?;
-                self.act(&s, ops, attempt)?;
+                // Every burst of keys, first or retry, follows a fresh look taken now. A state that sends nothing (done by
+                // hand, or the target finishing by itself) needs no such look: the screen may already have moved on,
+                // and the verification below decides whether it moved somewhere permitted.
+                if s.manual.is_none() && !ops.is_empty() {
+                    self.still_on(&s)?;
+                }
+                match &s.manual {
+                    // Nothing is sent, so nothing is spent: a resume never asks to "send again" a step done by hand.
+                    Some(message) => self.emit(WorkflowEvent::ManualStepRequested {
+                        state: name.clone(),
+                        message: message.clone(),
+                        timeout_ms: s.timeout.as_millis() as u64,
+                    }),
+                    None => self.act(&s, ops, attempt)?,
+                }
                 // Everything captured up to now predates the action's effect.
                 let sent = Instant::now();
                 let boundary = self
@@ -1367,6 +1403,7 @@ fn secret_place(wf: &Workflow, secrets: &Secrets, resume: Option<&Checkpoint>) -
         vals.extend(st.require.iter().flat_map(|(k, v)| [k.as_str(), v.as_str()]));
         vals.extend(st.derive.iter().flat_map(|(k, v)| [k.as_str(), v.as_str()]));
         vals.extend(st.gate.iter().map(String::as_str));
+        vals.extend(st.manual.iter().map(String::as_str));
         steps(&mut vals, &st.actions);
         if hit(&vals) {
             return Some(format!("state {} (in file order)", i + 1));

@@ -38,6 +38,9 @@ impl From<bluer::Error> for BackendError {
 }
 type Result<T> = std::result::Result<T, BackendError>;
 
+/// The longest connecting, discovering the services and subscribing may take, once the adapter has been found.
+pub const GATT_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
+
 fn err<T>(s: impl Into<String>) -> Result<T> {
     Err(BackendError(s.into()))
 }
@@ -244,19 +247,45 @@ pub async fn connect(id: &str) -> Result<Connection> {
     // Linux: a powered-off or blocked adapter shows up here as "not found"; say why. (Not checked up front: BlueZ's
     // default adapter is not necessarily the one btleplug picked when a computer has two.)
     let p = find(&ad, id, Duration::from_secs(20)).await.map_err(explained)?;
-    p.connect().await?;
-    #[cfg(windows)]
-    let fast = request_fast_link(id).await;
-    p.discover_services().await?;
-    let chars = p.characteristics();
-    let rx_char = chars.iter().find(|c| c.uuid == RX_UUID).cloned();
-    let tx_char = chars.iter().find(|c| c.uuid == TX_UUID).cloned();
-    let (Some(rx_char), Some(tx_char)) = (rx_char, tx_char) else {
-        let _ = p.disconnect().await;
-        return err("device does not expose the kvm-it characteristics");
+    // Bounded: an adapter that lost power (or is restarting) can leave the OS's connect or service discovery waiting
+    // forever, which would stall the app's reconnect loop until someone pressed Connect again. A timed-out attempt is
+    // closed and reported, and the caller's next attempt finds the adapter once it is back.
+    let setup = async {
+        p.connect().await?;
+        #[cfg(windows)]
+        let fast = request_fast_link(id).await;
+        p.discover_services().await?;
+        let chars = p.characteristics();
+        let rx_char = chars.iter().find(|c| c.uuid == RX_UUID).cloned();
+        let tx_char = chars.iter().find(|c| c.uuid == TX_UUID).cloned();
+        let (Some(rx_char), Some(tx_char)) = (rx_char, tx_char) else {
+            return err("device does not expose the kvm-it characteristics");
+        };
+        p.subscribe(&tx_char).await?;
+        let notifications = p.notifications().await?;
+        #[cfg(windows)]
+        return Ok((rx_char, notifications, fast));
+        #[cfg(not(windows))]
+        Ok((rx_char, notifications))
     };
-    p.subscribe(&tx_char).await?;
-    let mut notifications = p.notifications().await?;
+    let set_up = match tokio::time::timeout(GATT_SETUP_TIMEOUT, setup).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            let _ = p.disconnect().await;
+            return Err(e);
+        }
+        Err(_) => {
+            let _ = p.disconnect().await;
+            return err(format!(
+                "adapter {id} did not answer within {} s (it may be restarting after a power loss)",
+                GATT_SETUP_TIMEOUT.as_secs()
+            ));
+        }
+    };
+    #[cfg(windows)]
+    let (rx_char, mut notifications, fast) = set_up;
+    #[cfg(not(windows))]
+    let (rx_char, mut notifications) = set_up;
 
     let (to_client, client_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (client_tx, mut from_client) = mpsc::unbounded_channel::<Vec<u8>>();
