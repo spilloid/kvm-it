@@ -1027,3 +1027,47 @@ source keys; both rollback removals attempted and every orphan named), and "no a
 found in the reviewed range." CI on #53 failed only because `THIRD_PARTY_LICENSES.html` was stale (its input hash
 changed with #50's manifest edit; the listing itself was unchanged); restamped in a follow-up. The Unix-only
 `sources_compare_paths_exactly` passed on macOS. **Still not looked at on screen.**
+
+## 2026-11-04 - Provisioning workflow, manual states, CLI parity, saved checkpoints, bounded reconnect (round 54, orchestrator)
+
+Asked for: kvm-it driving Windows setup after some operator input, by Windows Autopilot or by account provisioning
+(Microsoft Entra join), with CLI and GUI parity, released with matching docs; and the app reconnecting by itself after
+the adapter loses power (moved between laptops), without clicking Connect.
+
+- **Engine:** `manual = "..."` states (nothing typed; the screen moving on to a permitted state is the evidence). States
+  that send nothing (manual, or no actions) skip the pre-action look: found by the simulated provisioning run, where a
+  quick operator moved the screen on before that look and the run stopped as "unexpected". Waiting is never counted as
+  a send to replay on resume.
+- **CLI:** `kvmit run` detects workflows and does what the panel does (hidden secret prompts, trust prompt, dry run,
+  live timeline, variables, `--save-trace`, `--resume`, `--check`). `--var` is refused for workflows.
+- **Checkpoints** saved per source under `<scripts>/checkpoints/`, bound to the file's exact text (FNV-1a, identity only);
+  the app and the CLI name a file by its canonical path, so either can resume the other's run. Cleared on completion;
+  never written by a dry run.
+- **Reference screens** listed in the panel with **Save this screen as**; `reference_path` is now the one rule the run
+  host, the check and the save use.
+- **Template** `windows-11-oobe-provisioning.toml` (built in). Both paths, the wrong-path guard and another tenant's page
+  run end to end against a simulated target with distinct structured screens (`library.rs` tests). A test bug found on
+  the way: replacing `deployment_mode = "autopilot"` in the source also rewrote the Autopilot guard; the test now edits
+  only the profile line.
+- **Reconnect:** the GUI's retry loop never gave up, but `backend::connect` awaited connect, service discovery and
+  subscribe without a bound; after a power loss Windows can return a cached peripheral and wait on it. Bounded at 15 s
+  (`GATT_SETUP_TIMEOUT`), the attempt is closed and the loop retries. Diagnosis from the code; not reproduced on a board.
+
+Verified by running (Windows 11): `cargo test` for `kvmit-script` (71) and `kvmit` (95) (after round 55: 72 and 95, whole workspace green), clippy `-D warnings` on the
+workspace, `cargo check -p kvmit-ble --target aarch64-apple-darwin`. **Not run:** the VM past the network screen (adding
+a network card to VM 120 and rolling it back was blocked by the session's permission policy pending the maintainer),
+any capture card or adapter, a real tenant, Autopilot, a power-cycled adapter, the panel on screen.
+
+## 2026-11-04 - Round 54 (`5afc770`): review round 55 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static, over `5afc770`. **NO SIGN-OFF.** 1 High, 5 Medium; every finding was confirmed by reading
+the code. Fixed on the same branch.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | The app resumed the checkpoint it read on selection; a `kvmit run` that sent keys and saved a newer one meanwhile would be resumed from the older copy, skipping "send them again?" | **Confirmed.** Resume reads the saved checkpoint again at the click and starts only if it is unchanged; otherwise it says so and shows the new one. |
+| 2 | Med | `kvmit run` printed the workflow's name, description and profile before the secrets were known, so a secret's value written into the file reached stdout (and a log) before the engine refused it | **Confirmed.** Secrets are prompted first; a value found in the file's text or its checkpoint refuses the run before anything from either is printed. (The app shows the profile on screen before secrets are typed, as before: a display, not a log.) |
+| 3 | Med | Save this screen as followed a link or junction inside the workflow's folder, so it could overwrite a file outside it | **Confirmed.** `save_reference` resolves the folder after creating it, refuses one outside the workflow's folder, and refuses a destination that is a link. Unix test with symlinks; the Windows junction case is argued, not tested. |
+| 4 | Med | Two writers shared one `.json.tmp` name, so concurrent saves could mix | **Confirmed.** Each writer creates its own temporary file (process id and time, created new), syncs it and renames it over the checkpoint. |
+| 5 | Med | A manual or waiting state that stopped (say, timed out) left `attempted = 0`, so resuming on its next screen skipped the transition and lost its facts (`network = connected`), which a later guard may need | **Confirmed; introduced by round 54.** Checkpoints carry `waiting` (the state passed its checks and was watching for the screen to move on, sending nothing); a resume that finds a permitted next screen records that transition and its facts. Never a reason to send. Older checkpoints read as not waiting. Test added. |
+| 6 | Med | After the 15 s bound, the cleanup `disconnect` itself could wait forever (CoreBluetooth waits for a callback) | **Confirmed.** Every disconnect of a failed attempt, and `Connection::disconnect` (also used after a lost link), is bounded at 5 s. |

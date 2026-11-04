@@ -459,6 +459,9 @@ pub struct Context {
     pub attempts: BTreeMap<String, u32>,
     /// Attempts in the current visit to the current state: what a resume must account for.
     pub visit_attempts: u32,
+    /// The current visit passed its entry checks and is watching for the screen to move on without sending anything (a
+    /// manual step, or a state that only waits). A resume that finds the next screen reconciles that transition.
+    pub visit_waiting: bool,
     pub history: Vec<Transition>,
 }
 
@@ -532,6 +535,10 @@ pub struct Checkpoint {
     /// attempts of the state) for replay protection, and as "nothing to reconcile" for facts.
     #[serde(default)]
     pub attempted: Option<u32>,
+    /// The state sent nothing but was waiting for the screen to move on (a manual step, or a wait): when a resume finds
+    /// a permitted next screen, that is the state's transition, and its facts are recorded. Never a reason to send.
+    #[serde(default)]
+    pub waiting: bool,
     pub history: Vec<Transition>,
 }
 
@@ -818,6 +825,7 @@ impl WorkflowReport {
             derived: self.context.derived.iter().map(|(k, (v, _))| (k.clone(), v.clone())).collect(),
             attempts: self.context.attempts.clone(),
             attempted: Some(self.context.visit_attempts),
+            waiting: self.context.visit_waiting,
             history: self.context.history.clone(),
         })
     }
@@ -1117,6 +1125,7 @@ impl Engine<'_> {
 
     fn enter(&mut self, to: &str, reason: &str) {
         self.ctx.visit_attempts = 0;
+        self.ctx.visit_waiting = false;
         let from = self.ctx.current.replace(to.to_string());
         if from.is_some() {
             self.ctx.previous = from.clone();
@@ -1232,7 +1241,7 @@ impl Engine<'_> {
                 spent = cp.attempted.unwrap_or_else(|| cp.attempts.get(&first).copied().unwrap_or(0));
                 self.ctx.visit_attempts = spent;
             }
-            Some(cp) if cp.attempted.unwrap_or(0) == 0 => {
+            Some(cp) if cp.attempted.unwrap_or(0) == 0 && !cp.waiting => {
                 // Nothing was sent in that visit (it stopped at a guard, a gate or a look), so the screen moving on is
                 // not that state's transition: no facts are recorded for it. The new state's own checks decide.
                 self.enter(&first, "observed after resume; the checkpoint's state sent nothing");
@@ -1294,6 +1303,8 @@ impl Engine<'_> {
                 if s.manual.is_none() && !ops.is_empty() {
                     self.still_on(&s)?;
                 }
+                // Sending nothing, this visit now waits for the screen to move on (see `Checkpoint::waiting`).
+                self.ctx.visit_waiting = s.manual.is_some() || ops.is_empty();
                 match &s.manual {
                     // Nothing is sent, so nothing is spent: a resume never asks to "send again" a step done by hand.
                     Some(message) => self.emit(WorkflowEvent::ManualStepRequested {

@@ -1015,14 +1015,8 @@ impl App {
                 };
                 if b.clicked() {
                     let r = &refs[self.wf_snap];
-                    let saved = r.path.clone().and_then(|p| {
-                        let f = frame.expect("enabled only with a frame");
-                        if let Some(d) = p.parent() {
-                            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-                        }
-                        kvmit_video::convert::save_png(&p, f.width, f.height, &f.rgba).map_err(|e| e.to_string())?;
-                        Ok(p)
-                    });
+                    let f = frame.expect("enabled only with a frame");
+                    let saved = crate::wf_view::save_reference(base, &r.image, f.width, f.height, &f.rgba);
                     match saved {
                         Ok(p) => self.set_notice(format!("Saved {}", p.display())),
                         Err(e) => self.set_notice(format!("Could not save {}: {e}", r.image)),
@@ -1128,7 +1122,18 @@ impl App {
                     r.clone().on_disabled_hover_text(w);
                 }
                 if r.clicked() {
-                    self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), false, Some(cp.clone()), ctx.clone());
+                    // Read the saved checkpoint again now: another run (`kvmit run`, another window) may have sent keys and
+                    // saved a newer one since, and resuming an older copy would skip "send them again?".
+                    match crate::wf_view::load_checkpoint(&files.script_dir, &files.saved, &files.text) {
+                        Ok(Some(now)) if now == *cp => {
+                            self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), false, Some(now), ctx.clone());
+                        }
+                        Ok(now) => {
+                            self.wf_saved = now;
+                            self.set_notice("This workflow's checkpoint changed since it was shown (another run?). Select the workflow again to see where it stands, then Resume.");
+                        }
+                        Err(e) => self.set_notice(format!("Could not read this workflow's saved checkpoint: {e}")),
+                    }
                 }
             }
             let r = ui.add_enabled(running, egui::Button::new("■ Abort"));

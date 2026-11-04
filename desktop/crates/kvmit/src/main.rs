@@ -494,6 +494,21 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     let wf = kvmit_script::Workflow::parse(src).map_err(|e| format!("{}: {e}", a.file.display()))?;
     let source = wf_view::file_source(&a.file);
     let dir = cfg.script_dir();
+    // Secrets first: nothing from the file (or its checkpoint) is printed until it is known not to hold a secret's
+    // value, since this output may be going to a log.
+    let mut secrets = Vars::new();
+    for (name, prompt) in &wf.secrets {
+        let v = rpassword::prompt_password(format!("{prompt} (hidden): "))?;
+        if v.is_empty() {
+            return Err(format!("{prompt}: a value is required").into());
+        }
+        secrets.insert(name.clone(), v);
+    }
+    let saved = if a.resume { wf_view::load_checkpoint(&dir, &source, src)? } else { None };
+    let saved_json = saved.as_ref().map(|c| c.to_json()).unwrap_or_default();
+    if secrets.values().any(|v| src.contains(v.as_str()) || saved_json.contains(v.as_str())) {
+        return Err("the workflow file (or its checkpoint) contains the value of a prompted secret; remove it from the file".into());
+    }
     let name = if wf.name.is_empty() { "(unnamed)" } else { wf.name.as_str() };
     println!("workflow: {name}");
     if !wf.description.is_empty() {
@@ -504,8 +519,7 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
         println!("  approved profile: {k} = {v}");
     }
     let checkpoint = if a.resume {
-        let cp = wf_view::load_checkpoint(&dir, &source, src)?
-            .ok_or("no saved checkpoint for this workflow (none was saved, the run completed, or the file changed since)")?;
+        let cp = saved.ok_or("no saved checkpoint for this workflow (none was saved, the run completed, or the file changed since)")?;
         println!("resuming from {} (the screen is looked at first)", cp.state);
         Some(cp)
     } else {
@@ -513,14 +527,6 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     };
     if !a.yes && !a.dry && !ask_stdin("This workflow will type into the target computer. Did you write or review it?") {
         return Err("cancelled".into());
-    }
-    let mut secrets = Vars::new();
-    for (name, prompt) in &wf.secrets {
-        let v = rpassword::prompt_password(format!("{prompt} (hidden): "))?;
-        if v.is_empty() {
-            return Err(format!("{prompt}: a value is required").into());
-        }
-        secrets.insert(name.clone(), v);
     }
     // A workflow always watches the screen, a dry run too.
     let capture = Arc::new(std::sync::Mutex::new(Some(open_capture(video.as_deref(), &cfg)?)));

@@ -484,6 +484,7 @@ fn resuming_re_observes_the_screen_and_never_replays_blindly() {
         derived: [("region_set".to_string(), "yes".to_string())].into(),
         attempts: BTreeMap::new(),
         attempted: Some(0),
+        waiting: false,
         history: vec![],
     };
     let cp = Checkpoint::from_json(&cp.to_json()).unwrap();
@@ -624,6 +625,7 @@ fn resuming_keeps_spent_attempts_and_asks_before_resending() {
         derived: BTreeMap::new(),
         attempts: [(state.to_string(), attempts)].into(),
         attempted: Some(attempts),
+        waiting: false,
         history: vec![],
     };
     // KEYBOARD's whole budget (1 + 1 retry) was spent: resuming does not grant a new one.
@@ -652,6 +654,7 @@ fn resuming_on_the_next_screen_records_the_pending_transition() {
         derived: BTreeMap::new(),
         attempts: [("NETWORK".to_string(), 1)].into(),
         attempted: Some(1),
+        waiting: false,
         history: vec![],
     };
     let mut sim = Sim { screens: screens(), pos: 3, confirms: [true].into(), ..Default::default() };
@@ -742,6 +745,7 @@ fn a_checkpoint_that_sent_nothing_has_no_pending_transition() {
         derived: BTreeMap::new(),
         attempts: [("NETWORK".to_string(), 3)].into(),
         attempted: Some(0),
+        waiting: false,
         history: vec![],
     };
     let mut sim = Sim { screens: screens(), pos: 3, confirms: [true].into(), ..Default::default() };
@@ -939,6 +943,7 @@ fn a_secret_with_quotes_is_found_in_a_checkpoint() {
         derived: [("note".to_string(), "pa\"ss".to_string())].into(),
         attempts: BTreeMap::new(),
         attempted: Some(0),
+        waiting: false,
         history: vec![],
     };
     let mut seen = Vec::new();
@@ -1075,4 +1080,23 @@ fn waiting_in_a_state_that_types_nothing_is_never_a_send_to_replay() {
     let r = go(&w, &mut sim, &opts(), None);
     assert!(matches!(&r.result, Err(WorkflowError::TimedOut { .. })), "{:?}", r.result);
     assert_eq!(r.checkpoint(&w).unwrap().attempted, Some(0), "nothing was sent: a resume asks nothing");
+}
+
+#[test]
+fn resuming_after_a_manual_step_finished_while_stopped_keeps_its_facts() {
+    let w = Workflow::parse(MANUAL).unwrap();
+    // The manual step timed out; the operator then did it, and the target now shows DONE.
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    let cp = r.checkpoint(&w).unwrap();
+    assert!(cp.waiting && cp.attempted == Some(0), "{cp:?}");
+    let cp = Checkpoint::from_json(&cp.to_json()).unwrap();
+    let mut sim = Sim { timeline: Some(vec![solid(225)]), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), Some(&cp));
+    assert_eq!(r.result, Ok(()), "{:?}", r.trace);
+    assert_eq!(r.context.derived["network"].0, "connected by hand", "the pending transition is reconciled with its facts");
+    assert_eq!(sim.keys, ["release_all"], "and nothing is sent");
+    // An older checkpoint without the field reads as not waiting (nothing to reconcile), as before.
+    let old = cp.to_json().replace("\"waiting\": true,", "");
+    assert!(!Checkpoint::from_json(&old).unwrap().waiting);
 }

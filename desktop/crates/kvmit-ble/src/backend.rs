@@ -41,6 +41,12 @@ type Result<T> = std::result::Result<T, BackendError>;
 /// The longest connecting, discovering the services and subscribing may take, once the adapter has been found.
 pub const GATT_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Close a connection attempt that failed, without waiting forever on it: a platform that never confirms the disconnect
+/// (CoreBluetooth waits for a callback) must not stall the caller's next attempt.
+async fn close_quietly(p: &Peripheral) {
+    let _ = tokio::time::timeout(Duration::from_secs(5), p.disconnect()).await;
+}
+
 fn err<T>(s: impl Into<String>) -> Result<T> {
     Err(BackendError(s.into()))
 }
@@ -236,8 +242,10 @@ impl Connection {
     pub fn take_io(&mut self) -> LinkIo {
         self.io.take().expect("io already taken")
     }
+    /// Bounded (see [`close_quietly`]): after the adapter lost power, the platform may never confirm, and the caller's
+    /// reconnect must go on.
     pub async fn disconnect(&self) {
-        let _ = self.peripheral.disconnect().await;
+        close_quietly(&self.peripheral).await;
     }
 }
 
@@ -271,11 +279,11 @@ pub async fn connect(id: &str) -> Result<Connection> {
     let set_up = match tokio::time::timeout(GATT_SETUP_TIMEOUT, setup).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            let _ = p.disconnect().await;
+            close_quietly(&p).await;
             return Err(e);
         }
         Err(_) => {
-            let _ = p.disconnect().await;
+            close_quietly(&p).await;
             return err(format!(
                 "adapter {id} did not answer within {} s (it may be restarting after a power loss)",
                 GATT_SETUP_TIMEOUT.as_secs()

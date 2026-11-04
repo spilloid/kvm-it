@@ -144,12 +144,40 @@ project's signed shim and iPXE; but then iPXE only starts signed things (Windows
 Violation"), and some locked-down PCs turn that CA off and refuse the drive. All of that has been run in a virtual machine, not yet on a real PC. And the boot script on the
 drive is the demo until editing it from the app lands (developers can change it today: [developing.md](developing.md)).
 
+## 7. Set up Windows 11 with a workflow (new in 0.5.0)
+
+A **workflow** drives Windows setup screen by screen: it recognises each screen from a picture of it, types only on the
+screen it expects, checks that the next screen arrived, and stops (typing nothing) on anything it does not recognise.
+The built-in one, `windows-11-oobe-provisioning.toml`, goes from the region screen to the user's first sign-in, by
+**Windows Autopilot** or by **joining Microsoft Entra with a work or school account**. It is a template: the screens after
+the network screen have not yet been run on a real machine. Try it on one machine, with a dry run first.
+
+1. **Make it yours.** Copy `windows-11-oobe-provisioning.toml` into your scripts folder (the app's Scripts list shows the
+   folder). In `[config]`, set `deployment_mode` to `autopilot` or `work_account`, and `tenant` to your organisation's
+   short name; under `[tenants]`, name the same organisation and the picture of its password page.
+2. **Save its screens once.** Select it in the Scripts list and open **Reference screens**: every screen it needs is
+   listed, marked missing. Take one machine through setup by hand. At each screen, choose that screen's name under
+   **Save this screen as** and click it. For the organisation's picture, save the password page (with your branding)
+   under the tenant's name. `kvmit run <file> --check` lists the same from a terminal; `kvmit video snap <path>` saves one.
+3. **Dry run.** Reset the machine to the first setup screen and click **Dry run**: it watches the screen and sends
+   nothing. Click through setup by hand and check that the timeline names each screen as you reach it.
+4. **Run.** Enter the user's sign-in and password (held in memory only, never saved), tick that you reviewed the file and
+   click **Run**. The timeline says **Your turn** at the steps a person must do: connect the network, name the device, approve the
+   sign-in on a phone, choose privacy settings. Do those at the target; the run sees the screen move on and continues.
+   It ends at Windows Hello or the desktop, for the user to take over.
+5. **If it stops**, it says why and saves a checkpoint. Fix the target, then click **Resume** (or `kvmit run <file>
+   --resume`): it looks at the screen first and carries on only from the state it stopped in or the next one.
+
+From a terminal the whole run is `kvmit run <your copy>.toml` (add `--save-trace` for a record for the ticket).
+
 ## When something is off
 
 - **Read the chips first.** They say which link is the problem.
 - **The app will not start and shows an OpenGL message:** update the graphics driver. (A virtual machine with no GPU needs a software
   OpenGL.)
 - **Video says *not opened*, or stops:** is the card plugged in, and is nothing else using it? On Windows, check the camera setting above.
+- **The adapter lost power (you moved it to another machine):** leave the app open. It reconnects by itself within a few
+  seconds of the adapter starting up again; the chip says *not connected (retrying)* meanwhile. No need to click Connect.
 - **The adapter never appears in a scan:** replug it (15-second window) or press **BOOT**, then scan again. More in the
   [hardware guide](hardware.md).
 - **Keys stuck on the target:** *Release all keys* in the **Adapter** popup. If the app crashes, the adapter lets go of everything by
