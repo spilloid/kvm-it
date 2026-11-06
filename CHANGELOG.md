@@ -19,12 +19,14 @@
   and saving each screen to running several laptops at once and what each stop means.
 
 ### Fixed
-- **A workflow runs with pictures missing.** In 0.5.0 one missing reference picture stopped the run before the first
+- **A workflow can run with pictures missing.** In 0.5.0 one missing reference picture stopped the run before the first
   screen, so every screen had to be saved, including ones a laptop never shows (the licence terms, the other
-  method's sign-in). Now a screen whose picture is missing is not recognised: the run lists those screens when it
-  starts and stops (typing nothing there) if one appears. A picture name that is not a valid path is still an error, and
-  the configured organisation's picture is required before the run starts. `kvmit run --check` reports missing pictures
-  without failing. Host-tested.
+  method's sign-in). Now a live run with missing pictures is refused unless you accept it (**Run without the missing
+  pictures** in the app, `kvmit run --allow-missing-pictures`); a dry run accepts it by itself. A screen without a
+  picture is not recognised: the run lists those screens when it starts, and if one appears it usually stops there,
+  but it may be taken for a similar screen. A picture name that is not a valid path is still an error, and every
+  allowed organisation's picture is required when the workflow checks the organisation. `kvmit run --check` reports
+  missing pictures without failing. Host-tested.
 - A dry run needs no sign-in or password (app and `kvmit run --dry-run`): it sends nothing.
 - The scripts panel scrolls inside the window: a workflow's settings, reference list and run controls no longer run off
   the bottom of the screen.

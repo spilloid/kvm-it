@@ -1136,25 +1136,37 @@ fn the_secret_check_reads_decoded_fields() {
 #[test]
 fn a_missing_picture_makes_only_its_state_unrecognised() {
     // The keyboard screen's picture is not saved: REGION is done, then that screen is unknown and nothing is typed on it.
+    // Refused unless allowed: such a screen may be taken for a similar state.
     let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png"], ..Default::default() };
     let r = go(&wf(), &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("KEYBOARD")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing sent");
+    let allow = WorkflowOptions { allow_missing_pictures: true, ..opts() };
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png"], ..Default::default() };
+    let r = go(&wf(), &mut sim, &allow, None);
     assert!(matches!(r.result, Err(WorkflowError::UnknownScreen { .. })), "{:?}", r.result);
     assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::PicturesMissing { states } if states == &["KEYBOARD"])));
     assert!(r.context.history.is_empty(), "REGION's move cannot be verified onto a screen nobody can recognise");
     let sent = events(&r).iter().filter(|e| matches!(e, WorkflowEvent::ActionAttempted { .. })).count();
     assert_eq!(sent, 1, "keys went to REGION only");
 
-    // Another allowed tenant's missing picture is simply not compared.
-    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["fabrikam.png"], ..Default::default() };
-    assert_eq!(go(&wf(), &mut sim, &opts(), None).result, Ok(()));
+    // A dry run sends nothing: it runs with pictures missing, unasked.
+    let dry = WorkflowOptions { run: RunOptions { dry_run: true, ..opts().run }, ..opts() };
+    let mut sim = Sim { timeline: Some(screens()), missing: vec!["keyboard.png"], ..Default::default() };
+    let r = go(&wf(), &mut sim, &dry, None);
+    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::PicturesMissing { .. })), "{:?}", r.result);
 }
 
 #[test]
 fn the_configured_tenants_picture_or_any_picture_at_all_is_needed_before_starting() {
-    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["contoso.png"], ..Default::default() };
-    let r = go(&wf(), &mut sim, &opts(), None);
-    assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("contoso")), "{:?}", r.result);
-    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing sent: {:?}", sim.keys);
+    // Every allowed tenant's picture: the configured one, and a competitor (without it the wrong page could pass).
+    for gone in ["contoso.png", "fabrikam.png"] {
+        let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec![gone], ..Default::default() };
+        let allow = WorkflowOptions { allow_missing_pictures: true, ..opts() };
+        let r = go(&wf(), &mut sim, &allow, None);
+        assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains(gone)), "{:?}", r.result);
+        assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing sent: {:?}", sim.keys);
+    }
     let all = vec!["region.png", "keyboard.png", "network.png", "autopilot.png", "done.png"];
     let mut sim = Sim { screens: screens(), missing: all, ..Default::default() };
     let r = go(&wf(), &mut sim, &opts(), None);

@@ -33,7 +33,9 @@ pub fn apply(text: &str, values: &BTreeMap<String, String>) -> Result<String, St
             // Never the picture of another tenant or of a screen: two names for one picture would make the tenant
             // check tie (and refuse) and saving one would change the other. Compared as Windows does: any case, either
             // slash.
-            let same = |a: &str| a.replace('\\', "/").eq_ignore_ascii_case(&picture.replace('\\', "/"));
+            // Compared by their parts: `./`, doubled and back slashes, and case do not make another file.
+            let parts = |p: &str| p.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".").map(str::to_ascii_lowercase).collect::<Vec<_>>();
+            let same = |a: &str| parts(a) == parts(&picture);
             let taken = wf.tenants.iter().filter(|(t, _)| *t != old).map(|(_, p)| p).chain(wf.states.iter().flat_map(|s| &s.detect.screens));
             if let Some(p) = taken.into_iter().find(|p| same(p)) {
                 return Err(format!("the picture {picture} would be the same as {p}, already used by this workflow: choose another name"));
@@ -161,6 +163,10 @@ terminal = true
         assert!(e.contains("already used"), "{e}");
         let screen = WF.replace("screen = \"a.png\"", "screen = \"pics\\\\tenant-fabrikam.png\"");
         assert!(apply(&screen, &[("tenant".to_string(), "fabrikam".to_string())].into()).unwrap_err().contains("already used"));
+        for alias in ["./pics/tenant-fabrikam.png", "pics//tenant-fabrikam.png", "pics/./TENANT-fabrikam.png"] {
+            let w = WF.replace("other = \"pics/other.png\"", &format!("other = \"{alias}\""));
+            assert!(apply(&w, &[("tenant".to_string(), "fabrikam".to_string())].into()).unwrap_err().contains("already used"), "{alias}");
+        }
     }
 
     #[test]

@@ -967,6 +967,9 @@ pub struct WorkflowOptions {
     /// After a boundary (an action, an approval), frames arriving within this time may still be pictures from before
     /// it, already in the capture's queue, and are not used as evidence.
     pub capture_latency: Duration,
+    /// Run although some states have no saved picture (they cannot be recognised). Off by default: such a screen is
+    /// usually unknown, but may be taken for a similar state. A dry run never needs it.
+    pub allow_missing_pictures: bool,
 }
 
 impl Default for WorkflowOptions {
@@ -977,6 +980,7 @@ impl Default for WorkflowOptions {
             settle_frames: 2,
             offer_manual_recovery: true,
             capture_latency: Duration::from_millis(300),
+            allow_missing_pictures: false,
         }
     }
 }
@@ -1099,36 +1103,38 @@ impl Engine<'_> {
         Ok(f)
     }
 
-    /// Before the first look: which pictures are not saved yet. A state with none of its pictures cannot be recognised
-    /// (its screen, if it appears, stops the run as unknown); the run needs at least one recognisable state, and, if a
-    /// state checks the tenant, the configured tenant's picture, so it never types a sign-in it could not finish.
+    /// Before the first look: which pictures are not saved yet, each probed once (one snapshot, so states sharing a
+    /// picture always agree). The tenant check needs every allowed tenant's picture: a missing competitor could let the
+    /// wrong organisation's page pass. A state none of whose pictures is saved cannot be recognised, and its screen, if
+    /// it appears, is usually unknown (the run stops) but may be taken for a similar state: a live run accepts that
+    /// only with `allow_missing_pictures`; a dry run, which sends nothing, always does.
     fn note_missing_pictures(&mut self) -> Result<(), WorkflowError> {
         let wf = self.wf;
-        let mut blind = Vec::new();
-        for s in &wf.states {
-            for screen in &s.detect.screens {
-                if self.host.reference_missing(screen) {
-                    self.missing.insert(screen.clone());
-                }
-            }
-            if s.detect.screens.iter().all(|x| self.missing.contains(x)) {
-                blind.push(s.name.clone());
+        let names: BTreeSet<&String> = wf.states.iter().flat_map(|s| &s.detect.screens).chain(wf.tenants.values()).collect();
+        for n in names {
+            if self.host.reference_missing(n) {
+                self.missing.insert(n.clone());
             }
         }
+        if wf.states.iter().any(|s| s.verify_tenant) {
+            if let Some((tenant, image)) = wf.tenants.iter().find(|(_, i)| self.missing.contains(*i)) {
+                return Err(WorkflowError::Reference(format!(
+                    "{image}, the picture of tenant {tenant}'s sign-in, is not saved: the tenant check compares every allowed tenant's picture before the password is typed"
+                )));
+            }
+        }
+        let blind: Vec<String> =
+            wf.states.iter().filter(|s| s.detect.screens.iter().all(|x| self.missing.contains(x))).map(|s| s.name.clone()).collect();
         if blind.len() == wf.states.len() {
             return Err(WorkflowError::Reference("no reference picture is saved yet: save the screens first".into()));
         }
-        for (tenant, image) in &wf.tenants {
-            if self.host.reference_missing(image) {
-                if wf.states.iter().any(|s| s.verify_tenant) && wf.config.get("tenant") == Some(tenant) {
-                    return Err(WorkflowError::Reference(format!(
-                        "{image}, the picture of tenant {tenant}'s sign-in, is not saved: the password is typed only after it matches"
-                    )));
-                }
-                self.missing.insert(image.clone());
-            }
-        }
         if !blind.is_empty() {
+            if !self.opts.run.dry_run && !self.opts.allow_missing_pictures {
+                return Err(WorkflowError::Reference(format!(
+                    "no picture is saved for {}: save them, or run without them (a screen without a picture is usually stopped at as unknown, but may be taken for a similar one)",
+                    blind.join(", ")
+                )));
+            }
             self.emit(WorkflowEvent::PicturesMissing { states: blind });
         }
         Ok(())
@@ -1174,6 +1180,9 @@ impl Engine<'_> {
             let Some((sim, screen)) = best else { continue };
             refs.insert(s.name.clone(), screen);
             scores.push((s.name.clone(), sim, s.detect.threshold));
+        }
+        if scores.is_empty() {
+            return Err(WorkflowError::Reference("no state's picture could be compared".into()));
         }
         scores.sort_by(|a, b| b.1.total_cmp(&a.1));
         let state = self.winner(&scores);
@@ -1374,11 +1383,6 @@ impl Engine<'_> {
         let frame = self.last_frame.clone().ok_or_else(mismatch)?;
         let mut scores = Vec::new();
         for (tenant, image) in &self.wf.tenants.clone() {
-            // Another allowed tenant whose picture is not saved is not compared; the configured one's must be (checked
-            // when the run starts).
-            if self.missing.contains(image) {
-                continue;
-            }
             let r = self.reference(image)?;
             scores.push((tenant.clone(), self.compare(&frame, &r, None), s.detect.threshold));
         }

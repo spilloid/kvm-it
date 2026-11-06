@@ -107,6 +107,10 @@ enum Cmd {
         /// Make a missing one with `kvmit video snap <path>` while the target shows that screen.
         #[arg(long)]
         check: bool,
+        /// Workflows: run although some screens have no saved picture. Such a screen is not recognised: if it appears
+        /// the run usually stops there, but it may be taken for a similar screen. A dry run never needs this.
+        #[arg(long)]
+        allow_missing_pictures: bool,
     },
     /// Convert a DuckyScript payload to the native format and list anything untranslatable
     Import {
@@ -329,7 +333,7 @@ fn real_main(cli: Cli) -> R<()> {
             script.steps.push(if keys.len() == 1 { Step::Key(keys[0].clone()) } else { Step::Chord(keys) });
             execute(cli.device, None, cfg, script, PathBuf::from("."), Vars::new(), false, true)
         }
-        Cmd::Run { file, vars, dry_run, yes, video, resume, save_trace, check } => {
+        Cmd::Run { file, vars, dry_run, yes, video, resume, save_trace, check, allow_missing_pictures } => {
             let src = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             if kvmit_script::workflow::is_workflow_source(&src) {
                 if !vars.is_empty() {
@@ -338,11 +342,11 @@ fn real_main(cli: Cli) -> R<()> {
                 if check {
                     return check_workflow(&file, &src);
                 }
-                let run = WfRun { file, dry: dry_run, yes, resume, save_trace };
+                let run = WfRun { file, dry: dry_run, yes, resume, save_trace, allow_missing_pictures };
                 return run_workflow_cmd(cli.device, video, cfg, &src, run);
             }
-            if resume || save_trace || check {
-                return Err("--resume, --save-trace and --check are for workflows (files with `workflow_format = 1`)".into());
+            if resume || save_trace || check || allow_missing_pictures {
+                return Err("--resume, --save-trace, --check and --allow-missing-pictures are for workflows (files with `workflow_format = 1`)".into());
             }
             let script = Script::parse(&src)?;
             let mut v: Vars = vars.into_iter().collect();
@@ -642,6 +646,7 @@ struct WfRun {
     yes: bool,
     resume: bool,
     save_trace: bool,
+    allow_missing_pictures: bool,
 }
 
 /// `kvmit run` for a workflow: what the app's workflow panel does, in a terminal. Secrets are prompted without echo,
@@ -713,7 +718,7 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
             // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
             on_event: Box::new(|_| {}),
         };
-        let mut opts = kvmit_script::WorkflowOptions::default();
+        let mut opts = kvmit_script::WorkflowOptions { allow_missing_pictures: a.allow_missing_pictures, ..Default::default() };
         opts.run.dry_run = a.dry;
         kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume, &mut |t, _| {
             for line in wf_view::cli_lines(t) {

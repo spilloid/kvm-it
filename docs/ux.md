@@ -186,6 +186,12 @@ and the demo source do); a source that does not is refused. `secret_text`
 may only use `[secrets]`. A state cannot list itself in `next`. Settling counts distinct captured frames (the capture's own
 frame number), so a stalled capture never "settles", and a frame captured before an action never verifies it.
 
+**Missing pictures** (0.5.1): a state none of whose reference pictures is saved cannot be recognised. A live run with
+such states is refused unless the operator accepts it (**Run without the missing pictures**, `--allow-missing-pictures`):
+that screen, if it appears, is usually unknown (the run stops) but may be taken for a similar state. A dry run accepts it
+by itself. The run lists those states when it starts. When a state checks the tenant, every allowed tenant's picture is
+required. A picture name that breaks the path rule is always an error.
+
 **Setup values** (`[[setup]]`, 0.5.1): a workflow may list which `[config]` values a person sets, each with a label,
 optional help and either fixed `choices` (plain strings, or `{ value, label }`) or free text. The app's **Set up your
 copy** (on a built-in) and **Approved profile** (on a file), and `kvmit workflow new|set|show`, offer exactly those and

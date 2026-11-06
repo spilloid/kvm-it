@@ -210,6 +210,8 @@ pub struct App {
     /// A file the setup form just wrote: the scripts list is re-read and it is selected, at the start of the next frame
     /// (not mid-panel, where the rest of the panel still draws the old selection).
     wf_reload: Option<std::path::PathBuf>,
+    /// The operator accepted running the selected workflow although some states have no saved picture.
+    wf_allow_missing: bool,
 }
 
 /// The id of a workflow secret's password field: explicit, so its state can be found and removed, and tied to the
@@ -323,6 +325,7 @@ impl App {
             wf_setup_name: String::new(),
             wf_setup_name_edited: false,
             wf_reload: None,
+            wf_allow_missing: false,
             purge_ids: Vec::new(),
             wf_generation: 0,
             wf_saved: None,
@@ -795,6 +798,7 @@ impl App {
         self.var_values.clear();
         self.wf_setup.clear();
         self.wf_setup_name_edited = false;
+        self.wf_allow_missing = false;
         if self.library[i].workflow {
             self.script = None;
             match kvmit_script::Workflow::parse(&self.library[i].source) {
@@ -996,6 +1000,7 @@ impl App {
         let (cancel, done, log, confirm, outcome) =
             (handle.cancel.clone(), handle.done.clone(), handle.log.clone(), handle.confirm.clone(), handle.outcome.clone());
         let (rt, capture, shared2) = (self.rt.handle().clone(), self.capture.clone(), shared.clone());
+        let allow_missing = self.wf_allow_missing;
         std::thread::spawn(move || {
             let ctx3 = ctx.clone();
             let cancel2 = cancel.clone();
@@ -1009,7 +1014,7 @@ impl App {
                 // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
                 on_event: Box::new(|_| {}),
             };
-            let mut opts = kvmit_script::WorkflowOptions::default();
+            let mut opts = kvmit_script::WorkflowOptions { allow_missing_pictures: allow_missing, ..Default::default() };
             opts.run.dry_run = dry;
             let (log2, ctx4, sh) = (log.clone(), ctx.clone(), shared2.clone());
             let report = kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume.as_ref().map(|(_, cp)| cp), &mut |t, c| {
@@ -1058,6 +1063,13 @@ impl App {
             }
             if refs.is_empty() {
                 return;
+            }
+            if missing > 0 {
+                ui.checkbox(&mut self.wf_allow_missing, "Run without the missing pictures");
+                ui.small(
+                    "A screen without a picture is not recognised: if it appears, the run usually stops there, but it may be \
+                     taken for a similar screen. Save every screen you can reach. A dry run never needs this.",
+                );
             }
             self.wf_snap = self.wf_snap.min(refs.len() - 1);
             ui.horizontal(|ui| {

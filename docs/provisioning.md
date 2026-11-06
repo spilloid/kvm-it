@@ -88,14 +88,17 @@ screen's picture under **Save this screen as** and click it:
 
 Notes:
 
-- Save every screen you can reach. A screen whose picture is missing is not recognised: if it appears, the run stops
-  there without typing on it, and you finish that screen by hand. The run lists those screens when it starts. Screens
-  you may not be able to reach are fine to leave out: the licence terms (often not shown), the network screen (skipped
-  when Ethernet is plugged in; unplug it for the walkthrough to save it), the other method's sign-in page
-  (`autopilot-signin.png` or `setup-choice.png` and `work-signin.png`), MFA and enrolment if your organisation has none.
-  Without the other method's sign-in picture, a laptop on the wrong method may not be stopped at that page; the password
-  is still typed only after your organisation's branding matches.
-- Your organisation's picture (`tenant-<name>.png`) is required: a run will not start without it.
+- Save every screen you can reach. Some you may not be able to: the licence terms (often not shown), the network
+  screen (skipped when Ethernet is plugged in; unplug it for the walkthrough to save it), the other method's sign-in
+  page (`autopilot-signin.png`, or `setup-choice.png` and `work-signin.png`), MFA and enrolment if your organisation has
+  none. To run without them, tick **Run without the missing pictures** under Reference screens (or add
+  `--allow-missing-pictures`). A screen without a picture is not recognised: if it appears, the run usually stops there
+  as an unknown screen, but it **may be taken for a similar screen** and that screen's keys typed. The likeliest case is
+  a laptop on the other method showing its sign-in page, which could be taken for your method's sign-in page and get the
+  user name. The password is still typed only after your organisation's branding matches. A dry run never needs the
+  tick.
+- Your organisation's picture (`tenant-<name>.png`) is required, and so is the picture of every other organisation
+  listed under `[tenants]` in your copy: a run will not start without them.
 - Save `password.png` and `tenant-<name>.png` from the same page, once your organisation's branding (logo, background,
   sign-in text) has loaded.
 - From a terminal, `kvmit run <your copy>.toml --check` lists the same pictures, present or missing, and

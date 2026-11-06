@@ -52,7 +52,7 @@ pub fn timeline(trace: &[TraceEntry]) -> Vec<Row> {
             let (text, health) = match &t.event {
                 WorkflowEvent::StateEntered { state, reason, .. } => (format!("Entered {state} ({reason})"), Health::Idle),
                 WorkflowEvent::PicturesMissing { states } => (
-                    format!("Not recognised this run (picture not saved): {}. If one of these appears, the run stops there.", states.join(", ")),
+                    format!("Not recognised this run (picture not saved): {}. If one appears, the run usually stops there (it may be taken for a similar screen).", states.join(", ")),
                     Health::Working,
                 ),
                 // A state with nothing to type only waits for the target (updates, a restart, enrolment).
@@ -336,11 +336,13 @@ pub fn check_file_name(name: &str) -> Result<(), String> {
     }
 }
 
-/// What a dry run passes for prompted secrets left empty: a dry run sends nothing, so it needs no real value.
+/// What a dry run passes for prompted secrets left empty: a dry run sends nothing, so it needs no real value. Unique
+/// to this run, so it never matches text in the workflow file (which the secret checks would refuse).
 pub fn dry_run_secrets(wf: &kvmit_script::Workflow, given: &kvmit_script::Vars) -> kvmit_script::Vars {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let mut all = given.clone();
     for k in wf.secrets.keys() {
-        all.entry(k.clone()).or_insert_with(|| "kvmit-dry-run-placeholder".to_string());
+        all.entry(k.clone()).or_insert_with(|| format!("dry-run-{}-{nanos:x}-{k}", std::process::id()));
     }
     all
 }
