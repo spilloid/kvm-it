@@ -59,6 +59,9 @@ pub struct StateDef {
     pub require: BTreeMap<String, String>,
     /// Ask the operator before acting (the message is shown as written; it must not contain secrets).
     pub gate: Option<String>,
+    /// The operator does this step by hand (connect a network, approve a sign-in on a phone): nothing is typed, and the
+    /// engine waits, watching, for the screen to move on to a permitted next state. Shown as written; no secrets.
+    pub manual: Option<String>,
     /// Before acting, the screen must show the configured tenant's branding (and not another allowed tenant's).
     pub verify_tenant: bool,
     pub actions: Vec<Step>,
@@ -118,6 +121,8 @@ struct RawState {
     require: BTreeMap<String, String>,
     #[serde(default)]
     gate: Option<String>,
+    #[serde(default)]
+    manual: Option<String>,
     #[serde(default)]
     verify_tenant: bool,
     #[serde(default)]
@@ -312,6 +317,17 @@ impl Workflow {
             if !r.terminal && r.next.is_empty() {
                 return Err(format!("state {:?} needs `next` states or `terminal = true`", r.name));
             }
+            if let Some(m) = &r.manual {
+                if m.trim().is_empty() {
+                    return Err(format!("state {:?}: `manual` must say what the operator should do", r.name));
+                }
+                if !r.actions.is_empty() || r.gate.is_some() || r.terminal || r.retries > 0 || r.retry_safe {
+                    return Err(format!(
+                        "state {:?}: a `manual` state types nothing, asks nothing first and is never retried (no actions, gate, retries or terminal)",
+                        r.name
+                    ));
+                }
+            }
             if r.verify_tenant && raw.tenants.is_empty() {
                 return Err(format!("state {:?} verifies the tenant but the workflow lists no tenants", r.name));
             }
@@ -350,6 +366,7 @@ impl Workflow {
                 next: r.next,
                 require: r.require,
                 gate: r.gate,
+                manual: r.manual,
                 verify_tenant: r.verify_tenant,
                 retries: r.retries,
                 retry_safe: r.retry_safe,
@@ -442,6 +459,9 @@ pub struct Context {
     pub attempts: BTreeMap<String, u32>,
     /// Attempts in the current visit to the current state: what a resume must account for.
     pub visit_attempts: u32,
+    /// The current visit passed its entry checks and is watching for the screen to move on without sending anything (a
+    /// manual step, or a state that only waits). A resume that finds the next screen reconciles that transition.
+    pub visit_waiting: bool,
     pub history: Vec<Transition>,
 }
 
@@ -515,6 +535,10 @@ pub struct Checkpoint {
     /// attempts of the state) for replay protection, and as "nothing to reconcile" for facts.
     #[serde(default)]
     pub attempted: Option<u32>,
+    /// The state sent nothing but was waiting for the screen to move on (a manual step, or a wait): when a resume finds
+    /// a permitted next screen, that is the state's transition, and its facts are recorded. Never a reason to send.
+    #[serde(default)]
+    pub waiting: bool,
     pub history: Vec<Transition>,
 }
 
@@ -539,6 +563,8 @@ pub enum WorkflowEvent {
     GuardChecked { state: String, ok: bool, detail: String },
     TenantVerified { state: String, tenant: String, confidence: f64 },
     HumanGateRequested { state: String, message: String, approved: bool },
+    /// A `manual` state: the operator was asked to do this by hand; the engine now waits for the screen to move on.
+    ManualStepRequested { state: String, message: String, timeout_ms: u64 },
     ActionAttempted { state: String, attempt: u32, steps: usize, dry_run: bool },
     TransitionVerified { from: String, to: String, confidence: f64, duration_ms: u64 },
     ContextChanged { key: String, from: Option<String>, to: String },
@@ -552,7 +578,9 @@ impl WorkflowEvent {
     /// diagnostic) before the event is published.
     fn scrub(&mut self, secrets: &Secrets) {
         match self {
-            WorkflowEvent::HumanGateRequested { message, .. } => secrets.scrub(message),
+            WorkflowEvent::HumanGateRequested { message, .. } | WorkflowEvent::ManualStepRequested { message, .. } => {
+                secrets.scrub(message)
+            }
             WorkflowEvent::Stopped { reason, .. } => secrets.scrub(reason),
             WorkflowEvent::GuardChecked { detail, .. } => secrets.scrub(detail),
             WorkflowEvent::StateEntered { reason, .. } => secrets.scrub(reason),
@@ -797,6 +825,7 @@ impl WorkflowReport {
             derived: self.context.derived.iter().map(|(k, (v, _))| (k.clone(), v.clone())).collect(),
             attempts: self.context.attempts.clone(),
             attempted: Some(self.context.visit_attempts),
+            waiting: self.context.visit_waiting,
             history: self.context.history.clone(),
         })
     }
@@ -1096,6 +1125,7 @@ impl Engine<'_> {
 
     fn enter(&mut self, to: &str, reason: &str) {
         self.ctx.visit_attempts = 0;
+        self.ctx.visit_waiting = false;
         let from = self.ctx.current.replace(to.to_string());
         if from.is_some() {
             self.ctx.previous = from.clone();
@@ -1143,7 +1173,10 @@ impl Engine<'_> {
 
     fn act(&mut self, s: &StateDef, ops: &[(usize, Op)], attempt: u32) -> Result<(), WorkflowError> {
         *self.ctx.attempts.entry(s.name.clone()).or_insert(0) += 1;
-        self.ctx.visit_attempts = attempt;
+        // Only keys sent count against a resume: waiting in a state that types nothing sends nothing to replay.
+        if !ops.is_empty() {
+            self.ctx.visit_attempts = attempt;
+        }
         self.emit(WorkflowEvent::ActionAttempted {
             state: s.name.clone(),
             attempt,
@@ -1207,8 +1240,11 @@ impl Engine<'_> {
                 // Unknown (an older checkpoint) counts as everything spent in that state: ask rather than replay.
                 spent = cp.attempted.unwrap_or_else(|| cp.attempts.get(&first).copied().unwrap_or(0));
                 self.ctx.visit_attempts = spent;
+                // Still the same visit: a pending wait stays pending until a verified transition, even if this resumed
+                // run stops again before it starts watching.
+                self.ctx.visit_waiting = cp.waiting;
             }
-            Some(cp) if cp.attempted.unwrap_or(0) == 0 => {
+            Some(cp) if cp.attempted.unwrap_or(0) == 0 && !cp.waiting => {
                 // Nothing was sent in that visit (it stopped at a guard, a gate or a look), so the screen moving on is
                 // not that state's transition: no facts are recorded for it. The new state's own checks decide.
                 self.enter(&first, "observed after resume; the checkpoint's state sent nothing");
@@ -1264,9 +1300,23 @@ impl Engine<'_> {
             spent = 0;
             let next = loop {
                 attempt += 1;
-                // Every burst of keys, first or retry, follows a fresh look taken now.
-                self.still_on(&s)?;
-                self.act(&s, ops, attempt)?;
+                // Every burst of keys, first or retry, follows a fresh look taken now. A state that sends nothing (done by
+                // hand, or the target finishing by itself) needs no such look: the screen may already have moved on,
+                // and the verification below decides whether it moved somewhere permitted.
+                if s.manual.is_none() && !ops.is_empty() {
+                    self.still_on(&s)?;
+                }
+                // Sending nothing, this visit now waits for the screen to move on (see `Checkpoint::waiting`).
+                self.ctx.visit_waiting = s.manual.is_some() || ops.is_empty();
+                match &s.manual {
+                    // Nothing is sent, so nothing is spent: a resume never asks to "send again" a step done by hand.
+                    Some(message) => self.emit(WorkflowEvent::ManualStepRequested {
+                        state: name.clone(),
+                        message: message.clone(),
+                        timeout_ms: s.timeout.as_millis() as u64,
+                    }),
+                    None => self.act(&s, ops, attempt)?,
+                }
                 // Everything captured up to now predates the action's effect.
                 let sent = Instant::now();
                 let boundary = self
@@ -1309,6 +1359,17 @@ impl Engine<'_> {
 /// The most a single key may be held, or a gap between keys may last. Typing is the action itself; these timings
 /// only shape it, and a long one would be a pause the engine does not look through.
 pub const MAX_KEY_TIMING: Duration = Duration::from_millis(100);
+
+/// Whether any prompted secret's value appears in the workflow or the checkpoint, field by field (decoded values, not
+/// the file's text, so an escape such as `s` cannot hide one). A caller that prints anything from either checks
+/// this first; the error names only where, never the value.
+pub fn check_secrets(wf: &Workflow, secrets: &Vars, resume: Option<&Checkpoint>) -> Result<(), WorkflowError> {
+    let values = Secrets(wf.secrets.keys().filter_map(|k| secrets.get(k).cloned()).collect());
+    match secret_place(wf, &values, resume) {
+        Some(place) => Err(WorkflowError::SecretInFile { place }),
+        None => Ok(()),
+    }
+}
 
 /// Checks before a run that need no screen: timing options, the pause budget of every state, and that no prompted
 /// secret's value appears anywhere in the workflow or the checkpoint (both are published: inspector, trace, exports).
@@ -1367,6 +1428,7 @@ fn secret_place(wf: &Workflow, secrets: &Secrets, resume: Option<&Checkpoint>) -
         vals.extend(st.require.iter().flat_map(|(k, v)| [k.as_str(), v.as_str()]));
         vals.extend(st.derive.iter().flat_map(|(k, v)| [k.as_str(), v.as_str()]));
         vals.extend(st.gate.iter().map(String::as_str));
+        vals.extend(st.manual.iter().map(String::as_str));
         steps(&mut vals, &st.actions);
         if hit(&vals) {
             return Some(format!("state {} (in file order)", i + 1));

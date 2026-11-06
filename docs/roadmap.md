@@ -17,8 +17,9 @@ Status key: done = built and software-verified; **hw?** = built, awaiting verifi
 | 9 | Live keyboard/mouse capture | built; **hw?** |
 | 10 | Macros + native script engine | host-tested |
 | 10b | Screen-aware `wait_for`, `confirm`, DuckyScript import, dry-run | host-tested on synthetic frames; not on real OOBE |
+| 10c | Stateful workflows (engine, app, CLI), Windows 11 provisioning template | host-tested; work-account path VM-verified from the region screen to the sign-in page; signing in onwards and Autopilot not run (0.5.0) |
 | 11 | Pairing window, bond, BOOT trust reset | done — hardware-verified (15 s power-on window, BOOT window, 10 s trust reset, LED); residual risk in docs/security.md |
-| 12 | Hotplug/reconnect hardening | basic auto-reconnect built; soak testing outstanding |
+| 12 | Hotplug/reconnect hardening | auto-reconnect built; connect bounded so a power-cycled adapter cannot stall it (0.5.0, not yet run against a power cycle); soak testing outstanding |
 | 13 | Linux release build | done: AppImage since 0.2.1, built and attached by CI |
 | 14 | Windows controller app | done: since 0.2.0; MSI and zip signed in CI; **hardware-verified on bare-metal Windows** (0.4.6) |
 | 15 | macOS controller app (Apple silicon) | done: since 0.4.6; **hardware-verified on a real Mac** (0.4.6); ad-hoc signed, not notarized |
@@ -33,6 +34,8 @@ Status key: done = built and software-verified; **hw?** = built, awaiting verifi
 | 0.4.0 | 2026-10-05 | Network boot through the adapter (read-only iPXE drive) |
 | 0.4.1-0.4.5 | 2026-10-06 | Honest video state, button contract, input fidelity, session recording, light/dark theme |
 | 0.4.6 / 0.4.7 | 2026-10-07/08 | macOS (preview, then hardware-verified); `kvmit run --video` for several adapters at once |
+| 0.4.8 / 0.4.9 | 2026-10-08 / 10-30 | Polish and housekeeping; cross-platform UX audit |
+| 0.5.0 | 2026-11-04 | Stateful workflows (app and CLI), Windows 11 provisioning template, reconnect after power loss |
 
 Details for each are in the CHANGELOG; the README status table says what each part has been verified on.
 
@@ -45,7 +48,8 @@ written down instead of open-ended. Direction, not commitments; each release onl
 |---|---|---|
 | **0.4.8** (shipped 2026-10-08) | Polish and housekeeping | Icon and version information on `kvmit.exe`, `kvmit-gui.exe` and the MSI; plain-language Bluetooth errors (off, blocked, no adapter, no `bluetoothd`); the generated licence listing of every Rust dependency (`THIRD_PARTY_LICENSES.html`) and the firmware's components in `THIRD_PARTY_NOTICES.md`; the Secure Boot boot drive from PR #15 (VM-verified only; real PCs are #40); this roadmap. |
 | **0.4.9** (shipped 2026-10-30) | Cross-platform UX audit | Windows settings no longer reset when two processes save at once; X11 pointer grab tries confined then locked; per-OS capture messages and the Mac chord in the docs; Homebrew/MacPorts ffmpeg found from Finder; plain-language COM-port advice; Linux scripts-folder fallback; small-window layout (STD-008). See `docs/platform-parity.md`. |
-| **0.4.10** | Your own boot server, input ordering, review debt | **Point the boot drive at your own server from the app:** enter a boot URL in the Adapter popup (or `kvmit boot-drive --url`), the app writes it into the drive's `autoexec.ipxe` and reflashes only the drive partition, keeping the pairing; the drive stays safe by default (nothing runs without a key press), and the docs get a worked example with an object-storage bucket behind a custom domain, IP-restricted, since anything on the drive is readable by whoever holds the adapter. One ordered stream for keyboard and mouse so modifier+click can never reorder (review round 4, finding 6); Enter vs keypad Enter on held-key seeding (round 5, finding 4); the pairing UI follow-ups (disable *Pair & connect* / *Connect* while a pairing runs, disconnect on early errors, a timeout on the pairing guard); the cross-model review rounds still owed where Opus stood in for Codex (rounds 13-16). |
+| **0.5.0** (2026-11-04) | Stateful workflows | Workflows in the engine, the app and `kvmit run` (issue #46): screens recognised from your own reference pictures, verified transitions, manual steps, guards and a tenant check, saved checkpoints shared by the app and the CLI. A built-in Windows 11 provisioning workflow (Autopilot, or Microsoft Entra join with a work account), a template beyond the network screen until it runs on real machines. Reconnect after the adapter loses power without clicking Connect. |
+| **0.5.1** | Your own boot server, input ordering, review debt | **Point the boot drive at your own server from the app:** enter a boot URL in the Adapter popup (or `kvmit boot-drive --url`), the app writes it into the drive's `autoexec.ipxe` and reflashes only the drive partition, keeping the pairing; the drive stays safe by default (nothing runs without a key press), and the docs get a worked example with an object-storage bucket behind a custom domain, IP-restricted, since anything on the drive is readable by whoever holds the adapter. One ordered stream for keyboard and mouse so modifier+click can never reorder (review round 4, finding 6); Enter vs keypad Enter on held-key seeding (round 5, finding 4); the pairing UI follow-ups (disable *Pair & connect* / *Connect* while a pairing runs, disconnect on early errors, a timeout on the pairing guard); the cross-model review rounds still owed where Opus stood in for Codex (rounds 13-16). |
 | **1.0.0** | Finished | When the checklist below is done. |
 
 ### 1.0 checklist
@@ -53,7 +57,7 @@ written down instead of open-ended. Direction, not commitments; each release onl
 - [ ] Hardware-verify issues **#31-#34** run, or each one written down as a known limit with what was seen.
 - [ ] **#40** (Secure Boot on real PCs) run on at least a stock Windows 11 laptop; the docs say exactly which machines worked.
 - [ ] A **Linux hardware pass** on the release build: GUI wizard, pairing, the shared motion change (owed since 0.2.0).
-- [ ] 0.4.10's input ordering on a real target, including wheel/touchpad (#34).
+- [ ] 0.5.1's input ordering on a real target, including wheel/touchpad (#34).
 - [ ] Every STD-001 deviation (a review round run by a stand-in reviewer) followed by the owed cross-model round.
 - [ ] README status table, getting-started and the docs site current for all three platforms; no row older than the code it describes.
 - [ ] Upgrade check: settings, pairings and saved scripts from 0.4.x still load in 1.0 on each OS.

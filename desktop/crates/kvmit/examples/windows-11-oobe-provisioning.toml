@@ -1,0 +1,161 @@
+workflow_format = 1
+name = "windows-11-oobe-provisioning"
+description = "Windows 11 setup to the user's first sign-in: Windows Autopilot (user-driven) or joining Microsoft Entra with a work or school account. TEMPLATE: REGION to the work-or-school sign-in page are VM-verified (25H2); sign-in and every later screen are host-tested only. Save your own reference screens first (Reference screens, below)."
+# Every state may be where a run begins: each is recognised from its screen, so starting mid-way is safe.
+start = ["REGION", "KEYBOARD", "SECOND_KEYBOARD", "NETWORK", "UPDATES", "EULA", "DEVICE_NAME", "SETUP_CHOICE", "AUTOPILOT_SIGNIN", "WORK_SIGNIN", "PASSWORD"]
+match = "structure"
+
+# The approved profile. Copy this file into your scripts folder and edit it there; a run never changes it.
+[config]
+# "autopilot": the device is registered for Windows Autopilot and shows the organisation's sign-in after the network.
+# "work_account": it is not; setup is told "Set up for work or school" and joins Microsoft Entra with the user's account.
+# A device that shows the other path's screen stops the run before anything is typed there.
+deployment_mode = "autopilot"
+# The organisation whose sign-in branding must be on screen before the password is typed. Name it under [tenants].
+tenant = "contoso"
+# The Microsoft Software License Terms screen is accepted only when the approved profile says so.
+accept_license = "yes"
+
+# Prompted when the run starts, never saved, logged or exported.
+[secrets]
+username = { prompt = "User's sign-in (name@organisation)" }
+password = { prompt = "User's password" }
+
+# Each allowed organisation and a picture of its password page (with its branding). Save it from your own tenant.
+[tenants]
+contoso = "oobe-win11/tenant-contoso.png"
+
+[[states]]
+name = "REGION"
+description = "Is this the right country or region? (accepts the one selected)"
+detect = { screen = "oobe-win11/region.png", region = [0.52, 0.12, 0.40, 0.75] }
+next = ["KEYBOARD"]
+actions = [ { key = "ENTER" } ]
+timeout = "30s"
+derive = { region = "accepted as selected" }
+
+[[states]]
+name = "KEYBOARD"
+description = "Is this the right keyboard layout or input method? (accepts the one selected)"
+detect = { screen = "oobe-win11/keyboard.png", region = [0.52, 0.12, 0.40, 0.75] }
+next = ["SECOND_KEYBOARD"]
+actions = [ { key = "ENTER" } ]
+timeout = "30s"
+derive = { keyboard = "accepted as selected" }
+
+[[states]]
+name = "SECOND_KEYBOARD"
+description = "Want to add a second keyboard layout? (Skip has focus)"
+detect = { screen = "oobe-win11/second-keyboard.png", region = [0.52, 0.12, 0.40, 0.75] }
+next = ["NETWORK", "UPDATES", "EULA", "DEVICE_NAME", "SETUP_CHOICE", "AUTOPILOT_SIGNIN"]
+actions = [ { key = "ENTER" } ]
+timeout = "60s"
+derive = { second_keyboard = "skipped" }
+
+[[states]]
+name = "NETWORK"
+description = "Let's connect you to a network"
+detect = { screen = "oobe-win11/network.png", region = [0.52, 0.12, 0.40, 0.75] }
+manual = "Connect the target to a network: plug in Ethernet, or choose Wi-Fi and join it at the target. Then select Next on the target."
+next = ["UPDATES", "EULA", "DEVICE_NAME", "SETUP_CHOICE", "AUTOPILOT_SIGNIN"]
+timeout = "15m"
+derive = { network = "connected" }
+
+[[states]]
+name = "UPDATES"
+description = "Checking for updates / Just a moment (the target may restart)"
+detect = { screen = "oobe-win11/updates.png" }
+next = ["EULA", "DEVICE_NAME", "SETUP_CHOICE", "AUTOPILOT_SIGNIN"]
+timeout = "45m"
+
+[[states]]
+name = "EULA"
+description = "License agreement (Accept)"
+detect = { screen = "oobe-win11/license.png", region = [0.52, 0.12, 0.40, 0.75] }
+require = { accept_license = "yes" }
+next = ["DEVICE_NAME", "SETUP_CHOICE", "AUTOPILOT_SIGNIN", "UPDATES"]
+actions = [ { key = "ENTER" } ]
+timeout = "60s"
+derive = { license = "accepted" }
+
+[[states]]
+name = "DEVICE_NAME"
+description = "Name your device (Skip: Windows keeps its generated name; Intune or Autopilot naming can set one)"
+detect = { screen = "oobe-win11/device-name.png", region = [0.52, 0.12, 0.40, 0.75] }
+next = ["SETUP_CHOICE", "AUTOPILOT_SIGNIN", "UPDATES"]
+# Focus starts in the name box; Tab moves it to Skip. (VM-verified, 25H2.)
+actions = [ { key = "TAB" }, { key = "ENTER" } ]
+timeout = "60s"
+derive = { device_name = "skipped (generated name kept)" }
+
+[[states]]
+name = "SETUP_CHOICE"
+description = "How would you like to set up this device? (work or school)"
+detect = { screen = "oobe-win11/setup-choice.png", region = [0.52, 0.12, 0.40, 0.75] }
+require = { deployment_mode = "work_account" }
+next = ["WORK_SIGNIN"]
+# Nothing is selected at first: Down moves focus to "work or school", Space selects it (Next becomes enabled), Enter
+# is Next. (VM-verified, 25H2: Down alone leaves Next disabled.)
+actions = [ { key = "DOWN" }, { key = "SPACE" }, { key = "ENTER" } ]
+timeout = "60s"
+derive = { setup_for = "work or school" }
+
+[[states]]
+name = "AUTOPILOT_SIGNIN"
+description = "Welcome to your organisation: sign in (Windows Autopilot)"
+detect = { screen = "oobe-win11/autopilot-signin.png", region = [0.52, 0.12, 0.40, 0.75] }
+require = { deployment_mode = "autopilot" }
+next = ["PASSWORD"]
+actions = [ { secret_text = "{{username}}" }, { key = "ENTER" } ]
+timeout = "60s"
+derive = { enrolment = "Windows Autopilot" }
+
+[[states]]
+name = "WORK_SIGNIN"
+description = "Let's set things up for your work or school: sign in"
+detect = { screen = "oobe-win11/work-signin.png", region = [0.52, 0.12, 0.40, 0.75] }
+require = { deployment_mode = "work_account" }
+next = ["PASSWORD"]
+actions = [ { secret_text = "{{username}}" }, { key = "ENTER" } ]
+timeout = "60s"
+derive = { enrolment = "Microsoft Entra join" }
+
+[[states]]
+name = "PASSWORD"
+description = "Enter password (the organisation's branding is checked first)"
+detect = { screen = "oobe-win11/password.png", region = [0.52, 0.12, 0.40, 0.75] }
+verify_tenant = true
+next = ["MFA", "PRIVACY", "ESP", "HANDOFF"]
+actions = [ { secret_text = "{{password}}" }, { key = "ENTER" } ]
+timeout = "90s"
+derive = { signed_in = "yes" }
+
+[[states]]
+name = "MFA"
+description = "Approve sign-in request / enter code"
+detect = { screens = ["oobe-win11/mfa.png"], region = [0.52, 0.12, 0.40, 0.75] }
+manual = "The user approves the sign-in (Authenticator, or the code at the target)."
+next = ["PRIVACY", "ESP", "HANDOFF"]
+timeout = "10m"
+derive = { mfa = "approved" }
+
+[[states]]
+name = "PRIVACY"
+description = "Choose privacy settings for your device"
+detect = { screen = "oobe-win11/privacy.png", region = [0.52, 0.12, 0.40, 0.75] }
+manual = "Choose the privacy settings your organisation requires at the target, then select Accept."
+next = ["ESP", "HANDOFF"]
+timeout = "15m"
+
+[[states]]
+name = "ESP"
+description = "Setting up your device for work (enrolment status: device preparation, device setup, account setup; may restart)"
+detect = { screen = "oobe-win11/esp.png", region = [0.52, 0.12, 0.40, 0.75] }
+next = ["HANDOFF"]
+timeout = "90m"
+
+[[states]]
+name = "HANDOFF"
+description = "Windows Hello / PIN setup or the desktop: the user takes over"
+detect = { screens = ["oobe-win11/hello.png", "oobe-win11/desktop.png"] }
+terminal = true

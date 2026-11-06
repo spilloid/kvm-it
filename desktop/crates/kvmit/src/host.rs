@@ -56,11 +56,7 @@ impl Host for ScriptHost {
         cap.as_ref()?.latest().map(|f| f.to_gray())
     }
     fn reference(&mut self, name: &str) -> Result<Frame, String> {
-        let p = std::path::Path::new(name);
-        if p.is_absolute() || p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
-            return Err(format!("reference image {name:?} must be a relative path inside the script's folder"));
-        }
-        kvmit_video::convert::load_reference(&self.base_dir.join(p))
+        kvmit_video::convert::load_reference(&crate::wf_view::reference_path(&self.base_dir, name)?)
     }
     fn confirm(&mut self, message: &str) -> bool {
         (self.confirm)(message)

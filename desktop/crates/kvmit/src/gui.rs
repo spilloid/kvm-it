@@ -192,6 +192,16 @@ pub struct App {
     /// Text-edit states to remove (secret fields of a selection that changed), and the selection generation in the ids.
     purge_ids: Vec<egui::Id>,
     wf_generation: u64,
+    /// The checkpoint saved when the selected workflow last stopped (by the app or `kvmit run`), read on selection.
+    /// Kept with the file's exact text, so Resume can tell whether it changed since it was shown. It is the only thing
+    /// Resume starts from: a run in the app saves its checkpoint there too.
+    wf_saved: Option<(String, kvmit_script::Checkpoint)>,
+    /// When the saved checkpoint was last read: it is read again every second, so one saved by `kvmit run` shows up.
+    wf_saved_read: Option<std::time::Instant>,
+    /// Whose checkpoint `wf_saved` is (this workflow on the adapter connected when it was read).
+    wf_saved_slot: Option<crate::wf_view::Slot>,
+    /// The reference image "Save this screen as" writes (an index into the workflow's references).
+    wf_snap: usize,
 }
 
 /// The id of a workflow secret's password field: explicit, so its state can be found and removed, and tied to the
@@ -209,6 +219,15 @@ fn entry_source(e: &Entry) -> crate::wf_view::Source {
     }
 }
 
+/// Which library entry a saved checkpoint belongs to: a file by its full path (as `kvmit run` names it), a built-in by
+/// its name.
+fn saved_source(e: &Entry) -> crate::wf_view::Source {
+    match &e.path {
+        Some(p) => crate::wf_view::file_source(p),
+        None => crate::wf_view::Source::Builtin(e.name.clone()),
+    }
+}
+
 /// Remove the text-edit state (cursor and undo history, which egui keeps in clear text) of these fields.
 pub(crate) fn purge_secret_fields(ctx: &egui::Context, ids: &[egui::Id]) {
     ctx.data_mut(|d| {
@@ -218,18 +237,29 @@ pub(crate) fn purge_secret_fields(ctx: &egui::Context, ids: &[egui::Id]) {
     });
 }
 
+/// The files a workflow run uses: its reference images' folder, and where its checkpoint is kept when it stops (the
+/// scripts folder, the entry it is saved for, and the file's text, which binds the checkpoint to this very version).
+#[derive(Clone)]
+struct WfFiles {
+    base_dir: std::path::PathBuf,
+    script_dir: std::path::PathBuf,
+    saved: crate::wf_view::Source,
+    text: String,
+}
+
 /// What a workflow run shares with the panel while it runs, and keeps once it ends.
 struct WfShared {
-    /// The definition this run ran, and whether it was a dry run: the panel shows a run only for the very definition it
-    /// ran, and only a live run's checkpoint can seed a live resume.
+    /// The definition this run ran: the panel shows a run only for the very definition it ran. (What Resume starts from
+    /// is the saved checkpoint, which only a stopped live run writes.)
     wf: kvmit_script::Workflow,
     /// Which library entry it came from (its file, or its built-in name).
     source: crate::wf_view::Source,
-    dry: bool,
     trace: Vec<kvmit_script::workflow::TraceEntry>,
     inspect: Vec<kvmit_script::workflow::VarView>,
     /// Set when the run ends: everything the exports need.
     report: Option<kvmit_script::WorkflowReport>,
+    /// The run's checkpoint has been saved or cleared and the panel has not yet read it back.
+    saved_pending: bool,
 }
 
 impl App {
@@ -283,6 +313,10 @@ impl App {
             wf_run: None,
             purge_ids: Vec::new(),
             wf_generation: 0,
+            wf_saved: None,
+            wf_saved_read: None,
+            wf_saved_slot: None,
+            wf_snap: 0,
             cfg,
         };
         // Zero-step reconnect: the last adapter and capture device come back on their own.
@@ -432,6 +466,14 @@ impl App {
             self.rt.spawn(async move { dev.shutdown().await });
         }
         self.cfg_update(|c| c.last_device = None);
+    }
+
+    /// The connected adapter's id: checkpoints belong to a workflow on one adapter.
+    fn adapter_id(&self) -> Option<String> {
+        match &*self.link.lock().unwrap() {
+            Link::Connected { dev, id, .. } if dev.is_connected() => Some(id.clone()),
+            _ => None,
+        }
     }
 
     fn device(&self) -> Option<Device> {
@@ -733,6 +775,8 @@ impl App {
         // `purge_secret_fields`), and the script caches are cleared before either kind is loaded.
         self.forget_workflow_secrets();
         self.workflow = None;
+        self.wf_saved = None;
+        self.wf_saved_read = None;
         self.trust_ack = false;
         self.preview = None;
         self.preview_key = None;
@@ -860,10 +904,11 @@ impl App {
         &mut self,
         // The definition and the library entry it came from: they travel together.
         (wf, source): (kvmit_script::Workflow, crate::wf_view::Source),
-        base_dir: std::path::PathBuf,
+        files: WfFiles,
         secrets: Vars,
         dry: bool,
-        resume: Option<kvmit_script::Checkpoint>,
+        // The checkpoint to resume from, with the exact text of the file it was read from (as shown).
+        mut resume: Option<(String, kvmit_script::Checkpoint)>,
         ctx: egui::Context,
     ) -> bool {
         let dev = if dry {
@@ -880,7 +925,41 @@ impl App {
             }
             connected
         };
+        // This run's slot (the workflow on the connected adapter) and its claim on it.
+        let mut slot: Option<crate::wf_view::Slot> = None;
+        let mut claim: Option<crate::wf_view::Claim> = None;
         if !dry {
+            let Some(adapter) = self.adapter_id() else {
+                self.set_notice(uistate::WHY_NO_ADAPTER);
+                return false;
+            };
+            let s = crate::wf_view::Slot::new(files.saved.clone(), &adapter);
+            // Before any key: the slot is locked and its saved checkpoint set aside, so none older than this run can be
+            // resumed later, and no second run of it starts meanwhile.
+            match crate::wf_view::claim_checkpoint(&files.script_dir, &s) {
+                Ok(c) => claim = c,
+                Err(e) => {
+                    self.set_notice(format!("Not started: {e}"));
+                    return false;
+                }
+            }
+            // A resume starts from the checkpoint as read under the lock, and only if it is the one that was shown.
+            if let Some((shown, _)) = &resume {
+                match crate::wf_view::resume_from_claim(&files.script_dir, &s, &files.text, claim.take(), shown) {
+                    Ok((c, cp)) => {
+                        claim = c;
+                        resume = Some((shown.clone(), cp));
+                    }
+                    Err(e) => {
+                        self.wf_saved = None;
+                        self.wf_saved_read = None;
+                        self.set_notice(format!("Not resumed: {e}"));
+                        return false;
+                    }
+                }
+            }
+            slot = Some(s);
+            self.wf_saved = None;
             self.end_capture(&ctx);
         }
         let handle = RunHandle {
@@ -894,10 +973,10 @@ impl App {
         let shared = Arc::new(Mutex::new(WfShared {
             wf: wf.clone(),
             source,
-            dry,
             trace: Vec::new(),
             inspect: Vec::new(),
             report: None,
+            saved_pending: false,
         }));
         let (cancel, done, log, confirm, outcome) =
             (handle.cancel.clone(), handle.done.clone(), handle.log.clone(), handle.confirm.clone(), handle.outcome.clone());
@@ -909,7 +988,7 @@ impl App {
                 rt,
                 dev,
                 capture: Some(capture),
-                base_dir,
+                base_dir: files.base_dir.clone(),
                 cancel,
                 confirm: Box::new(move |msg| ask(&confirm, &cancel2, msg, || ctx3.request_repaint())),
                 // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
@@ -918,7 +997,7 @@ impl App {
             let mut opts = kvmit_script::WorkflowOptions::default();
             opts.run.dry_run = dry;
             let (log2, ctx4, sh) = (log.clone(), ctx.clone(), shared2.clone());
-            let report = kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume.as_ref(), &mut |t, c| {
+            let report = kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume.as_ref().map(|(_, cp)| cp), &mut |t, c| {
                 let mut s = sh.lock().unwrap();
                 s.trace.push(t.clone());
                 s.inspect = c.inspect();
@@ -928,10 +1007,15 @@ impl App {
                 ctx4.request_repaint();
             });
             *outcome.lock().unwrap() = Some(crate::wf_view::outcome(&report.result));
+            let kept = slot.as_ref().and_then(|s| crate::wf_view::keep_checkpoint(&files.script_dir, s, &files.text, dry, &wf, &report, claim.as_ref()));
+            if let Some(msg) = kept {
+                log.lock().unwrap().push(msg);
+            }
             {
                 let mut s = shared2.lock().unwrap();
                 s.inspect = report.context.inspect();
                 s.report = Some(report);
+                s.saved_pending = true;
             }
             done.store(true, Ordering::SeqCst);
             ctx.request_repaint();
@@ -940,6 +1024,57 @@ impl App {
         self.run_handle = Some(handle);
         self.wf_run = Some(shared);
         true
+    }
+
+    /// The workflow's reference screens, which are present, and saving the current video frame as one of them: walk
+    /// the target through setup by hand once, saving each screen under the name its state expects.
+    fn references_ui(&mut self, ui: &mut egui::Ui, wf: &kvmit_script::Workflow, base: &std::path::Path) {
+        let refs = crate::wf_view::references(wf, base);
+        let missing = refs.iter().filter(|r| !r.present).count();
+        let title = if missing == 0 { "Reference screens (all present)".to_string() } else { format!("Reference screens ({missing} of {} missing)", refs.len()) };
+        egui::CollapsingHeader::new(title).id_salt("wf_refs").default_open(missing > 0).show(ui, |ui| {
+            for r in &refs {
+                ui.horizontal_wrapped(|ui| {
+                    let (h, t) = if r.present { (Health::Good, "ok") } else { (Health::Bad, "missing") };
+                    ui.colored_label(health_color(h, ui), t);
+                    ui.monospace(&r.image);
+                    ui.small(r.used_by.join(", "));
+                });
+            }
+            if refs.is_empty() {
+                return;
+            }
+            self.wf_snap = self.wf_snap.min(refs.len() - 1);
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("wf_snap").selected_text(&refs[self.wf_snap].image).show_ui(ui, |ui| {
+                    for (i, r) in refs.iter().enumerate() {
+                        let label = format!("{}{}", r.image, if r.present { " (replace)" } else { "" });
+                        ui.selectable_value(&mut self.wf_snap, i, label);
+                    }
+                });
+                let frame = self.capture.lock().unwrap().as_ref().and_then(|c| c.latest());
+                let why = match &frame {
+                    None => Some("Open a video source first."),
+                    Some(f) if f.is_blank() => Some("The video is blank (no signal yet)."),
+                    _ => None,
+                };
+                let b = ui.add_enabled(why.is_none(), egui::Button::new("Save this screen as"));
+                let b = match why {
+                    Some(w) => b.on_disabled_hover_text(w),
+                    None => b.on_hover_text("Saves the current video frame as this reference image, beside the workflow."),
+                };
+                if b.clicked() {
+                    let r = &refs[self.wf_snap];
+                    let f = frame.expect("enabled only with a frame");
+                    let saved = crate::wf_view::save_reference(base, &r.image, f.width, f.height, &f.rgba);
+                    match saved {
+                        Ok(p) => self.set_notice(format!("Saved {}", p.display())),
+                        Err(e) => self.set_notice(format!("Could not save {}: {e}", r.image)),
+                    }
+                }
+            });
+            ui.small("Each state is recognised by its screen: bring the target to it (by hand, or a dry run up to it) and save it.");
+        });
     }
 
     /// The selected workflow: what it will do, its secrets, run controls, and the live state, timeline and variables.
@@ -972,13 +1107,14 @@ impl App {
         if !wf.secrets.is_empty() {
             ui.small("Secrets: held in memory only, never saved, logged or exported.");
         }
+        let base = self.library[sel].path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.cfg.script_dir());
+        self.references_ui(ui, &wf, &base);
         let external = self.library[sel].path.is_some();
         let source = entry_source(&self.library[sel]);
         if external {
             ui.checkbox(&mut self.trust_ack, "I wrote or reviewed this workflow — it will type into the target");
         }
         let running = self.run_handle.as_ref().is_some_and(|r| r.running());
-        let base = self.library[sel].path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.cfg.script_dir());
         let secrets: Vars = self.wf_secrets.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
         let missing = wf.secrets.keys().find(|k| !secrets.contains_key(*k)).cloned();
         let why_ready = if external && !self.trust_ack {
@@ -993,34 +1129,87 @@ impl App {
         } else {
             None
         });
-        // A stopped run with a known state can be resumed: the engine looks at the screen again first, never replays.
-        let checkpoint = (!running).then_some(self.wf_run.as_ref()).flatten().and_then(|s| {
-            let s = s.lock().unwrap();
-            crate::wf_view::resume_point(s.dry, (&s.wf, &s.source), (&wf, &source), s.report.as_ref())
+        let files = WfFiles {
+            base_dir: base.clone(),
+            script_dir: self.cfg.script_dir(),
+            saved: saved_source(&self.library[sel]),
+            text: self.library[sel].source.clone(),
+        };
+        // A run of this definition in the app just ended and saved its checkpoint (or left none): read it back now.
+        let ended = self.wf_run.as_ref().is_some_and(|s| {
+            let mut s = s.lock().unwrap();
+            let mine = s.wf == wf && s.source == source && s.report.is_some() && s.saved_pending;
+            if mine {
+                s.saved_pending = false;
+            }
+            mine
         });
+        // The checkpoint shown is the one of this workflow on the connected adapter.
+        let slot = self.adapter_id().map(|adapter| crate::wf_view::Slot::new(files.saved.clone(), &adapter));
+        // Another adapter (or none): what was shown belonged to the previous one.
+        if slot != self.wf_saved_slot {
+            self.wf_saved = None;
+            self.wf_saved_read = None;
+            self.wf_saved_slot = slot.clone();
+        }
+        let due = ended || self.wf_saved_read.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1));
+        if let (false, true, Some(slot)) = (running, due, &slot) {
+            self.wf_saved_read = Some(std::time::Instant::now());
+            match crate::wf_view::load_checkpoint_raw(&files.script_dir, slot, &files.text) {
+                Ok(cp) => self.wf_saved = cp,
+                Err(e) => {
+                    self.wf_saved = None;
+                    self.set_notice(format!("Could not read this workflow's saved checkpoint: {e}"));
+                }
+            }
+        }
+        if !running {
+            // Keep looking (a `kvmit run` may stop and save one meanwhile).
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
+        // A stopped run with a known state can be resumed: the engine looks at the screen again first, never replays.
+        // What is resumable is the saved checkpoint (written by a stopped live run here or by `kvmit run`).
+        let checkpoint = if running { None } else { self.wf_saved.clone() };
         ui.horizontal(|ui| {
             let r = ui.add_enabled(why_run.is_none(), egui::Button::new("▶ Run"));
             if let Some(w) = &why_run {
                 r.clone().on_disabled_hover_text(w);
             }
             if r.clicked() {
-                self.start_workflow((wf.clone(), source.clone()), base.clone(), secrets.clone(), false, None, ctx.clone());
+                self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), false, None, ctx.clone());
             }
             let r = ui.add_enabled(why_dry.is_none(), egui::Button::new("Dry run"));
             if let Some(w) = &why_dry {
                 r.clone().on_disabled_hover_text(w);
             }
             if r.clicked() {
-                self.start_workflow((wf.clone(), source.clone()), base.clone(), secrets.clone(), true, None, ctx.clone());
+                self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), true, None, ctx.clone());
             }
-            if let Some(cp) = &checkpoint {
+            if let Some((shown, cp)) = &checkpoint {
                 let r = ui.add_enabled(why_run.is_none(), egui::Button::new(format!("Resume from {}", cp.state)));
                 r.clone().on_hover_text("Looks at the screen first; continues only if it shows that state or one that may follow it.");
                 if let Some(w) = &why_run {
                     r.clone().on_disabled_hover_text(w);
                 }
                 if r.clicked() {
-                    self.start_workflow((wf.clone(), source.clone()), base.clone(), secrets.clone(), false, Some(cp.clone()), ctx.clone());
+                    // Read the saved checkpoint again now: another run (`kvmit run`, another window) may have sent keys and
+                    // saved a newer one since, and resuming an older copy would skip "send them again?".
+                    // The file's exact text is compared (not the parsed values, whose numbers need not read back bit
+                    // for bit).
+                    let reread = match &slot {
+                        Some(slot) => crate::wf_view::load_checkpoint_raw(&files.script_dir, slot, &files.text),
+                        None => Ok(None),
+                    };
+                    match reread {
+                        Ok(Some((now, _))) if now == *shown => {
+                            self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), false, Some((now, cp.clone())), ctx.clone());
+                        }
+                        Ok(now) => {
+                            self.wf_saved = now;
+                            self.set_notice("This workflow's checkpoint changed since it was shown (another run saved one). The panel now shows the new one: check the target, then Resume.");
+                        }
+                        Err(e) => self.set_notice(format!("Could not read this workflow's saved checkpoint: {e}")),
+                    }
                 }
             }
             let r = ui.add_enabled(running, egui::Button::new("■ Abort"));

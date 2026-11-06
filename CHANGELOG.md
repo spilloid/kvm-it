@@ -1,15 +1,15 @@
 # Changelog
 
-## [Unreleased]
+## [0.5.0] - 2026-11-04 (stateful workflows, Windows 11 provisioning, reconnect after power loss)
 
 ### Added
-- **Stateful workflows, engine only** (issue #46): a separate `workflow_format = 1` file of named states, each with
+- **Stateful workflows** (issue #46): a separate `workflow_format = 1` file of named states, each with
   reference screens, entry guards, permitted transitions, verification with a timeout, bounded retries (only where marked
   safe), human gates and a tenant branding check. The engine observes, classifies, validates, acts, verifies and only then
   transitions; an unknown, ambiguous or unexpected screen stops the run without typing. A typed run context
   (config / observed / derived / runtime, secrets kept apart), structured events, a redacted JSONL and Markdown export, and
   a non-secret resume checkpoint that re-observes the screen before continuing. Linear scripts are unchanged. No firmware
-  or protocol change. **Host-tested only** (simulated targets); no GUI or CLI yet. See `docs/ux.md`.
+  or protocol change. **Host-tested only** (simulated targets). See `docs/ux.md`.
 - Workflows compare screens by structure (normalised correlation) by default, optionally in a region of the screen; brightness
   comparison found real Windows 11 OOBE screens 96-98 % alike. VM-verified on the first four Windows 11 25H2 OOBE screens
   (Proxmox VM, QEMU harness); not hardware-verified.
@@ -18,8 +18,35 @@
   Copy notes. Built and unit-tested; not yet looked at on screen.
 - Video frames say when the capture backend received them; a workflow never accepts a picture received before a
   decision (an approval, or keys sent) as evidence after it. Host-tested on Windows; Linux and macOS type-checked only.
+- **Windows 11 provisioning workflow** (built in: `windows-11-oobe-provisioning.toml`): from the region screen to the user's
+  first sign-in, by Windows Autopilot (user-driven) or by joining Microsoft Entra with a work or school account, chosen by
+  `deployment_mode` in its approved profile. A device showing the other path's screen stops the run before anything is
+  typed; the password is typed only after the organisation's branding is checked; the licence is accepted only if the
+  profile says so. User name and password are prompted secrets. **Template:** the work-account path is VM-verified from the region
+  screen to the work-or-school sign-in page (Windows 11 25H2, the workflow driving every screen, updates and restart
+  included); both paths are simulated end to end (host-tested); signing in and everything after it, and Autopilot, have
+  not been run.
+- **Manual workflow states** (`manual = "..."`): the operator does the step (connect the network, approve MFA on a phone),
+  nothing is typed, and the run continues when the screen moves on to a permitted state. States that send nothing go
+  straight to watching for the next screen, and never count as a send to replay on resume.
+- **`kvmit run` runs workflows** like the app does: secret prompts without echo, a trust prompt (`--yes`), `--dry-run`,
+  the live timeline, the variables at the end, `--save-trace`, `--resume` and `--check` (lists the reference images,
+  present or missing, connecting to nothing).
+- **Saved checkpoints:** a stopped live run saves its checkpoint (no secrets, no images) under
+  `<scripts folder>/checkpoints/`, bound to the workflow file's exact text; Resume in the app and `kvmit run --resume` share
+  it. A completed run deletes it.
+- **Reference screens** in the workflow panel: which images are present or missing, and **Save this screen as** to save
+  the current video frame as one of them.
 - Video frames handed to scripts now carry the capture's frame number, so a stalled capture card is not mistaken for an
   unchanged screen (used by workflows).
+
+### Fixed
+- **Reconnecting after the adapter loses power:** connecting, service discovery and subscribing are now bounded (15 s).
+  Moving the adapter to another machine (so it lost power) could leave the app's automatic reconnect waiting on the
+  operating system forever, until Connect was clicked; the stuck attempt now fails and the next one finds the adapter once
+  it is back. Built and linted on Windows; **not yet run against a power-cycled adapter**.
+- Script and workflow reference images use one path rule (relative, inside the file's folder) for checking, saving and
+  running.
 
 ## [0.4.9] - 2026-10-30 (cross-platform UX audit)
 

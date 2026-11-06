@@ -106,7 +106,7 @@ Step kinds: `text`, `secret_text`, `key`, `chord`, `delay`, `repeat`, `wait_for`
 "screen stopped changing for N s", with timeout), `confirm` (human gate), `comment`. Variables via
 `{{name}}`. No loops over arbitrary expressions, no shell, no file or network access from scripts.
 
-## Stateful workflows (issue #46, engine only)
+## Stateful workflows (issue #46)
 
 A script types and hopes. A **workflow** knows which screen it is on. It is a separate file (`workflow_format = 1`); linear
 scripts are unchanged. Each state names the reference screens that identify it, what to type there, and which states may
@@ -121,6 +121,11 @@ follow. The engine loops **observe → classify → validate → act → verify 
   configured tenant's branding, and not another allowed tenant's, before acting. A `gate` asks the operator first.
 - **Act:** the state's actions are the same steps a script uses, all compiled before the first key: a missing secret or an
   untypable character stops the run before anything is sent.
+- **Done by hand:** a state with `manual = "..."` types nothing. The message is shown to the operator (connect the network,
+  approve the sign-in on a phone), and the engine waits up to the state's `timeout`, watching, for the screen to move on
+  to one of its `next` states. The screen moving on is the answer; there is no "continue" button. A manual state cannot
+  have actions, a gate or retries. A state with neither actions nor `manual` simply waits for the target (checking for
+  updates, a restart, enrolment).
 - **Verify:** only the next screen counts as success, never a HID acknowledgement. The screen must settle on one of the
   state's `next` states within its `timeout`. Staying put is retried only when the state says `retry_safe = true` (at most
   5 retries). Landing anywhere else stops the run.
@@ -199,9 +204,59 @@ stops, and a variables table with each value's source. When it ends: **Save trac
 scripts folder) and **Copy notes**. None of these contains a prompted secret. **Built and unit-tested (the chip, timeline,
 export names, outcome); not looked at on screen yet:** the screenshot harness needs a connected adapter.
 
-**Status: engine built and host-tested** against simulated targets (synthetic frames and a mocked host). No real OOBE
-screen, capture card or adapter has run it. The GUI (state chip, timeline, live variable inspector, export buttons) and
-the CLI are not built yet.
+**From the command line (0.5.0):** `kvmit run <workflow.toml>` does what the panel does. It prints the workflow, its
+states and its approved profile, asks whether you wrote or reviewed it (`--yes` skips that), prompts for each secret
+without echo, then prints every state entered, keys sent, transition verified, question, manual step and fact recorded,
+as it happens, and the variables at the end. Questions are answered with y/N; Ctrl+C aborts and releases every key.
+`--dry-run` sends nothing and still watches the screen. `--save-trace` writes the JSONL trace and Markdown notes to the
+scripts folder. `--check` connects to nothing: it parses the file and lists every reference image as present or missing.
+`--var` is refused for workflows: their values are the `[config]` and the prompted `[secrets]`.
+
+**Resuming across runs (0.5.0):** when a live run stops in a known state, its checkpoint (no secrets, no images) is saved
+under `<scripts folder>/checkpoints/`, one per workflow file **and adapter** (several targets can run the same workflow at
+once, each on its own adapter, and a checkpoint is never resumed on another target), bound to that file's exact text. **Resume** in the app and
+`kvmit run <file> --resume` both use it, so a run stopped in a terminal can be resumed in the app and the other way round.
+A completed run deletes it; a dry run never writes one; an edited file never resumes an old checkpoint. Resume reads it
+again at the moment you click, so a newer checkpoint saved by another run is never overtaken by an older copy. A live run
+locks its workflow-and-adapter pair and sets the saved checkpoint aside **before it sends anything**: a second run of the
+same pair is refused, and a resume starts only from the checkpoint as read while holding that lock, and only if it is the
+one that was shown (adapter ids are compared without regard to case). If that run sends nothing (it
+stops before recognising a screen), the checkpoint is put back. A run that crashed leaves its lock behind; the next run
+says which file to delete, after checking the target. A run that
+stopped while waiting on a manual step, and finds on resume that the step was done (the next screen is showing), records
+that step's transition and facts and carries on; it sends nothing for it.
+
+**Reference screens (0.5.0):** a workflow is only as good as its reference images, and they should come from your own
+target. The panel lists them (**Reference screens**: present or missing, and which state or tenant uses each) and
+**Save this screen as** writes the current video frame under the chosen name, beside the workflow. Walk one target
+through setup by hand once, saving each screen; `kvmit video snap <path>` does the same from a terminal.
+
+**Built-in: Windows 11 provisioning (0.5.0).** `[built-in workflow] windows-11-oobe-provisioning.toml` takes Windows 11
+setup from the region screen to the user's first sign-in, by one of two paths chosen in its approved profile:
+
+| `deployment_mode` | Path |
+|---|---|
+| `autopilot` | Windows Autopilot, user-driven: the organisation's sign-in after the network, user name, password, MFA by the user, enrolment status page, handoff |
+| `work_account` | Not registered for Autopilot: licence (only if `accept_license = "yes"`), device name skipped (Windows keeps its generated name), **Set up for work or school**, user name, password, MFA, privacy choices by hand, enrolment, handoff (Microsoft Entra join) |
+
+A device that shows the other path's screen stops the run before anything is typed there. The password is typed only after
+the organisation's branding is checked on the password page (`[tenants]`). The user name and password are prompted
+secrets. The network, MFA and privacy screens are `manual`. Its reference images live in
+`<scripts folder>/oobe-win11/`. To use it for real, copy the file into your scripts folder, set the profile and tenant,
+and save your own screens. Personal Microsoft accounts, Autopilot pre-provisioning (technician flow) and self-deploying
+mode are not covered yet.
+
+**Status: built and host-tested** against simulated targets (synthetic frames and a mocked host), including the
+provisioning template's two paths end to end, the wrong-path stop and another tenant's page. **VM-verified
+(2026-11-04, Windows 11 25H2, Proxmox VM with a network card, QEMU harness):** the work-account path from the region
+screen to the work-or-school sign-in page, driven by the template itself with nothing done by hand: REGION → KEYBOARD →
+SECOND_KEYBOARD → UPDATES (updates and a restart) → DEVICE_NAME (Skip: Tab, Enter) → SETUP_CHOICE (Down, Space,
+Enter) → WORK_SIGNIN, each transition verified at 99.8-100 %, in about 7 minutes. With a network the network screen
+does not appear, and this build showed no licence screen. **Not verified anywhere:** typing the user name or password
+(the run stopped on the sign-in page), the licence, network, MFA, privacy, enrolment and handoff screens, the tenant
+check, Autopilot, and any run with a capture card and an adapter. The app's workflow panel has not been looked at on screen. **While a run waits on a
+manual step, the app's keyboard and mouse capture stays locked** (a run owns the input): do the step at the target, or
+Abort, do it through the app, and Resume.
 
 ## DuckyScript import
 

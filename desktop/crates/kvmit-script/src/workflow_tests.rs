@@ -484,6 +484,7 @@ fn resuming_re_observes_the_screen_and_never_replays_blindly() {
         derived: [("region_set".to_string(), "yes".to_string())].into(),
         attempts: BTreeMap::new(),
         attempted: Some(0),
+        waiting: false,
         history: vec![],
     };
     let cp = Checkpoint::from_json(&cp.to_json()).unwrap();
@@ -624,6 +625,7 @@ fn resuming_keeps_spent_attempts_and_asks_before_resending() {
         derived: BTreeMap::new(),
         attempts: [(state.to_string(), attempts)].into(),
         attempted: Some(attempts),
+        waiting: false,
         history: vec![],
     };
     // KEYBOARD's whole budget (1 + 1 retry) was spent: resuming does not grant a new one.
@@ -652,6 +654,7 @@ fn resuming_on_the_next_screen_records_the_pending_transition() {
         derived: BTreeMap::new(),
         attempts: [("NETWORK".to_string(), 1)].into(),
         attempted: Some(1),
+        waiting: false,
         history: vec![],
     };
     let mut sim = Sim { screens: screens(), pos: 3, confirms: [true].into(), ..Default::default() };
@@ -742,6 +745,7 @@ fn a_checkpoint_that_sent_nothing_has_no_pending_transition() {
         derived: BTreeMap::new(),
         attempts: [("NETWORK".to_string(), 3)].into(),
         attempted: Some(0),
+        waiting: false,
         history: vec![],
     };
     let mut sim = Sim { screens: screens(), pos: 3, confirms: [true].into(), ..Default::default() };
@@ -939,6 +943,7 @@ fn a_secret_with_quotes_is_found_in_a_checkpoint() {
         derived: [("note".to_string(), "pa\"ss".to_string())].into(),
         attempts: BTreeMap::new(),
         attempted: Some(0),
+        waiting: false,
         history: vec![],
     };
     let mut seen = Vec::new();
@@ -980,4 +985,145 @@ fn a_picture_received_before_a_decision_is_never_evidence_after_it() {
     let r = go(&w, &mut sim, &o, None);
     assert!(matches!(r.result, Err(WorkflowError::TenantMismatch { .. })), "{:?}", r.result);
     assert_eq!(enters(&sim), 3, "nothing typed on the enrollment screen");
+}
+
+const MANUAL: &str = r#"
+workflow_format = 1
+name = "manual"
+start = ["REGION"]
+match = "luma"
+
+[[states]]
+name = "REGION"
+detect = { screen = "region.png" }
+manual = "Connect the network cable, then click Next on the target"
+next = ["DONE"]
+timeout = "3s"
+derive = { network = "connected by hand" }
+
+[[states]]
+name = "DONE"
+detect = { screen = "done.png" }
+terminal = true
+"#;
+
+#[test]
+fn a_manual_state_types_nothing_and_waits_for_the_operator() {
+    let w = Workflow::parse(MANUAL).unwrap();
+    // The operator acts on the target: the screen moves on by itself after a while.
+    let timeline: Vec<Frame> = std::iter::repeat_n(solid(20), 8).chain(std::iter::repeat_n(solid(225), 20)).collect();
+    let mut sim = Sim { timeline: Some(timeline), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()), "{:?}", r.trace);
+    assert_eq!(sim.keys, ["release_all"], "nothing typed, only the run's own cleanup");
+    assert!(sim.asked.is_empty(), "a manual step is not a question: the screen moving on is the answer");
+    let ev = events(&r);
+    assert!(ev.iter().any(|e| matches!(e, WorkflowEvent::ManualStepRequested { state, timeout_ms: 3000, .. } if state == "REGION")));
+    assert!(!ev.iter().any(|e| matches!(e, WorkflowEvent::ActionAttempted { .. })));
+    assert_eq!(r.context.derived["network"].0, "connected by hand", "a verified transition records its facts");
+    // Nothing was sent, so a stop in a manual state never asks to "send again" on resume.
+    assert_eq!(r.context.history[0].from, "REGION");
+}
+
+#[test]
+fn a_manual_step_that_never_happens_times_out_without_typing() {
+    let w = Workflow::parse(MANUAL).unwrap();
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::TimedOut { state, .. }) if state == "REGION"), "{:?}", r.result);
+    assert_eq!(sim.keys, ["release_all"]);
+    let cp = r.checkpoint(&w).unwrap();
+    assert_eq!(cp.attempted, Some(0), "a manual step sends nothing, so a resume has nothing to replay");
+}
+
+#[test]
+fn manual_states_cannot_type_ask_first_or_retry() {
+    let bad = |from: &str, to: &str| {
+        assert!(MANUAL.contains(from), "{from}");
+        Workflow::parse(&MANUAL.replace(from, to)).unwrap_err()
+    };
+    let with = "timeout = \"3s\"\nderive";
+    assert!(bad(with, "actions = [ { key = \"ENTER\" } ]\ntimeout = \"3s\"\nderive").contains("types nothing"));
+    assert!(bad(with, "gate = \"sure?\"\ntimeout = \"3s\"\nderive").contains("types nothing"));
+    assert!(bad(with, "retry_safe = true\nretries = 1\ntimeout = \"3s\"\nderive").contains("types nothing"));
+    assert!(bad("manual = \"Connect the network cable, then click Next on the target\"", "manual = \"  \"").contains("must say"));
+}
+
+#[test]
+fn a_secret_in_a_manual_message_is_refused() {
+    let src = MANUAL.replace("start = [\"REGION\"]", "start = [\"REGION\"]\n[secrets]\nwifi = { prompt = \"Wi-Fi\" }\n")
+        .replace("Connect the network cable", "Type hunter2-wifi");
+    // [secrets] must come after the top-level keys: move it below match.
+    let src = src.replace("[secrets]\nwifi = { prompt = \"Wi-Fi\" }\n\nmatch = \"luma\"", "match = \"luma\"\n[secrets]\nwifi = { prompt = \"Wi-Fi\" }");
+    let w = Workflow::parse(&src).unwrap();
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::SecretInFile { .. })), "{:?}", r.result);
+}
+
+#[test]
+fn a_manual_step_done_before_the_engine_looks_again_still_counts() {
+    let w = Workflow::parse(MANUAL).unwrap();
+    // The operator was quick: the screen moves on right after it was recognised, before any further look.
+    let timeline: Vec<Frame> = std::iter::repeat_n(solid(20), 2).chain(std::iter::repeat_n(solid(225), 30)).collect();
+    let mut sim = Sim { timeline: Some(timeline), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()), "{:?}", r.trace);
+    assert_eq!(r.context.history[0].to, "DONE");
+}
+
+#[test]
+fn waiting_in_a_state_that_types_nothing_is_never_a_send_to_replay() {
+    let src = MANUAL.replace("manual = \"Connect the network cable, then click Next on the target\"\n", "");
+    let w = Workflow::parse(&src).unwrap();
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::TimedOut { .. })), "{:?}", r.result);
+    assert_eq!(r.checkpoint(&w).unwrap().attempted, Some(0), "nothing was sent: a resume asks nothing");
+}
+
+#[test]
+fn resuming_after_a_manual_step_finished_while_stopped_keeps_its_facts() {
+    let w = Workflow::parse(MANUAL).unwrap();
+    // The manual step timed out; the operator then did it, and the target now shows DONE.
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    let cp = r.checkpoint(&w).unwrap();
+    assert!(cp.waiting && cp.attempted == Some(0), "{cp:?}");
+    let cp = Checkpoint::from_json(&cp.to_json()).unwrap();
+    let mut sim = Sim { timeline: Some(vec![solid(225)]), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), Some(&cp));
+    assert_eq!(r.result, Ok(()), "{:?}", r.trace);
+    assert_eq!(r.context.derived["network"].0, "connected by hand", "the pending transition is reconciled with its facts");
+    assert_eq!(sim.keys, ["release_all"], "and nothing is sent");
+    // An older checkpoint without the field reads as not waiting (nothing to reconcile), as before.
+    let old = cp.to_json().replace("\"waiting\": true,", "");
+    assert!(!Checkpoint::from_json(&old).unwrap().waiting);
+}
+
+#[test]
+fn an_interrupted_resume_keeps_a_pending_wait() {
+    let w = Workflow::parse(MANUAL).unwrap();
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), ..Default::default() };
+    let cp = go(&w, &mut sim, &opts(), None).checkpoint(&w).unwrap();
+    assert!(cp.waiting);
+    // Resumed on the same screen, then stopped again before the step was done: the wait is still pending.
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), ..Default::default() };
+    let again = go(&w, &mut sim, &opts(), Some(&cp)).checkpoint(&w).unwrap();
+    assert!(again.waiting, "{again:?}");
+}
+
+#[test]
+fn the_secret_check_reads_decoded_fields() {
+    // A TOML unicode escape (backslash, u, 0073) decodes to `s`: the file's text does not contain the secret, its name does.
+    let src = MANUAL.replace("name = \"manual\"", "name = \"pa\\u0073s-word\"").replace(
+        "match = \"luma\"",
+        "match = \"luma\"\n[secrets]\nwifi = { prompt = \"Wi-Fi\" }",
+    );
+    let w = Workflow::parse(&src).unwrap();
+    let s: Vars = [("wifi".to_string(), "pass-word".to_string())].into();
+    assert!(!src.contains("pass-word"));
+    assert!(matches!(check_secrets(&w, &s, None), Err(WorkflowError::SecretInFile { .. })));
+    let s: Vars = [("wifi".to_string(), "other".to_string())].into();
+    assert_eq!(check_secrets(&w, &s, None), Ok(()));
 }

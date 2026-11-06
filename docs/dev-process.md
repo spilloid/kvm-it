@@ -1027,3 +1027,147 @@ source keys; both rollback removals attempted and every orphan named), and "no a
 found in the reviewed range." CI on #53 failed only because `THIRD_PARTY_LICENSES.html` was stale (its input hash
 changed with #50's manifest edit; the listing itself was unchanged); restamped in a follow-up. The Unix-only
 `sources_compare_paths_exactly` passed on macOS. **Still not looked at on screen.**
+
+## 2026-11-04 - Provisioning workflow, manual states, CLI parity, saved checkpoints, bounded reconnect (round 54, orchestrator)
+
+Asked for: kvm-it driving Windows setup after some operator input, by Windows Autopilot or by account provisioning
+(Microsoft Entra join), with CLI and GUI parity, released with matching docs; and the app reconnecting by itself after
+the adapter loses power (moved between laptops), without clicking Connect.
+
+- **Engine:** `manual = "..."` states (nothing typed; the screen moving on to a permitted state is the evidence). States
+  that send nothing (manual, or no actions) skip the pre-action look: found by the simulated provisioning run, where a
+  quick operator moved the screen on before that look and the run stopped as "unexpected". Waiting is never counted as
+  a send to replay on resume.
+- **CLI:** `kvmit run` detects workflows and does what the panel does (hidden secret prompts, trust prompt, dry run,
+  live timeline, variables, `--save-trace`, `--resume`, `--check`). `--var` is refused for workflows.
+- **Checkpoints** saved per source under `<scripts>/checkpoints/`, bound to the file's exact text (FNV-1a, identity only);
+  the app and the CLI name a file by its canonical path, so either can resume the other's run. Cleared on completion;
+  never written by a dry run.
+- **Reference screens** listed in the panel with **Save this screen as**; `reference_path` is now the one rule the run
+  host, the check and the save use.
+- **Template** `windows-11-oobe-provisioning.toml` (built in). Both paths, the wrong-path guard and another tenant's page
+  run end to end against a simulated target with distinct structured screens (`library.rs` tests). A test bug found on
+  the way: replacing `deployment_mode = "autopilot"` in the source also rewrote the Autopilot guard; the test now edits
+  only the profile line.
+- **Reconnect:** the GUI's retry loop never gave up, but `backend::connect` awaited connect, service discovery and
+  subscribe without a bound; after a power loss Windows can return a cached peripheral and wait on it. Bounded at 15 s
+  (`GATT_SETUP_TIMEOUT`), the attempt is closed and the loop retries. Diagnosis from the code; not reproduced on a board.
+
+Verified by running (Windows 11): `cargo test` for `kvmit-script` (71) and `kvmit` (95) (after round 55: 72 and 95, whole workspace green), clippy `-D warnings` on the
+workspace, `cargo check -p kvmit-ble --target aarch64-apple-darwin`. **Not run:** the VM past the network screen (adding
+a network card to VM 120 and rolling it back was blocked by the session's permission policy pending the maintainer),
+any capture card or adapter, a real tenant, Autopilot, a power-cycled adapter, the panel on screen.
+
+## 2026-11-04 - Round 54 (`5afc770`): review round 55 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static, over `5afc770`. **NO SIGN-OFF.** 1 High, 5 Medium; every finding was confirmed by reading
+the code. Fixed on the same branch.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | The app resumed the checkpoint it read on selection; a `kvmit run` that sent keys and saved a newer one meanwhile would be resumed from the older copy, skipping "send them again?" | **Confirmed.** Resume reads the saved checkpoint again at the click and starts only if it is unchanged; otherwise it says so and shows the new one. |
+| 2 | Med | `kvmit run` printed the workflow's name, description and profile before the secrets were known, so a secret's value written into the file reached stdout (and a log) before the engine refused it | **Confirmed.** Secrets are prompted first; a value found in the file's text or its checkpoint refuses the run before anything from either is printed. (The app shows the profile on screen before secrets are typed, as before: a display, not a log.) |
+| 3 | Med | Save this screen as followed a link or junction inside the workflow's folder, so it could overwrite a file outside it | **Confirmed.** `save_reference` resolves the folder after creating it, refuses one outside the workflow's folder, and refuses a destination that is a link. Unix test with symlinks; the Windows junction case is argued, not tested. |
+| 4 | Med | Two writers shared one `.json.tmp` name, so concurrent saves could mix | **Confirmed.** Each writer creates its own temporary file (process id and time, created new), syncs it and renames it over the checkpoint. |
+| 5 | Med | A manual or waiting state that stopped (say, timed out) left `attempted = 0`, so resuming on its next screen skipped the transition and lost its facts (`network = connected`), which a later guard may need | **Confirmed; introduced by round 54.** Checkpoints carry `waiting` (the state passed its checks and was watching for the screen to move on, sending nothing); a resume that finds a permitted next screen records that transition and its facts. Never a reason to send. Older checkpoints read as not waiting. Test added. |
+| 6 | Med | After the 15 s bound, the cleanup `disconnect` itself could wait forever (CoreBluetooth waits for a callback) | **Confirmed.** Every disconnect of a failed attempt, and `Connection::disconnect` (also used after a lost link), is bounded at 5 s. |
+
+## 2026-11-04 - Round-55 fixes (`eba636a`): review round 56 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: per-writer checkpoint temp files. Partial or new:
+6 Medium, 1 Low; every finding was confirmed by reading the code (the float one by the locked `serde_json` features).
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Med | The CLI's secret check searched the file's text, so an escaped value (`pass`) passed and the decoded name was printed | **Confirmed.** `workflow::check_secrets` (the engine's field-by-field check of decoded values, workflow and checkpoint) runs before anything from either is printed. Prompt text and parse errors still come from the file before secrets exist, as in the app. Test with an escaped name. |
+| 2 | Med | After a run in the app, Resume took the in-memory report first, so a newer checkpoint saved by `kvmit run` could never be resumed; reselecting the same row did nothing | **Confirmed.** The saved checkpoint is the only thing Resume starts from; the panel reads it back when a run of that workflow ends. |
+| 3 | Med | Resume compared parsed checkpoints, and floats need not read back bit for bit, so the app could refuse its own checkpoint | **Confirmed.** The checkpoint file's exact text is compared. |
+| 4 | Med | Saving over a reference hard-linked elsewhere wrote through to the other name; folders under an outside link were created before the check | **Confirmed.** Each folder is checked before the next is created; the picture is written to a new file and renamed over the destination. Tests: hard link (all platforms), link folder and nested creation (Unix). |
+| 5 | Med | Resuming on the same waiting state cleared `waiting`, so a second stop lost the pending transition | **Confirmed; introduced by round 55.** The same-state resume keeps `waiting`. Test. |
+| 6 | Med | btleplug's WinRT disconnect takes a lock synchronously that a pending write can hold, so the 5 s timeout could not bound it | **Confirmed by reading btleplug 0.11.8.** The writer task is cancelled before disconnecting, and the disconnect runs on its own task, so a blocked backend holds up that task and not the caller. |
+| 7 | Low | getting-started promised reconnecting "within a few seconds" | **Confirmed.** Reworded: it keeps retrying; a stuck attempt gives up after 15 s; not timed on hardware. |
+
+## 2026-11-04 - Round-56 fixes (`c9f5211`): review round 57 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: the decoded secret check, text comparison of
+checkpoints, stepwise reference containment, `waiting` on same-state resume, the reconnect wording. Partial or new:
+1 High, 4 Medium, 1 Low; all confirmed by reading the code.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | If a run could not replace its checkpoint (disk full, denied), the panel read the older one back and offered it, so keys this run sent could be sent again without "send them again?" | **Confirmed; introduced by round 56** (the in-memory report used to disagree). `keep_checkpoint` returns `Kept { message, stale }`: a checkpoint that cannot be saved is removed instead; if that fails too it is `stale`, the app blocks Resume for that selection, and the CLI warns with the file to delete. |
+| 2 | Med | A checkpoint saved by `kvmit run` while the panel showed none never appeared | **Confirmed.** The panel reads the saved checkpoint again every second while idle (and at once when a run ends). |
+| 3 | Med | Save this screen as failed on a fresh install whose scripts folder did not exist yet | **Confirmed; introduced by round 56.** The workflow's folder is created first, then resolved. Test. |
+| 4 | Med | A reference named `.jpg` was saved as PNG bytes and could not be loaded back | **Confirmed.** Only `.png` names are saved (the template uses `.png` throughout). Test. |
+| 5 | Med | The writer's cancellation was not awaited, and the spawned disconnect still ran on an executor worker that a blocking backend could hold | **Confirmed by reading.** The writer is aborted and awaited (1 s), and the disconnect runs on the blocking pool, bounded at 5 s. |
+| 6 | Low | A temp screenshot left behind after a failed rename was not reported | **Confirmed.** The error names the file left behind. |
+
+## 2026-11-04 - Round-57 fixes (`72476ab`): review round 58 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: idle re-read, scripts folder creation, PNG-only names,
+leftover temp reporting, the writer/disconnect defects as reported. New: 1 High, 2 Medium; all confirmed by reading.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | The stale-checkpoint block lived on the selection, so selecting another workflow and back offered the old checkpoint again | **Confirmed; introduced by round 57.** Replaced the whole approach rather than patching its lifetime: a live run **sets the saved checkpoint aside before it sends anything** (`claim_checkpoint`, renamed to `.claimed`, never resumed) and refuses to start if it cannot. A checkpoint on disk is then always the newest run's, in this window, another or `kvmit run`. When the run ends: keys sent or completed, the claimed copy is discarded; nothing sent and nothing saved (it stopped before recognising a screen), it is put back. The block and its fields are gone. Tests. |
+| 2 | Med | A disconnect that never finished, on the blocking pool, made the runtime's shutdown wait for ever (and in the CLI that was before the checkpoint was saved) | **Confirmed by reading tokio 1.53.** The disconnect runs on a thread of its own with its own small runtime, awaited for 5 s and otherwise abandoned (it ends with the process). The CLI saves the checkpoint inside the connection, before teardown. |
+| 3 | Med | After a stale block, a later successful save never cleared it | **Confirmed**; gone with the block (finding 1). |
+
+## 2026-11-04 - Provisioning template in the VM (round 54, VM)
+
+VM 120 (Windows 11 25H2, the round-40 VM) rolled back to its `oobe_region` snapshot, with an e1000e network card
+hot-plugged on `vmbr0` (authorised by the maintainer). Driven through `kvmit-video/examples/qemu_workflow.rs` with a copy
+of the template cut down to the states whose screens had been saved (`deployment_mode = "work_account"`), screens saved
+one by one as they appeared.
+
+**What the real screens showed:** with a network the network screen is skipped; "Thanks for your patience", then updates
+and "Your PC will restart before you continue"; this build shows **no licence screen**; then "Name your device" (focus in
+the name box: **Tab, Enter** is Skip); then "How would you like to set up this device?" with **nothing selected and Next
+disabled**: the template's Down, Enter would have done nothing. **Down, Space, Enter** selects work or school and goes on.
+Esc and Alt+Left do not go back from the sign-in page. The template was corrected (DEVICE_NAME is now typed, not manual).
+
+**VM-verified run** (fresh rollback, nothing done by hand, the sign-in page made terminal so nothing was typed there):
+REGION → KEYBOARD → SECOND_KEYBOARD → UPDATES → DEVICE_NAME → SETUP_CHOICE → WORK_SIGNIN, each transition verified at
+0.998-1.000, the guard on `deployment_mode` passed, completed in 408 s (265 s of it updates and the restart).
+
+Not verified: typing the user name or password (no test tenant; nothing was sent to Microsoft's sign-in), MFA, privacy,
+enrolment, handoff, the tenant check, the licence screen, Autopilot; any capture card or adapter. The screenshots are
+Microsoft's UI and are not committed.
+
+## 2026-11-04 - Round-58 fixes (`925bd50`): review round 59 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: the disconnect thread, the removed block. Partial or
+new: 1 High, 1 Low; both confirmed.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | A claim gave no exclusive ownership: a second process running the same workflow found nothing to claim, sent keys, and the first then restored the older checkpoint | **Confirmed**, and it showed a design gap for running several targets at once: checkpoints were per workflow file, so runs of one file on several adapters shared one. Checkpoints are now per **workflow and adapter** (`Slot`, recorded in the file and compared on load), and a live run takes the slot's lock (a file created new) before setting its checkpoint aside and holds it until the run's checkpoint is kept. A second run of the same slot is refused, in any window or process; runs on other adapters are not affected. A lock left by a crash stays (fail closed) and the refusal names it. The CLI looks up the adapter before reading a checkpoint; a dry run without `--resume` still needs none. Tests. |
+| 2 | Low | A restore that failed was silent (and the message could say "the earlier one is kept") | **Confirmed.** The restore's result is reported with the path left behind. |
+
+## 2026-11-04 - Round-59 fixes (`a9b0819`): review round 60 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF.** Judged complete: restore failures reported. Partial or new: 2 High,
+1 Low; all confirmed.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | Adapter ids were case-sensitive in slots but not when connecting, so `aa:…` and `AA:…` had two checkpoints and two locks | **Confirmed.** `Slot::new` trims and capitalises the id; every slot is made through it. Test. |
+| 2 | High | A resume read its checkpoint before taking the lock, so another run could send keys and save a newer one in between, and the older copy was resumed | **Confirmed** (a residual of round 59's finding 1). The resume now starts from the checkpoint the claim set aside, read under the lock (`Claim::held`), and only if its text is the one shown; otherwise the claim is given back and the resume refused (`resume_from_claim`). App and CLI. Test. |
+| 3 | Low | Switching adapters within a second could show the previous adapter's checkpoint (not resumable: the click re-read refused it) | **Confirmed.** The panel remembers whose checkpoint it shows and drops it when the slot changes. |
+
+## 2026-11-04 - Round-60 fixes (`6c424d4`): review round 61 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static. **NO SIGN-OFF**, on one Low. All three round-60 findings judged **complete**; no other
+defect found in scope (refusal branches release their claims; the GUI refuses before replacing the run; the CLI dry-run
+resume sends nothing and saves nothing).
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Low | A refused resume whose checkpoint could not be put back, or whose lock could not be removed, said only "the checkpoint changed" | **Confirmed; introduced by round 60.** `release_claim` attempts both and reports each failure with the file it left; the refusal carries it. |
+
+## 2026-11-04 - Round-61 fix (`667bce4`): review round 62 (Codex `gpt-6-astra`)
+
+Read-only, high effort, static, over `667bce4` and `main...HEAD`. **SIGN-OFF.** The round-61 Low judged complete; no
+defect introduced by it; "no remaining High or Medium defect relative to main substantiated with a concrete failure
+scenario"; the release's verification claims are supported by this log. One note: the roadmap row understated the VM
+coverage; corrected. Eight review rounds (55-62) for this release; every finding confirmed and fixed.

@@ -54,6 +54,13 @@ self-test types into the machine it is plugged into.
 
 ## Things to re-verify before trusting them (dated, STD-003 rule 4)
 
+- 2026-11-04 (0.5.0, workflows and reconnect): the Windows 11 provisioning workflow is VM-verified only from REGION to
+  WORK_SIGNIN (work-account path, 25H2); typing on the sign-in pages, the licence (Enter), network, MFA, privacy, ESP,
+  handoff, the tenant check and the whole Autopilot path have never run anywhere. The
+  workflow panel (reference screens, Save this screen as, saved-checkpoint Resume) has not been looked at on screen.
+  The 15 s BLE connect bound (`kvmit-ble/src/backend.rs`) is built and linted on Windows only; reconnect after a real
+  adapter power cycle has not been run; the non-Windows `cfg` branch was type-checked for macOS only (CI builds Linux).
+
 - 2026-10-19 (cross-platform audit, round 36, unreleased): every Linux and macOS change in it is unit-tested or read in
   the source only: the X11/Wayland pointer grab, the Linux/Windows no-grab notice, the macOS Homebrew ffmpeg lookup, the
   `dialout` hint, the scripts-folder fallback, and the GUI at its minimum size. Only Windows 11 was run (tests, clippy,

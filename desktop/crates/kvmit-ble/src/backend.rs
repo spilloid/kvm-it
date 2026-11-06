@@ -38,6 +38,31 @@ impl From<bluer::Error> for BackendError {
 }
 type Result<T> = std::result::Result<T, BackendError>;
 
+/// The longest connecting, discovering the services and subscribing may take, once the adapter has been found.
+pub const GATT_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Close a connection attempt that failed, without waiting forever on it: a platform that never confirms the disconnect
+/// (CoreBluetooth waits for a callback) must not stall the caller's next attempt.
+///
+/// The disconnect runs on a task of its own: a backend that blocks its thread inside it (btleplug's WinRT backend takes a
+/// lock synchronously, which a pending write can hold) then holds up that task, not the caller, so the 5 s bound holds.
+async fn close_quietly(p: &Peripheral) {
+    let p = p.clone();
+    // On a thread of its own, outside the runtime's workers and its blocking pool: a backend that blocks there holds up
+    // neither other tasks nor the runtime's shutdown (which waits for its blocking pool). The thread drives the future
+    // with a small runtime of its own; if it never finishes, it is abandoned and ends with the process.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let started = std::thread::Builder::new().name("kvmit-ble-disconnect".into()).spawn(move || {
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            let _ = rt.block_on(p.disconnect());
+        }
+        let _ = tx.send(());
+    });
+    if started.is_ok() {
+        let _ = tokio::time::timeout(Duration::from_secs(5), rx).await;
+    }
+}
+
 fn err<T>(s: impl Into<String>) -> Result<T> {
     Err(BackendError(s.into()))
 }
@@ -224,6 +249,9 @@ async fn find(ad: &Adapter, id: &str, wait: Duration) -> Result<Peripheral> {
 pub struct Connection {
     pub io: Option<LinkIo>,
     peripheral: Peripheral,
+    /// The task writing frames to the adapter: cancelled before disconnecting, so no write of ours is still pending
+    /// (holding the backend's service lock) when the backend tears the link down.
+    writer: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Windows: holds the fast-connection request for as long as the link is open.
     #[cfg(windows)]
     _fast: Option<FastLink>,
@@ -233,8 +261,17 @@ impl Connection {
     pub fn take_io(&mut self) -> LinkIo {
         self.io.take().expect("io already taken")
     }
+    /// Bounded (see [`close_quietly`]): after the adapter lost power, the platform may never confirm, and the caller's
+    /// reconnect must go on.
     pub async fn disconnect(&self) {
-        let _ = self.peripheral.disconnect().await;
+        // Cancel our writer and wait (briefly) until it is gone, so no write of ours still holds the backend's lock
+        // when the link is torn down.
+        let writer = self.writer.lock().unwrap().take();
+        if let Some(w) = writer {
+            w.abort();
+            let _ = tokio::time::timeout(Duration::from_secs(1), w).await;
+        }
+        close_quietly(&self.peripheral).await;
     }
 }
 
@@ -244,19 +281,45 @@ pub async fn connect(id: &str) -> Result<Connection> {
     // Linux: a powered-off or blocked adapter shows up here as "not found"; say why. (Not checked up front: BlueZ's
     // default adapter is not necessarily the one btleplug picked when a computer has two.)
     let p = find(&ad, id, Duration::from_secs(20)).await.map_err(explained)?;
-    p.connect().await?;
-    #[cfg(windows)]
-    let fast = request_fast_link(id).await;
-    p.discover_services().await?;
-    let chars = p.characteristics();
-    let rx_char = chars.iter().find(|c| c.uuid == RX_UUID).cloned();
-    let tx_char = chars.iter().find(|c| c.uuid == TX_UUID).cloned();
-    let (Some(rx_char), Some(tx_char)) = (rx_char, tx_char) else {
-        let _ = p.disconnect().await;
-        return err("device does not expose the kvm-it characteristics");
+    // Bounded: an adapter that lost power (or is restarting) can leave the OS's connect or service discovery waiting
+    // forever, which would stall the app's reconnect loop until someone pressed Connect again. A timed-out attempt is
+    // closed and reported, and the caller's next attempt finds the adapter once it is back.
+    let setup = async {
+        p.connect().await?;
+        #[cfg(windows)]
+        let fast = request_fast_link(id).await;
+        p.discover_services().await?;
+        let chars = p.characteristics();
+        let rx_char = chars.iter().find(|c| c.uuid == RX_UUID).cloned();
+        let tx_char = chars.iter().find(|c| c.uuid == TX_UUID).cloned();
+        let (Some(rx_char), Some(tx_char)) = (rx_char, tx_char) else {
+            return err("device does not expose the kvm-it characteristics");
+        };
+        p.subscribe(&tx_char).await?;
+        let notifications = p.notifications().await?;
+        #[cfg(windows)]
+        return Ok((rx_char, notifications, fast));
+        #[cfg(not(windows))]
+        Ok((rx_char, notifications))
     };
-    p.subscribe(&tx_char).await?;
-    let mut notifications = p.notifications().await?;
+    let set_up = match tokio::time::timeout(GATT_SETUP_TIMEOUT, setup).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            close_quietly(&p).await;
+            return Err(e);
+        }
+        Err(_) => {
+            close_quietly(&p).await;
+            return err(format!(
+                "adapter {id} did not answer within {} s (it may be restarting after a power loss)",
+                GATT_SETUP_TIMEOUT.as_secs()
+            ));
+        }
+    };
+    #[cfg(windows)]
+    let (rx_char, mut notifications, fast) = set_up;
+    #[cfg(not(windows))]
+    let (rx_char, mut notifications) = set_up;
 
     let (to_client, client_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (client_tx, mut from_client) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -279,7 +342,7 @@ pub async fn connect(id: &str) -> Result<Connection> {
         // stream end = disconnect; dropping `to_client` tells the client the link is gone
     });
     let writer = p.clone();
-    tokio::spawn(async move {
+    let writer_task = tokio::spawn(async move {
         let debug = std::env::var_os("KVMIT_DEBUG").is_some();
         while let Some(frame) = from_client.recv().await {
             let t = std::time::Instant::now();
@@ -295,6 +358,7 @@ pub async fn connect(id: &str) -> Result<Connection> {
     Ok(Connection {
         io: Some(LinkIo { tx: client_tx, rx: client_rx }),
         peripheral: p,
+        writer: std::sync::Mutex::new(Some(writer_task)),
         #[cfg(windows)]
         _fast: fast,
     })
