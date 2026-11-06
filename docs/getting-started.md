@@ -164,7 +164,7 @@ Try it on one machine, with a dry run first. The full guide, with every screen a
    **Save this screen as** and click it. For the organisation's picture, save the password page (with your branding)
    under the tenant's name. `kvmit run <file> --check` lists the same from a terminal; `kvmit video snap <path>` saves one.
 3. **Dry run.** Reset the machine to the first setup screen and click **Dry run**: it watches the screen and sends
-   nothing. Click through setup by hand and check that the timeline names each screen as you reach it.
+   nothing (no sign-in or password needed). Click through setup by hand and check that the timeline names each screen as you reach it.
 4. **Run.** Enter the user's sign-in and password (held in memory only, never saved), tick that you reviewed the file and
    click **Run**. The timeline says **Your turn** at the steps a person must do: connect the network, approve the
    sign-in on a phone, choose privacy settings. Do those at the target; the run sees the screen move on and continues.

@@ -504,11 +504,16 @@ fn check_workflow(file: &std::path::Path, src: &str) -> R<()> {
         missing += usize::from(!r.present);
         println!("  {mark} {path}  ({})", r.used_by.join(", "));
     }
+    let invalid = refs.iter().filter(|r| r.path.is_err()).count();
+    if invalid > 0 {
+        return Err(format!("{invalid} reference image name(s) are not valid paths: fix them in the file").into());
+    }
     if missing > 0 {
-        return Err(format!(
-            "{missing} reference image(s) missing: bring the target to each screen and run `kvmit video snap <path>` (or use Save this screen as… in the app)"
-        )
-        .into());
+        println!(
+            "{missing} reference image(s) missing: a screen whose pictures are all missing is not recognised, and the run stops if it appears. \
+             Bring the target to each screen you can and run `kvmit video snap <path>` (or use Save this screen as in the app)."
+        );
+        return Ok(());
     }
     println!("ready: every reference image is present");
     Ok(())
@@ -651,11 +656,17 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     // value, since this output may be going to a log.
     let mut secrets = Vars::new();
     for (name, prompt) in wf.secrets_in_order() {
+        if a.dry {
+            break; // a dry run sends nothing: placeholders below
+        }
         let v = rpassword::prompt_password(format!("{prompt} (hidden): "))?;
         if v.is_empty() {
             return Err(format!("{prompt}: a value is required").into());
         }
         secrets.insert(name.to_string(), v);
+    }
+    if a.dry {
+        secrets = wf_view::dry_run_secrets(&wf, &secrets);
     }
     // Checkpoints belong to a workflow on one adapter: the one this run will use.
     // (A dry run sends nothing and saves no checkpoint: it needs an adapter only to look one up for --resume.)

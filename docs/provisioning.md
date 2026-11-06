@@ -88,9 +88,14 @@ screen's picture under **Save this screen as** and click it:
 
 Notes:
 
-- You only need the screens your laptops show. A laptop on Ethernet usually skips the network screen; Autopilot copies
-  never see `setup-choice.png` or `work-signin.png`, and work-account copies never see `autopilot-signin.png`. A missing
-  picture only matters if that screen appears.
+- Save every screen you can reach. A screen whose picture is missing is not recognised: if it appears, the run stops
+  there without typing on it, and you finish that screen by hand. The run lists those screens when it starts. Screens
+  you may not be able to reach are fine to leave out: the licence terms (often not shown), the network screen (skipped
+  when Ethernet is plugged in; unplug it for the walkthrough to save it), the other method's sign-in page
+  (`autopilot-signin.png` or `setup-choice.png` and `work-signin.png`), MFA and enrolment if your organisation has none.
+  Without the other method's sign-in picture, a laptop on the wrong method may not be stopped at that page; the password
+  is still typed only after your organisation's branding matches.
+- Your organisation's picture (`tenant-<name>.png`) is required: a run will not start without it.
 - Save `password.png` and `tenant-<name>.png` from the same page, once your organisation's branding (logo, background,
   sign-in text) has loaded.
 - From a terminal, `kvmit run <your copy>.toml --check` lists the same pictures, present or missing, and
@@ -99,7 +104,7 @@ Notes:
 ## 3. Dry run (once)
 
 Reset a laptop to the first setup screen (or use the next new one), select your copy and click **Dry run**. It watches
-the screen and sends nothing. Click through setup by hand and check that the timeline names each screen as you reach
+the screen and sends nothing, so it needs no sign-in or password. Click through setup by hand and check that the timeline names each screen as you reach
 it. If a screen is not recognised, save its picture again from that laptop.
 
 ## 4. Run it on each laptop
@@ -123,8 +128,9 @@ checkpoint, so a stopped laptop resumes from its own last step, and the same wor
 
 ## When it stops
 
-A stop never types anything on the screen it stopped at. The app (and the terminal) says why, and a stopped run saves a
-checkpoint. Fix the laptop, then click **Resume from …** (or `kvmit run <your copy>.toml --resume`): it looks at the screen
+A run stops before typing on a screen it does not recognise or does not allow. Keys it already sent stay sent: if it
+stops because the screen did not move on after typing, check what the laptop shows. The app (and the terminal) says
+why, and a stopped run saves a checkpoint. Fix the laptop, then click **Resume from …** (or `kvmit run <your copy>.toml --resume`): it looks at the screen
 first and carries on only from the step it stopped at or the next one.
 
 | It says | What happened | What to do |

@@ -63,6 +63,8 @@ struct Sim {
     queued_received_late: bool,
     frozen_queued: Option<Frame>,
     events: Vec<crate::exec::RunEvent>,
+    /// Reference pictures not saved yet.
+    missing: Vec<&'static str>,
 }
 
 impl Host for Sim {
@@ -161,6 +163,9 @@ impl Host for Sim {
             _ => return Err(format!("no reference {name}")),
         };
         Ok(solid(v))
+    }
+    fn reference_missing(&mut self, name: &str) -> bool {
+        self.missing.contains(&name)
     }
     fn confirm(&mut self, message: &str) -> bool {
         self.asked.push(message.to_string());
@@ -1126,4 +1131,32 @@ fn the_secret_check_reads_decoded_fields() {
     assert!(matches!(check_secrets(&w, &s, None), Err(WorkflowError::SecretInFile { .. })));
     let s: Vars = [("wifi".to_string(), "other".to_string())].into();
     assert_eq!(check_secrets(&w, &s, None), Ok(()));
+}
+
+#[test]
+fn a_missing_picture_makes_only_its_state_unrecognised() {
+    // The keyboard screen's picture is not saved: REGION is done, then that screen is unknown and nothing is typed on it.
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png"], ..Default::default() };
+    let r = go(&wf(), &mut sim, &opts(), None);
+    assert!(matches!(r.result, Err(WorkflowError::UnknownScreen { .. })), "{:?}", r.result);
+    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::PicturesMissing { states } if states == &["KEYBOARD"])));
+    assert!(r.context.history.is_empty(), "REGION's move cannot be verified onto a screen nobody can recognise");
+    let sent = events(&r).iter().filter(|e| matches!(e, WorkflowEvent::ActionAttempted { .. })).count();
+    assert_eq!(sent, 1, "keys went to REGION only");
+
+    // Another allowed tenant's missing picture is simply not compared.
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["fabrikam.png"], ..Default::default() };
+    assert_eq!(go(&wf(), &mut sim, &opts(), None).result, Ok(()));
+}
+
+#[test]
+fn the_configured_tenants_picture_or_any_picture_at_all_is_needed_before_starting() {
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["contoso.png"], ..Default::default() };
+    let r = go(&wf(), &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("contoso")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing sent: {:?}", sim.keys);
+    let all = vec!["region.png", "keyboard.png", "network.png", "autopilot.png", "done.png"];
+    let mut sim = Sim { screens: screens(), missing: all, ..Default::default() };
+    let r = go(&wf(), &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("no reference picture")), "{:?}", r.result);
 }

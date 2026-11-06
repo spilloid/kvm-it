@@ -1265,14 +1265,20 @@ impl App {
         let running = self.run_handle.as_ref().is_some_and(|r| r.running());
         let secrets: Vars = self.wf_secrets.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
         let missing = wf.secrets_in_order().into_iter().map(|(k, _)| k.to_string()).find(|k| !secrets.contains_key(k));
-        let why_ready = if external && !self.trust_ack {
+        // A run uses the profile in the file: settings changed in the form and not saved would not be what runs.
+        let unsaved = wf.setup.iter().any(|f| self.wf_setup.get(&f.key).is_some_and(|v| wf.config.get(&f.key) != Some(v)));
+        let why_unsaved = unsaved.then(|| match external {
+            true => "Save profile (or Undo changes) first: a run uses the saved profile.".to_string(),
+            false => "Save my copy first, then run your copy (or put the settings back).".to_string(),
+        });
+        let why_ready = why_unsaved.clone().or(if external && !self.trust_ack {
             Some("Tick \"I wrote or reviewed this workflow\" first.".to_string())
         } else {
             missing.map(|k| format!("Enter {} first.", wf.secrets.get(&k).cloned().unwrap_or(k)))
-        };
+        });
         let busy = running.then(|| "A script is already running.".to_string());
         let why_run = why_ready.clone().or(busy.clone()).or(uistate::send_block_reason(self.device().is_some(), self.input_idle()).map(str::to_string));
-        let why_dry = busy.clone().or(if self.capture.lock().unwrap().is_none() {
+        let why_dry = why_unsaved.or(busy.clone()).or(if self.capture.lock().unwrap().is_none() {
             Some("Open a video source first: a dry run still watches the screen.".to_string())
         } else {
             None
@@ -1331,7 +1337,9 @@ impl App {
                 r.clone().on_disabled_hover_text(w);
             }
             if r.clicked() {
-                self.start_workflow((wf.clone(), source.clone()), files.clone(), secrets.clone(), true, None, ctx.clone());
+                // A dry run sends nothing: secrets left empty get a placeholder.
+                let dry = crate::wf_view::dry_run_secrets(&wf, &secrets);
+                self.start_workflow((wf.clone(), source.clone()), files.clone(), dry, true, None, ctx.clone());
             }
             if let Some((shown, cp)) = &checkpoint {
                 let r = ui.add_enabled(why_run.is_none(), egui::Button::new(format!("Resume from {}", cp.state)));

@@ -243,21 +243,36 @@ impl Workflow {
     /// The prompted secrets (name, prompt) in the order the run types them (first use, states in file order), then any
     /// not typed at all: what the app shows and the command line asks, so the sign-in comes before the password.
     pub fn secrets_in_order(&self) -> Vec<(&str, &str)> {
-        let mut out: Vec<(&str, &str)> = Vec::new();
+        // `{{ name }}` placeholders of a template, in order (spaces allowed, as the compiler allows them).
+        fn names(t: &str) -> Vec<&str> {
+            let mut out = Vec::new();
+            let mut rest = t;
+            while let Some(i) = rest.find("{{") {
+                let after = &rest[i + 2..];
+                let Some(j) = after.find("}}") else { break };
+                out.push(after[..j].trim());
+                rest = &after[j + 2..];
+            }
+            out
+        }
+        fn walk<'a>(steps: &'a [crate::model::Step], used: &mut Vec<&'a str>) {
+            for step in steps {
+                match step {
+                    crate::model::Step::SecretText(t) => used.extend(names(t)),
+                    crate::model::Step::Repeat { steps, .. } => walk(steps, used),
+                    _ => {}
+                }
+            }
+        }
+        let mut used = Vec::new();
         for st in &self.states {
-            for step in &st.actions {
-                if let crate::model::Step::SecretText(t) = step {
-                    let mut used: Vec<(usize, &str, &str)> = self
-                        .secrets
-                        .iter()
-                        .filter_map(|(k, p)| t.find(&format!("{{{{{k}}}}}")).map(|i| (i, k.as_str(), p.as_str())))
-                        .collect();
-                    used.sort();
-                    for (_, k, p) in used {
-                        if !out.iter().any(|(o, _)| *o == k) {
-                            out.push((k, p));
-                        }
-                    }
+            walk(&st.actions, &mut used);
+        }
+        let mut out: Vec<(&str, &str)> = Vec::new();
+        for name in used {
+            if let Some((k, p)) = self.secrets.get_key_value(name) {
+                if !out.iter().any(|(o, _)| o == k) {
+                    out.push((k, p));
                 }
             }
         }
@@ -711,6 +726,9 @@ impl Checkpoint {
 #[serde(tag = "event")]
 pub enum WorkflowEvent {
     Started { workflow: String, dry_run: bool, resumed_from: Option<String> },
+    /// States that cannot be recognised in this run because none of their pictures is saved: if one of those screens
+    /// appears, it is an unknown screen and the run stops there.
+    PicturesMissing { states: Vec<String> },
     StateObserved { observation: Observation },
     StateEntered { state: String, from: Option<String>, reason: String },
     GuardChecked { state: String, ok: bool, detail: String },
@@ -824,6 +842,9 @@ impl Host for Scrubbed<'_> {
     }
     fn reference(&mut self, name: &str) -> Result<Frame, String> {
         self.inner.reference(name)
+    }
+    fn reference_missing(&mut self, name: &str) -> bool {
+        self.inner.reference_missing(name)
     }
     fn confirm(&mut self, message: &str) -> bool {
         self.inner.confirm(message)
@@ -1027,6 +1048,8 @@ struct Engine<'a> {
     host: &'a mut dyn Host,
     opts: &'a WorkflowOptions,
     refs: BTreeMap<String, Frame>,
+    /// Reference pictures not saved yet (see [`Host::reference_missing`]): never compared.
+    missing: BTreeSet<String>,
     /// The frame behind the latest settled classification: later checks use the same evidence.
     last_frame: Option<Frame>,
     /// The newest capture number seen. Frames at or below a boundary taken after acting were captured before the
@@ -1076,6 +1099,41 @@ impl Engine<'_> {
         Ok(f)
     }
 
+    /// Before the first look: which pictures are not saved yet. A state with none of its pictures cannot be recognised
+    /// (its screen, if it appears, stops the run as unknown); the run needs at least one recognisable state, and, if a
+    /// state checks the tenant, the configured tenant's picture, so it never types a sign-in it could not finish.
+    fn note_missing_pictures(&mut self) -> Result<(), WorkflowError> {
+        let wf = self.wf;
+        let mut blind = Vec::new();
+        for s in &wf.states {
+            for screen in &s.detect.screens {
+                if self.host.reference_missing(screen) {
+                    self.missing.insert(screen.clone());
+                }
+            }
+            if s.detect.screens.iter().all(|x| self.missing.contains(x)) {
+                blind.push(s.name.clone());
+            }
+        }
+        if blind.len() == wf.states.len() {
+            return Err(WorkflowError::Reference("no reference picture is saved yet: save the screens first".into()));
+        }
+        for (tenant, image) in &wf.tenants {
+            if self.host.reference_missing(image) {
+                if wf.states.iter().any(|s| s.verify_tenant) && wf.config.get("tenant") == Some(tenant) {
+                    return Err(WorkflowError::Reference(format!(
+                        "{image}, the picture of tenant {tenant}'s sign-in, is not saved: the password is typed only after it matches"
+                    )));
+                }
+                self.missing.insert(image.clone());
+            }
+        }
+        if !blind.is_empty() {
+            self.emit(WorkflowEvent::PicturesMissing { states: blind });
+        }
+        Ok(())
+    }
+
     /// The winner among `scores` (name, similarity, threshold), if it clears its threshold and beats the runner-up
     /// by the margin. A tie never wins, whatever the margin.
     fn winner(&self, scores: &[(String, f64, f64)]) -> Option<String> {
@@ -1103,13 +1161,17 @@ impl Engine<'_> {
         for s in &self.wf.states {
             let mut best: Option<(f64, String)> = None;
             for screen in &s.detect.screens {
+                if self.missing.contains(screen) {
+                    continue;
+                }
                 let r = self.reference(screen)?;
                 let sim = self.compare(frame, &r, s.detect.region);
                 if best.as_ref().is_none_or(|(b, _)| sim > *b) {
                     best = Some((sim, screen.clone()));
                 }
             }
-            let (sim, screen) = best.expect("every state has a screen");
+            // A state none of whose pictures is saved cannot be recognised (the run checked at least one state can).
+            let Some((sim, screen)) = best else { continue };
             refs.insert(s.name.clone(), screen);
             scores.push((s.name.clone(), sim, s.detect.threshold));
         }
@@ -1312,6 +1374,11 @@ impl Engine<'_> {
         let frame = self.last_frame.clone().ok_or_else(mismatch)?;
         let mut scores = Vec::new();
         for (tenant, image) in &self.wf.tenants.clone() {
+            // Another allowed tenant whose picture is not saved is not compared; the configured one's must be (checked
+            // when the run starts).
+            if self.missing.contains(image) {
+                continue;
+            }
             let r = self.reference(image)?;
             scores.push((tenant.clone(), self.compare(&frame, &r, None), s.detect.threshold));
         }
@@ -1655,6 +1722,7 @@ pub fn run_workflow(
         host,
         opts,
         refs: BTreeMap::new(),
+        missing: BTreeSet::new(),
         last_frame: None,
         seen_seq: None,
         secrets: secret_values,
@@ -1675,6 +1743,7 @@ pub fn run_workflow(
             }
         }
         let compiled = compile_workflow(wf, secrets, layout)?;
+        e.note_missing_pictures()?;
         for (i, st) in wf.states.iter().enumerate() {
             if action_time(&compiled[&st.name], &opts.run, true) > MAX_ACTION_TIME {
                 return Err(WorkflowError::Options(format!(

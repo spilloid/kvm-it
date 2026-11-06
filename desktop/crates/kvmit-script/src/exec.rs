@@ -119,6 +119,11 @@ pub trait Host {
     /// Latest video frame, if a capture device is open.
     fn screen(&mut self) -> Option<Frame>;
     fn reference(&mut self, name: &str) -> Result<Frame, String>;
+    /// Whether a reference picture simply has not been saved yet (a valid name with no file). A workflow cannot
+    /// recognise a state whose pictures are all missing; anything else wrong with a picture is an error.
+    fn reference_missing(&mut self, _name: &str) -> bool {
+        false
+    }
     fn confirm(&mut self, message: &str) -> bool;
     fn cancelled(&self) -> bool;
     fn event(&mut self, ev: RunEvent);

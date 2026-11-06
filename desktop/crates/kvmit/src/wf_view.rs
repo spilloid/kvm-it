@@ -51,6 +51,10 @@ pub fn timeline(trace: &[TraceEntry]) -> Vec<Row> {
         .filter_map(|t| {
             let (text, health) = match &t.event {
                 WorkflowEvent::StateEntered { state, reason, .. } => (format!("Entered {state} ({reason})"), Health::Idle),
+                WorkflowEvent::PicturesMissing { states } => (
+                    format!("Not recognised this run (picture not saved): {}. If one of these appears, the run stops there.", states.join(", ")),
+                    Health::Working,
+                ),
                 // A state with nothing to type only waits for the target (updates, a restart, enrolment).
                 WorkflowEvent::ActionAttempted { state, steps: 0, .. } => {
                     (format!("Waiting in {state} for the screen to move on"), Health::Working)
@@ -319,10 +323,26 @@ pub fn check_file_name(name: &str) -> Result<(), String> {
         && !stem.starts_with(['.', ' '])
         && !stem.ends_with(['.', ' '])
         && stem.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_'));
-    match plain {
-        true => Ok(()),
-        false => Err("a file name ending in .toml, of letters, digits, spaces, . - and _".into()),
+    if !plain {
+        return Err("a file name ending in .toml, of letters, digits, spaces, . - and _".into());
     }
+    // Windows device names, with any extension: `con.toml` is not a file there.
+    let device = stem.split('.').next().unwrap_or("").trim().to_ascii_uppercase();
+    let reserved = matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((device.starts_with("COM") || device.starts_with("LPT")) && device.len() == 4 && device.as_bytes()[3].is_ascii_digit());
+    match reserved {
+        true => Err(format!("{device} is a device name on Windows: choose another file name")),
+        false => Ok(()),
+    }
+}
+
+/// What a dry run passes for prompted secrets left empty: a dry run sends nothing, so it needs no real value.
+pub fn dry_run_secrets(wf: &kvmit_script::Workflow, given: &kvmit_script::Vars) -> kvmit_script::Vars {
+    let mut all = given.clone();
+    for k in wf.secrets.keys() {
+        all.entry(k.clone()).or_insert_with(|| "kvmit-dry-run-placeholder".to_string());
+    }
+    all
 }
 
 /// Write a new workflow file into the scripts folder. Never replaces a file already there.
@@ -350,6 +370,26 @@ pub fn write_new_workflow(dir: &std::path::Path, name: &str, text: &str) -> Resu
 /// elsewhere in between is never overwritten. Written to a temporary file and renamed, so a reader sees one whole
 /// version or the other.
 pub fn rewrite_workflow(path: &std::path::Path, was: &str, text: &str) -> Result<(), String> {
+    // One save at a time (the app and `kvmit workflow set`): the lock covers the comparison and the replacement. An
+    // editor saving in that instant is not covered.
+    let lock = path.with_extension("toml.saving");
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(format!(
+                "another save of {} is in progress (or one crashed: then delete {})",
+                path.display(),
+                lock.display()
+            ))
+        }
+        Err(e) => return Err(format!("{}: {e}", lock.display())),
+    }
+    let r = replace_if_unchanged(path, was, text);
+    let _ = std::fs::remove_file(&lock);
+    r
+}
+
+fn replace_if_unchanged(path: &std::path::Path, was: &str, text: &str) -> Result<(), String> {
     let now = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if now != was {
         return Err(format!("{} changed since it was opened: reload it and set it up again", path.display()));
@@ -921,7 +961,7 @@ mod tests {
         let values: BTreeMap<String, String> = [("tenant".to_string(), "fabrikam".to_string())].into();
         assert_eq!(copy_file_name("w.toml", &values), "w-fabrikam.toml");
         assert_eq!(copy_file_name("w.toml", &BTreeMap::new()), "w-copy.toml");
-        for bad in ["", ".toml", "x", "x.txt", "../x.toml", "a/b.toml", "a\\b.toml", ".hidden.toml", "c:x.toml", "x .toml"] {
+        for bad in ["", ".toml", "x", "x.txt", "../x.toml", "a/b.toml", "a\\b.toml", ".hidden.toml", "c:x.toml", "x .toml", "con.toml", "NUL.x.toml", "com1.toml", "Lpt9.toml"] {
             assert!(check_file_name(bad).is_err(), "{bad:?}");
         }
         let p = write_new_workflow(&dir, "w-fabrikam.toml", "one").unwrap();
@@ -932,6 +972,13 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "one");
         rewrite_workflow(&p, "one", "two").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "two");
+        // A save in progress (its lock) refuses a second one, and the lock is left for its owner.
+        let lock = p.with_extension("toml.saving");
+        std::fs::write(&lock, "").unwrap();
+        assert!(rewrite_workflow(&p, "two", "three").unwrap_err().contains("in progress"));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "two");
+        std::fs::remove_file(&lock).unwrap();
+        assert!(check_file_name("console.toml").is_ok() && check_file_name("com10.toml").is_ok());
         let left: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
         assert_eq!(left.len(), 1, "no temporary file left: {left:?}");
         let _ = std::fs::remove_dir_all(&dir);

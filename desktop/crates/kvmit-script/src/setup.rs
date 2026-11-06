@@ -25,15 +25,29 @@ pub fn apply(text: &str, values: &BTreeMap<String, String>) -> Result<String, St
             // A new organisation: the configured one is renamed, and its picture becomes `tenant-<name>.png` beside the
             // old one (saved by the user, like every reference screen).
             let old = &wf.config["tenant"];
-            let picture = match wf.tenants[old].rsplit_once('/') {
-                Some((dir, _)) => format!("{dir}/tenant-{v}.png"),
+            // Beside the old picture, in its folder however it was written (`/` or `\`).
+            let picture = match wf.tenants[old].rfind(['/', '\\']) {
+                Some(i) => format!("{}tenant-{v}.png", &wf.tenants[old][..=i]),
                 None => format!("tenant-{v}.png"),
             };
+            // Never the picture of another tenant or of a screen: two names for one picture would make the tenant
+            // check tie (and refuse) and saving one would change the other. Compared as Windows does: any case, either
+            // slash.
+            let same = |a: &str| a.replace('\\', "/").eq_ignore_ascii_case(&picture.replace('\\', "/"));
+            let taken = wf.tenants.iter().filter(|(t, _)| *t != old).map(|(_, p)| p).chain(wf.states.iter().flat_map(|s| &s.detect.screens));
+            if let Some(p) = taken.into_iter().find(|p| same(p)) {
+                return Err(format!("the picture {picture} would be the same as {p}, already used by this workflow: choose another name"));
+            }
             let table = doc.get_mut("tenants").and_then(|t| t.as_table_like_mut()).ok_or("no [tenants] table")?;
-            let decor = table.get_key_value(old).map(|(key, _)| key.leaf_decor().clone());
+            let key_decor = table.get_key_value(old).map(|(key, _)| key.leaf_decor().clone());
+            let value_decor = table.get(old).and_then(|i| i.as_value()).map(|v| v.decor().clone());
             table.remove(old);
-            table.insert(v, toml_edit::value(picture.as_str()));
-            if let (Some(decor), Some(mut key)) = (decor, table.key_mut(v)) {
+            let mut value = toml_edit::Value::from(picture.as_str());
+            if let Some(d) = value_decor {
+                *value.decor_mut() = d;
+            }
+            table.insert(v, toml_edit::Item::Value(value));
+            if let (Some(decor), Some(mut key)) = (key_decor, table.key_mut(v)) {
                 *key.leaf_decor_mut() = decor;
             }
             expected.tenants.remove(old);
@@ -49,7 +63,11 @@ pub fn apply(text: &str, values: &BTreeMap<String, String>) -> Result<String, St
         *item = toml_edit::Item::Value(value);
         expected.config.insert(k.clone(), v.clone());
     }
-    let out = doc.to_string();
+    let mut out = doc.to_string();
+    // The writer ends new lines with LF; a file written with CRLF (Windows editors) keeps CRLF throughout.
+    if text.contains("\r\n") {
+        out = out.replace("\r\n", "\n").replace('\n', "\r\n");
+    }
     let got = Workflow::parse(&out).map_err(|e| format!("the changed workflow does not parse: {e}"))?;
     if got != expected {
         return Err("changing the setup values would change more than them; nothing was changed".into());
@@ -125,10 +143,33 @@ terminal = true
         assert!(!wf.tenants.contains_key("contoso"));
         assert_eq!(wf.tenants["other"], "pics/other.png", "other allowed tenants are kept");
         assert!(out.contains("# the password page, with branding\nfabrikam = "), "{out}");
+        // A picture written with backslashes keeps its folder; a comment after the old picture is kept.
+        let win = WF.replace("contoso = \"pics/tenant-contoso.png\"", "contoso = 'pics\\tenant-contoso.png' # mine");
+        let out = apply(&win, &[("tenant".to_string(), "fabrikam".to_string())].into()).unwrap();
+        assert_eq!(Workflow::parse(&out).unwrap().tenants["fabrikam"], "pics\\tenant-fabrikam.png");
+        assert!(out.contains("tenant-fabrikam.png\" # mine") || out.contains("tenant-fabrikam.png' # mine"), "{out}");
         // Choosing a tenant already listed only selects it.
         let out = set(&[("tenant", "other")]).unwrap();
         let wf = Workflow::parse(&out).unwrap();
         assert_eq!((wf.config["tenant"].as_str(), wf.tenants.len()), ("other", 2));
+    }
+
+    #[test]
+    fn a_renamed_tenant_never_shares_a_picture() {
+        let clash = WF.replace("other = \"pics/other.png\"", "other = \"pics/Tenant-Fabrikam.png\"");
+        let e = apply(&clash, &[("tenant".to_string(), "fabrikam".to_string())].into()).unwrap_err();
+        assert!(e.contains("already used"), "{e}");
+        let screen = WF.replace("screen = \"a.png\"", "screen = \"pics\\\\tenant-fabrikam.png\"");
+        assert!(apply(&screen, &[("tenant".to_string(), "fabrikam".to_string())].into()).unwrap_err().contains("already used"));
+    }
+
+    #[test]
+    fn a_crlf_file_stays_crlf() {
+        let crlf = WF.replace('\n', "\r\n");
+        let out = apply(&crlf, &[("mode".to_string(), "two".to_string())].into()).unwrap();
+        assert_eq!(out, crlf.replace("mode = \"one\"", "mode = \"two\""));
+        let out = apply(&crlf, &[("tenant".to_string(), "fabrikam".to_string())].into()).unwrap();
+        assert!(!out.replace("\r\n", "").contains('\n'), "no bare LF: {out:?}");
     }
 
     #[test]
@@ -162,7 +203,7 @@ actions = [ { secret_text = "{{z_user}}" } ]
 name = "B"
 detect = { screen = "b.png" }
 next = ["C"]
-actions = [ { secret_text = "{{a_password}}{{z_user}}" } ]
+actions = [ { repeat = { count = 1, steps = [ { secret_text = "{{ a_password }}{{z_user}}" } ] } } ]
 [[states]]
 name = "C"
 detect = { screen = "c.png" }
