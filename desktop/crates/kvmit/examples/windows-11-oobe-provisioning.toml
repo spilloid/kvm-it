@@ -10,7 +10,8 @@ match = "structure"
 [config]
 # "autopilot": the device is registered for Windows Autopilot and shows the organisation's sign-in after the network.
 # "work_account": it is not; setup is told "Set up for work or school" and joins Microsoft Entra with the user's account.
-# A device that shows the other path's screen stops the run before anything is typed there.
+# A device that shows the other path's screen stops the run before anything is typed there (when that screen's picture
+# is saved: without it, the screen may be taken for a similar one).
 deployment_mode = "autopilot"
 # The organisation whose sign-in branding must be on screen before the password is typed. Name it under [tenants].
 tenant = "contoso"
@@ -30,7 +31,7 @@ contoso = "oobe-win11/tenant-contoso.png"
 [[setup]]
 key = "deployment_mode"
 label = "How the device joins your organisation"
-help = "Windows Autopilot: the device is registered for Autopilot and shows your organisation's sign-in right after the network. Work or school account: it is not registered; setup is told it is for work or school and joins Microsoft Entra with the user's account. A device that shows the other path's screen stops the run."
+help = "Windows Autopilot: the device is registered for Autopilot and shows your organisation's sign-in right after the network. Work or school account: it is not registered; setup is told it is for work or school and joins Microsoft Entra with the user's account. A device that shows the other path's screen stops the run, if that screen's picture is saved."
 choices = [
     { value = "autopilot", label = "Windows Autopilot (the device is registered)" },
     { value = "work_account", label = "Work or school account (Microsoft Entra join)" },
@@ -46,7 +47,7 @@ key = "accept_license"
 label = "If setup shows the Windows licence terms"
 choices = [
     { value = "yes", label = "Accept them" },
-    { value = "no", label = "Stop there (a person accepts)" },
+    { value = "no", label = "Stop there (a person accepts; needs the licence screen's picture)" },
 ]
 
 [[states]]

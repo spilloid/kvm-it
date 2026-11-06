@@ -51,8 +51,15 @@ pub fn timeline(trace: &[TraceEntry]) -> Vec<Row> {
         .filter_map(|t| {
             let (text, health) = match &t.event {
                 WorkflowEvent::StateEntered { state, reason, .. } => (format!("Entered {state} ({reason})"), Health::Idle),
-                WorkflowEvent::PicturesMissing { states } => (
-                    format!("Not recognised this run (picture not saved): {}. If one appears, the run usually stops there (it may be taken for a similar screen).", states.join(", ")),
+                WorkflowEvent::PicturesMissing { states, stops } => (
+                    format!(
+                        "Not recognised this run (picture not saved): {}. If one appears, the run usually stops there (it may be taken for a similar screen).{}",
+                        states.join(", "),
+                        match stops.is_empty() {
+                            true => String::new(),
+                            false => format!(" This profile's stop at {} may not happen.", stops.join(", ")),
+                        }
+                    ),
                     Health::Working,
                 ),
                 // A state with nothing to type only waits for the target (updates, a restart, enrolment).
@@ -187,6 +194,20 @@ pub fn save_reference(base: &std::path::Path, name: &str, w: usize, h: usize, rg
 }
 
 /// Every reference image of a workflow, in file order (states, then tenants), each listed once.
+/// The states none of whose pictures is present in `refs` (as [`references`] lists them): not recognisable in a run.
+pub fn blind_states(wf: &kvmit_script::Workflow, refs: &[Reference]) -> Vec<String> {
+    let present = |i: &String| refs.iter().any(|r| &r.image == i && r.present);
+    wf.states.iter().filter(|s| !s.detect.screens.iter().any(present)).map(|s| s.name.clone()).collect()
+}
+
+/// The tenant pictures missing while some state checks the tenant: a run will not start without them.
+pub fn missing_tenant_pictures(wf: &kvmit_script::Workflow, refs: &[Reference]) -> Vec<String> {
+    if !wf.states.iter().any(|s| s.verify_tenant) {
+        return Vec::new();
+    }
+    wf.tenants.values().filter(|i| !refs.iter().any(|r| &r.image == *i && r.present)).cloned().collect()
+}
+
 pub fn references(wf: &kvmit_script::Workflow, base: &std::path::Path) -> Vec<Reference> {
     let mut out: Vec<Reference> = Vec::new();
     let uses = wf
@@ -392,6 +413,10 @@ pub fn rewrite_workflow(path: &std::path::Path, was: &str, text: &str) -> Result
 }
 
 fn replace_if_unchanged(path: &std::path::Path, was: &str, text: &str) -> Result<(), String> {
+    // Renaming over a link would replace the link, not the file it points to.
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(format!("{} is a link: save the file it points to instead", path.display()));
+    }
     let now = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     if now != was {
         return Err(format!("{} changed since it was opened: reload it and set it up again", path.display()));

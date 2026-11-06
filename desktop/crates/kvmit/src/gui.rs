@@ -212,6 +212,8 @@ pub struct App {
     wf_reload: Option<std::path::PathBuf>,
     /// The operator accepted running the selected workflow although some states have no saved picture.
     wf_allow_missing: bool,
+    /// The states that acceptance named: a longer list needs it again.
+    wf_allow_for: Vec<String>,
 }
 
 /// The id of a workflow secret's password field: explicit, so its state can be found and removed, and tied to the
@@ -326,6 +328,7 @@ impl App {
             wf_setup_name_edited: false,
             wf_reload: None,
             wf_allow_missing: false,
+            wf_allow_for: Vec::new(),
             purge_ids: Vec::new(),
             wf_generation: 0,
             wf_saved: None,
@@ -1064,12 +1067,34 @@ impl App {
             if refs.is_empty() {
                 return;
             }
-            if missing > 0 {
-                ui.checkbox(&mut self.wf_allow_missing, "Run without the missing pictures");
+            let tenants = crate::wf_view::missing_tenant_pictures(wf, &refs);
+            if !tenants.is_empty() {
+                ui.colored_label(
+                    health_color(Health::Bad, ui),
+                    format!("Required before any run: {} (the organisation check compares every listed organisation).", tenants.join(", ")),
+                );
+            }
+            let blind = crate::wf_view::blind_states(wf, &refs);
+            if blind.iter().any(|b| !self.wf_allow_for.contains(b)) {
+                self.wf_allow_missing = false;
+            }
+            if blind.is_empty() {
+                self.wf_allow_missing = false;
+            } else {
+                let stops = wf.stop_states(&blind);
+                if ui.checkbox(&mut self.wf_allow_missing, format!("Run without the pictures of {}", blind.join(", "))).changed() {
+                    self.wf_allow_for = blind.clone();
+                }
                 ui.small(
                     "A screen without a picture is not recognised: if it appears, the run usually stops there, but it may be \
                      taken for a similar screen. Save every screen you can reach. A dry run never needs this.",
                 );
+                if !stops.is_empty() {
+                    ui.colored_label(
+                        health_color(Health::Bad, ui),
+                        format!("This profile stops the run at {}: without those pictures, that stop may not happen.", stops.join(", ")),
+                    );
+                }
             }
             self.wf_snap = self.wf_snap.min(refs.len() - 1);
             ui.horizontal(|ui| {

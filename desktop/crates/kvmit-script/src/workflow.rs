@@ -240,6 +240,19 @@ struct RawWorkflow {
 }
 
 impl Workflow {
+    /// Of these states, the ones whose entry guard the profile already fails (on `[config]` alone): states that exist
+    /// so the run stops there, such as the other deployment method's screen or a licence the profile does not accept.
+    /// Without a picture of such a screen, that stop is not made: the screen may be taken for a similar state.
+    pub fn stop_states<'a>(&self, states: &'a [String]) -> Vec<&'a str> {
+        states
+            .iter()
+            .filter(|n| {
+                self.state(n).is_some_and(|s| s.require.iter().any(|(k, v)| self.config.get(k).is_some_and(|c| c != v)))
+            })
+            .map(String::as_str)
+            .collect()
+    }
+
     /// The prompted secrets (name, prompt) in the order the run types them (first use, states in file order), then any
     /// not typed at all: what the app shows and the command line asks, so the sign-in comes before the password.
     pub fn secrets_in_order(&self) -> Vec<(&str, &str)> {
@@ -728,7 +741,7 @@ pub enum WorkflowEvent {
     Started { workflow: String, dry_run: bool, resumed_from: Option<String> },
     /// States that cannot be recognised in this run because none of their pictures is saved: if one of those screens
     /// appears, it is an unknown screen and the run stops there.
-    PicturesMissing { states: Vec<String> },
+    PicturesMissing { states: Vec<String>, stops: Vec<String> },
     StateObserved { observation: Observation },
     StateEntered { state: String, from: Option<String>, reason: String },
     GuardChecked { state: String, ok: bool, detail: String },
@@ -1129,13 +1142,21 @@ impl Engine<'_> {
             return Err(WorkflowError::Reference("no reference picture is saved yet: save the screens first".into()));
         }
         if !blind.is_empty() {
+            let stops: Vec<String> = wf.stop_states(&blind).into_iter().map(str::to_string).collect();
             if !self.opts.run.dry_run && !self.opts.allow_missing_pictures {
+                let lost = match stops.is_empty() {
+                    true => String::new(),
+                    false => format!(
+                        "; this profile stops the run at {}, and without their pictures it may not",
+                        stops.join(", ")
+                    ),
+                };
                 return Err(WorkflowError::Reference(format!(
-                    "no picture is saved for {}: save them, or run without them (a screen without a picture is usually stopped at as unknown, but may be taken for a similar one)",
+                    "no picture is saved for {}: save them, or run without them (a screen without a picture is usually stopped at as unknown, but may be taken for a similar one){lost}",
                     blind.join(", ")
                 )));
             }
-            self.emit(WorkflowEvent::PicturesMissing { states: blind });
+            self.emit(WorkflowEvent::PicturesMissing { states: blind, stops });
         }
         Ok(())
     }

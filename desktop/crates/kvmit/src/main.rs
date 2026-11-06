@@ -512,10 +512,28 @@ fn check_workflow(file: &std::path::Path, src: &str) -> R<()> {
     if invalid > 0 {
         return Err(format!("{invalid} reference image name(s) are not valid paths: fix them in the file").into());
     }
+    let tenants = kvmit::wf_view::missing_tenant_pictures(&wf, &refs);
+    if !tenants.is_empty() {
+        return Err(format!(
+            "required: {} (the organisation check compares every listed organisation's picture): no run starts without them",
+            tenants.join(", ")
+        )
+        .into());
+    }
+    let blind = kvmit::wf_view::blind_states(&wf, &refs);
+    if !blind.is_empty() {
+        println!(
+            "not recognisable (no picture saved): {}. A live run needs --allow-missing-pictures; such a screen usually stops the run, but may be taken for a similar one.",
+            blind.join(", ")
+        );
+        let stops = wf.stop_states(&blind);
+        if !stops.is_empty() {
+            println!("this profile stops the run at {}: without those pictures, that stop may not happen", stops.join(", "));
+        }
+    }
     if missing > 0 {
         println!(
-            "{missing} reference image(s) missing: a screen whose pictures are all missing is not recognised, and the run stops if it appears. \
-             Bring the target to each screen you can and run `kvmit video snap <path>` (or use Save this screen as in the app)."
+            "{missing} reference image(s) missing. Bring the target to each screen you can and run `kvmit video snap <path>` (or use Save this screen as in the app)."
         );
         return Ok(());
     }

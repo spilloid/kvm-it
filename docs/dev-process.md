@@ -1171,3 +1171,52 @@ Read-only, high effort, static, over `667bce4` and `main...HEAD`. **SIGN-OFF.** 
 defect introduced by it; "no remaining High or Medium defect relative to main substantiated with a concrete failure
 scenario"; the release's verification claims are supported by this log. One note: the roadmap row understated the VM
 coverage; corrected. Eight review rounds (55-62) for this release; every finding confirmed and fixed.
+
+## 2026-11-06 - 0.5.1 workflow setup (`764576f`): review round 63 (Codex `gpt-6-astra`)
+
+Read-only, high effort, over `main...764576f` (setup values, the app's setup form, `kvmit workflow`, the provisioning
+guide). **NO SIGN-OFF**: 4 Medium, 5 Low; all confirmed. No TOML injection, stale selection, or secret or trust
+carry-over found.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Medium | Run ignored setup edits shown in the form but not saved (it ran the file's profile) | **Confirmed.** Run, Resume and Dry run are blocked while a setup value differs from the file; checked in the app. |
+| 2 | Medium | Two saves of one file could both pass the comparison and the second discard the first | **Confirmed.** `rewrite_workflow` takes a `.toml.saving` lock (created new) across comparison and replacement; an outside editor saving in that instant is not covered (said in the code). Test. |
+| 3 | Medium | A tenant rename could derive a picture another tenant already used, so the tenant check always tied | **Confirmed.** Refused when the new picture equals another tenant's or any screen's (case, either slash). Test. |
+| 4 | Medium | The guide said unused screens could be left out, but one missing picture stopped every run before the first screen | **Confirmed** (true of 0.5.0 too). A state without pictures is now not recognisable instead of an error (`Host::reference_missing`; an invalid name still errors); see round 64 for its safety. Tests. |
+| 5 | Low | A renamed tenant lost the comment after its picture; CRLF files came back partly LF | **Confirmed.** The value's comment is kept; CRLF input stays CRLF. Tests. |
+| 6 | Low | A picture written with backslashes lost its folder on rename | **Confirmed.** Split on either slash. Test. |
+| 7 | Low | Secrets ordering missed `{{ name }}` and secrets inside `repeat` | **Confirmed.** Template names trimmed; repeats walked. Test. |
+| 8 | Low | The documented dry run failed without a sign-in and password | **Confirmed.** A dry run fills empty secrets with placeholders (app and CLI). |
+| 9 | Low | "A stop never types on the screen it stopped at" was false after a timed-out send | **Confirmed.** Reworded. |
+
+Also: Windows device names (`con.toml`, `COM1.toml`) refused as file names.
+
+## 2026-11-06 - Round-63 fixes (`815a6f7`): review round 64 (Codex `gpt-6-astra`)
+
+Read-only, high effort. **NO SIGN-OFF**: 1 High, 3 Medium, 1 Low, all introduced by round 63's fix 4 or partial; all
+confirmed. Round-63 findings 1, 2, 5, 6, 7, 8 and 9 judged addressed.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | Skipping a missing competitor tenant's picture let the wrong organisation's page pass the tenant check (fixture: Contoso won at 0.937 against a Fabrikam frame) | **Confirmed.** When any state checks the tenant, every allowed tenant's picture is required before the run starts. Test. |
+| 2 | Medium | A screen without a picture could be taken for a similar state and get its keys; the docs promised a stop | **Confirmed.** Fail closed: a live run with such states needs explicit acceptance (app checkbox, `--allow-missing-pictures`); a dry run accepts. Docs, CHANGELOG, ux and the timeline state the risk. Test. |
+| 3 | Medium | `./`, doubled slashes and `.` parts bypassed the picture collision check | **Confirmed.** Compared by path parts. Test. |
+| 4 | Medium | Probing a shared picture twice could see it present then missing, and classification then indexed an empty list (panic) | **Confirmed.** Each picture probed once into one snapshot; blind states computed after; an empty comparison is an error. |
+| 5 | Low | The fixed dry-run placeholder triggered "secret in file" on a workflow containing that text | **Confirmed.** Unique per run. |
+
+## 2026-11-06 - Round-64 fixes (`0eec1fe`): review round 65 (Claude Opus 5.5, standing in for Codex)
+
+**STD-001 deviation:** Codex `gpt-6-astra` hit its usage limit mid-round; Opus stood in (operator standing permission,
+logged per the rule). A cross-model round over this release is owed when Codex is back. Read-only plus probe crates,
+over `main...0eec1fe`. **NO SIGN-OFF**: 1 Medium, 4 Low; all confirmed. The setup rewrite (inline tables, dotted and
+quoted keys, multi-line strings, CRLF, BOM), every live path's acceptance gate, the tenant check and the placeholder's
+reach were probed with no defect.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Medium | Accepting missing pictures silently dropped the profile's own stops (a licence the profile does not accept, the other method's sign-in): probe pressed Enter on the licence screen with `accept_license = "no"`; the form and template still promised the stop | **Confirmed** (reproduced). Requiring those pictures would block the work-account case (an unregistered laptop never shows the Autopilot sign-in), so the acceptance stays one tick but names what it costs: `Workflow::stop_states` (blind states whose guard the profile fails) are named in the refusal, the `PicturesMissing` event and timeline, the app's checkbox and `--check`; the template's help, the licence choice's label and provisioning.md qualify the stop ("if that screen's picture is saved"). Test. |
+| 2 | Low | `--check` said missing tenant pictures only stop the run when their screen appears; no run starts without them | **Confirmed.** Reported as required, and `--check` fails. |
+| 3 | Low | The acceptance checkbox appeared when only tenant pictures were missing, and stayed ticked if more went missing | **Confirmed.** Shown only for blind states, naming them; the tick is dropped when the list grows. Tenant pictures shown as required. |
+| 4 | Low | Saving a linked workflow file replaced the link with a file | **Confirmed.** Saving a link is refused. |
+| 5 | Low | `..` in a picture path escaped the collision check | **Confirmed.** Such a path counts as a collision (it never loads anyway). |

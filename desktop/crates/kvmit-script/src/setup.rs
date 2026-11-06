@@ -35,7 +35,8 @@ pub fn apply(text: &str, values: &BTreeMap<String, String>) -> Result<String, St
             // slash.
             // Compared by their parts: `./`, doubled and back slashes, and case do not make another file.
             let parts = |p: &str| p.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".").map(str::to_ascii_lowercase).collect::<Vec<_>>();
-            let same = |a: &str| parts(a) == parts(&picture);
+            // A path with `..` cannot be compared by its parts: refused, as it never loads anyway.
+            let same = |a: &str| parts(a).iter().any(|c| c == "..") || parts(a) == parts(&picture);
             let taken = wf.tenants.iter().filter(|(t, _)| *t != old).map(|(_, p)| p).chain(wf.states.iter().flat_map(|s| &s.detect.screens));
             if let Some(p) = taken.into_iter().find(|p| same(p)) {
                 return Err(format!("the picture {picture} would be the same as {p}, already used by this workflow: choose another name"));

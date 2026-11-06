@@ -88,14 +88,16 @@ screen's picture under **Save this screen as** and click it:
 
 Notes:
 
-- Save every screen you can reach. Some you may not be able to: the licence terms (often not shown), the network
+- Save every screen you can reach. Some you may not be able to: the licence terms (often not shown; but if your copy
+  says **Stop there**, its picture is what makes the run stop, so save it), the network
   screen (skipped when Ethernet is plugged in; unplug it for the walkthrough to save it), the other method's sign-in
   page (`autopilot-signin.png`, or `setup-choice.png` and `work-signin.png`), MFA and enrolment if your organisation has
   none. To run without them, tick **Run without the missing pictures** under Reference screens (or add
   `--allow-missing-pictures`). A screen without a picture is not recognised: if it appears, the run usually stops there
-  as an unknown screen, but it **may be taken for a similar screen** and that screen's keys typed. The likeliest case is
-  a laptop on the other method showing its sign-in page, which could be taken for your method's sign-in page and get the
-  user name. The password is still typed only after your organisation's branding matches. A dry run never needs the
+  as an unknown screen, but it **may be taken for a similar screen** and that screen's keys typed. The app and the
+  terminal name the screens where your copy stops the run on purpose (the other method's sign-in, a licence you said
+  not to accept): without their pictures, that stop may not happen. The likeliest case is a laptop on the other method
+  showing its sign-in page, which could be taken for your method's sign-in page and get the user name. The password is still typed only after your organisation's branding matches. A dry run never needs the
   tick.
 - Your organisation's picture (`tenant-<name>.png`) is required, and so is the picture of every other organisation
   listed under `[tenants]` in your copy: a run will not start without them.

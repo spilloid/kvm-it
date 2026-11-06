@@ -1145,7 +1145,7 @@ fn a_missing_picture_makes_only_its_state_unrecognised() {
     let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png"], ..Default::default() };
     let r = go(&wf(), &mut sim, &allow, None);
     assert!(matches!(r.result, Err(WorkflowError::UnknownScreen { .. })), "{:?}", r.result);
-    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::PicturesMissing { states } if states == &["KEYBOARD"])));
+    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::PicturesMissing { states, stops } if states == &["KEYBOARD"] && stops.is_empty())));
     assert!(r.context.history.is_empty(), "REGION's move cannot be verified onto a screen nobody can recognise");
     let sent = events(&r).iter().filter(|e| matches!(e, WorkflowEvent::ActionAttempted { .. })).count();
     assert_eq!(sent, 1, "keys went to REGION only");
@@ -1155,6 +1155,21 @@ fn a_missing_picture_makes_only_its_state_unrecognised() {
     let mut sim = Sim { timeline: Some(screens()), missing: vec!["keyboard.png"], ..Default::default() };
     let r = go(&wf(), &mut sim, &dry, None);
     assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::PicturesMissing { .. })), "{:?}", r.result);
+}
+
+#[test]
+fn a_missing_stop_screen_is_named_before_it_is_accepted() {
+    // A work-account profile stops at AUTOPILOT (its guard wants autopilot): without its picture that stop is lost, and
+    // the refusal says so.
+    let w = Workflow::parse(&OOBE.replace("deployment_mode = \"autopilot\"\ntenant", "deployment_mode = \"work_account\"\ntenant")).unwrap();
+    assert_eq!(w.stop_states(&["AUTOPILOT".to_string(), "KEYBOARD".to_string()]), ["AUTOPILOT"]);
+    let mut sim = Sim { screens: screens(), missing: vec!["autopilot.png"], ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("stops the run at AUTOPILOT")), "{:?}", r.result);
+    let allow = WorkflowOptions { allow_missing_pictures: true, ..opts() };
+    let mut sim = Sim { screens: screens(), missing: vec!["autopilot.png"], ..Default::default() };
+    let r = go(&w, &mut sim, &allow, None);
+    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::PicturesMissing { stops, .. } if stops == &["AUTOPILOT"])));
 }
 
 #[test]
