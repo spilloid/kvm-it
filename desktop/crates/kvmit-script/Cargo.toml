@@ -11,4 +11,6 @@ kvmit-layout = { path = "../kvmit-layout" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+# Already in the build through `toml`: rewrites a workflow's setup values and keeps its comments and layout.
+toml_edit = { version = "0.22", default-features = false, features = ["parse", "display"] }
 zeroize = "1"

@@ -186,6 +186,28 @@ and the demo source do); a source that does not is refused. `secret_text`
 may only use `[secrets]`. A state cannot list itself in `next`. Settling counts distinct captured frames (the capture's own
 frame number), so a stalled capture never "settles", and a frame captured before an action never verifies it.
 
+**Setup values** (`[[setup]]`, 0.5.1): a workflow may list which `[config]` values a person sets, each with a label,
+optional help and either fixed `choices` (plain strings, or `{ value, label }`) or free text. The app's **Set up your
+copy** (on a built-in) and **Approved profile** (on a file), and `kvmit workflow new|set|show`, offer exactly those and
+change nothing else: the rewrite keeps the file's comments and layout and is refused unless the result parses to the same
+workflow with only those values changed. The `tenant` value, when the workflow lists `[tenants]`, is the organisation's
+name (letters, digits, `-`, `_`): a new name renames the configured tenant and points it at `tenant-<name>.png` beside
+the old picture. The configured value must be one of a field's choices; a field names a `[config]` key once.
+
+```toml
+[[setup]]
+key = "deployment_mode"
+label = "How the device joins your organisation"
+choices = [
+    { value = "autopilot", label = "Windows Autopilot (the device is registered)" },
+    { value = "work_account", label = "Work or school account (Microsoft Entra join)" },
+]
+
+[[setup]]
+key = "tenant"
+label = "Your organisation's short name"
+```
+
 Every workflow states how it compares screens (`match` is required). Use **structure** (`match = "structure"`:
 normalised correlation of the light/dark pattern) for real screens: setup screens share their background and differ
 mainly in text. Brightness alone (`match = "luma"`,
@@ -196,13 +218,16 @@ what `wait_for` uses) found Windows 11 OOBE screens 96-98 % alike. A state can c
 `qm sendkey`, screen via `screendump`), recognised and verified end to end. Not hardware-verified.
 
 **In the app (2026-11-02):** workflow files in the scripts folder appear in the Scripts list as `[workflow] name.toml`.
-Selecting one shows its states, its approved profile (read-only), a password box for each prompted secret (held in memory
-only, cleared when the selection changes), and Run, Dry run (needs a video source: it still watches the screen), Resume
+Selecting one shows its states, its approved profile (read-only, or a form for its setup values: **Set up your copy** on
+a built-in, **Save profile** on a file), a password box for each prompted secret in the order the run types them (held in
+memory only, cleared when the selection changes), and Run, Dry run (needs a video source: it still watches the screen), Resume
 (after a stopped run with a known state: it looks at the screen first) and Abort (Esc works as for scripts). While it runs:
 a state chip (current state and attempt), a timeline of entered states, keys sent, verified transitions, questions and
 stops, and a variables table with each value's source. When it ends: **Save trace and notes** (JSONL and Markdown in the
 scripts folder) and **Copy notes**. None of these contains a prompted secret. **Built and unit-tested (the chip, timeline,
-export names, outcome); not looked at on screen yet:** the screenshot harness needs a connected adapter.
+export names, outcome).** Looked at on screen on Windows 11 at 150 % (2026-11-06, demo video, no adapter): the setup
+form, Save my copy, Save profile, the secret boxes and the reference list; the panel scrolls inside the window. The
+state chip, timeline and variables during a live run have not been looked at on screen.
 
 **From the command line (0.5.0):** `kvmit run <workflow.toml>` does what the panel does. It prints the workflow, its
 states and its approved profile, asks whether you wrote or reviewed it (`--yes` skips that), prompts for each secret

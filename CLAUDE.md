@@ -54,10 +54,15 @@ self-test types into the machine it is plugged into.
 
 ## Things to re-verify before trusting them (dated, STD-003 rule 4)
 
+- 2026-11-06 (0.5.1, workflow setup): the setup form (Set up your copy, Save profile) and `kvmit workflow new/set/show`
+  ran on Windows 11 only, against the real scripts folder with a throwaway copy, demo video and no adapter. The live-run
+  parts of the workflow panel (chip, timeline, variables) are still unseen. Linux and macOS build the same code; not run.
+
 - 2026-11-04 (0.5.0, workflows and reconnect): the Windows 11 provisioning workflow is VM-verified only from REGION to
   WORK_SIGNIN (work-account path, 25H2); typing on the sign-in pages, the licence (Enter), network, MFA, privacy, ESP,
   handoff, the tenant check and the whole Autopilot path have never run anywhere. The
-  workflow panel (reference screens, Save this screen as, saved-checkpoint Resume) has not been looked at on screen.
+  workflow panel's Save this screen as and saved-checkpoint Resume have not been clicked on screen (0.5.1 looked at the
+  rest of the panel).
   The 15 s BLE connect bound (`kvmit-ble/src/backend.rs`) is built and linted on Windows only; reconnect after a real
   adapter power cycle has not been run; the non-Windows `cfg` branch was type-checked for macOS only (CI builds Linux).
 

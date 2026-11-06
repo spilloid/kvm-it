@@ -89,10 +89,80 @@ pub struct Workflow {
     pub secrets: BTreeMap<String, String>,
     /// Allowed tenants and the reference image of each one's sign-in branding. `config.tenant` must be one of them.
     pub tenants: BTreeMap<String, String>,
+    /// The profile values a person may set (in the app's setup form or `kvmit workflow new|set`), in file order. Nothing
+    /// else in the file is changed that way: states, actions and guards stay as written.
+    pub setup: Vec<SetupField>,
     /// A classification must beat the runner-up by at least this much similarity.
     pub ambiguity_margin: f64,
     pub matching: Matching,
     pub states: Vec<StateDef>,
+}
+
+/// One settable profile value: a `[config]` key with a label, optional help, and either a fixed list of choices or
+/// free text. The `tenant` key, when the workflow lists tenants, is the organisation's name: setting it to a new name
+/// renames the configured tenant and points it at `tenant-<name>.png` beside the old picture.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetupField {
+    pub key: String,
+    pub label: String,
+    pub help: String,
+    /// Empty: free text.
+    pub choices: Vec<SetupChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetupChoice {
+    pub value: String,
+    pub label: String,
+}
+
+impl SetupField {
+    /// Whether `value` may be set: one of the choices, or (free text) 1-64 printable characters; an organisation name
+    /// is letters, digits, `-` and `_` only, since it names a file.
+    pub fn check(&self, value: &str) -> Result<(), String> {
+        if !self.choices.is_empty() {
+            return match self.choices.iter().any(|c| c.value == value) {
+                true => Ok(()),
+                false => Err(format!(
+                    "{}: {value:?} is not one of {}",
+                    self.key,
+                    self.choices.iter().map(|c| c.value.as_str()).collect::<Vec<_>>().join(", ")
+                )),
+            };
+        }
+        if self.key == "tenant" {
+            if value.is_empty() || value.len() > 64 || !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return Err("the organisation's name is 1-64 letters, digits, - and _ (it names its picture's file)".into());
+            }
+            return Ok(());
+        }
+        if !setup_text(value) {
+            return Err(format!("{}: 1-64 characters, no line breaks or control characters", self.key));
+        }
+        Ok(())
+    }
+}
+
+fn setup_text(s: &str) -> bool {
+    !s.trim().is_empty() && s.chars().count() <= 64 && !s.chars().any(char::is_control)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSetup {
+    key: String,
+    label: String,
+    #[serde(default)]
+    help: String,
+    #[serde(default)]
+    choices: Vec<RawChoice>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawChoice {
+    Plain(String),
+    Labelled { value: String, label: String },
 }
 
 #[derive(Deserialize)]
@@ -161,13 +231,94 @@ struct RawWorkflow {
     #[serde(default)]
     tenants: BTreeMap<String, String>,
     #[serde(default)]
+    setup: Vec<RawSetup>,
+    #[serde(default)]
     ambiguity_margin: Option<f64>,
     #[serde(default, rename = "match")]
     matching: Option<String>,
     states: Vec<RawState>,
 }
 
+impl Workflow {
+    /// The prompted secrets (name, prompt) in the order the run types them (first use, states in file order), then any
+    /// not typed at all: what the app shows and the command line asks, so the sign-in comes before the password.
+    pub fn secrets_in_order(&self) -> Vec<(&str, &str)> {
+        let mut out: Vec<(&str, &str)> = Vec::new();
+        for st in &self.states {
+            for step in &st.actions {
+                if let crate::model::Step::SecretText(t) = step {
+                    let mut used: Vec<(usize, &str, &str)> = self
+                        .secrets
+                        .iter()
+                        .filter_map(|(k, p)| t.find(&format!("{{{{{k}}}}}")).map(|i| (i, k.as_str(), p.as_str())))
+                        .collect();
+                    used.sort();
+                    for (_, k, p) in used {
+                        if !out.iter().any(|(o, _)| *o == k) {
+                            out.push((k, p));
+                        }
+                    }
+                }
+            }
+        }
+        for (k, p) in &self.secrets {
+            if !out.iter().any(|(o, _)| o == k) {
+                out.push((k, p));
+            }
+        }
+        out
+    }
+}
+
 const MAX_STATES: usize = 64;
+const MAX_SETUP: usize = 16;
+
+/// `[[setup]]`: each names a `[config]` key once, with a label; choices are distinct and include the configured value.
+fn setup_fields(
+    raw: Vec<RawSetup>,
+    config: &BTreeMap<String, String>,
+    tenants: &BTreeMap<String, String>,
+) -> Result<Vec<SetupField>, String> {
+    if raw.len() > MAX_SETUP {
+        return Err(format!("at most {MAX_SETUP} setup values"));
+    }
+    let mut out: Vec<SetupField> = Vec::new();
+    for r in raw {
+        let Some(current) = config.get(&r.key) else {
+            return Err(format!("setup value {:?} is not in [config]", r.key));
+        };
+        if out.iter().any(|f| f.key == r.key) {
+            return Err(format!("setup value {:?} is listed twice", r.key));
+        }
+        if r.label.trim().is_empty() || r.label.chars().count() > 80 {
+            return Err(format!("setup value {:?}: its label is 1-80 characters", r.key));
+        }
+        if r.help.chars().count() > 400 {
+            return Err(format!("setup value {:?}: its help is at most 400 characters", r.key));
+        }
+        if r.key == "tenant" && !tenants.is_empty() && !r.choices.is_empty() {
+            return Err("the tenant setup value is the organisation's name: it takes no choices".into());
+        }
+        let mut choices: Vec<SetupChoice> = Vec::new();
+        for c in r.choices {
+            let c = match c {
+                RawChoice::Plain(v) => SetupChoice { label: v.clone(), value: v },
+                RawChoice::Labelled { value, label } => SetupChoice { value, label },
+            };
+            if !setup_text(&c.value) || c.label.trim().is_empty() || c.label.chars().count() > 80 {
+                return Err(format!("setup value {:?}: a choice is 1-64 characters, its label 1-80", r.key));
+            }
+            if choices.iter().any(|d| d.value == c.value) {
+                return Err(format!("setup value {:?}: choice {:?} is listed twice", r.key, c.value));
+            }
+            choices.push(c);
+        }
+        let field = SetupField { key: r.key, label: r.label, help: r.help, choices };
+        field.check(current).map_err(|e| format!("[config] does not fit its setup: {e}"))?;
+        out.push(field);
+    }
+    Ok(out)
+}
 const MAX_RETRIES: u32 = 5;
 const MIN_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -272,6 +423,7 @@ impl Workflow {
                 None => return Err("the workflow lists tenants but config has no `tenant`".into()),
             }
         }
+        let setup = setup_fields(raw.setup, &raw.config, &raw.tenants)?;
         let mut states = Vec::new();
         let mut names = BTreeSet::new();
         for r in raw.states {
@@ -389,6 +541,7 @@ impl Workflow {
             config: raw.config,
             secrets: raw.secrets.into_iter().map(|(k, v)| (k, v.prompt)).collect(),
             tenants: raw.tenants,
+            setup,
             ambiguity_margin: margin,
             matching: match raw.matching.as_deref() {
                 None => {

@@ -202,6 +202,14 @@ pub struct App {
     wf_saved_slot: Option<crate::wf_view::Slot>,
     /// The reference image "Save this screen as" writes (an index into the workflow's references).
     wf_snap: usize,
+    /// The setup form of the selected workflow: its setup values as chosen so far (seeded from its profile).
+    wf_setup: BTreeMap<String, String>,
+    /// The file name "Save my copy" writes, and whether the user typed it (else it follows the organisation's name).
+    wf_setup_name: String,
+    wf_setup_name_edited: bool,
+    /// A file the setup form just wrote: the scripts list is re-read and it is selected, at the start of the next frame
+    /// (not mid-panel, where the rest of the panel still draws the old selection).
+    wf_reload: Option<std::path::PathBuf>,
 }
 
 /// The id of a workflow secret's password field: explicit, so its state can be found and removed, and tied to the
@@ -311,6 +319,10 @@ impl App {
             workflow: None,
             wf_secrets: BTreeMap::new(),
             wf_run: None,
+            wf_setup: BTreeMap::new(),
+            wf_setup_name: String::new(),
+            wf_setup_name_edited: false,
+            wf_reload: None,
             purge_ids: Vec::new(),
             wf_generation: 0,
             wf_saved: None,
@@ -781,11 +793,14 @@ impl App {
         self.preview = None;
         self.preview_key = None;
         self.var_values.clear();
+        self.wf_setup.clear();
+        self.wf_setup_name_edited = false;
         if self.library[i].workflow {
             self.script = None;
             match kvmit_script::Workflow::parse(&self.library[i].source) {
                 Ok(w) => {
                     self.script_err = None;
+                    self.wf_setup = w.setup.iter().map(|f| (f.key.clone(), w.config.get(&f.key).cloned().unwrap_or_default())).collect();
                     self.workflow = Some(w);
                 }
                 Err(e) => self.script_err = Some(e),
@@ -1077,6 +1092,133 @@ impl App {
         });
     }
 
+    /// A workflow's setup form: its setup values as choices or text, and either "Save my copy" (a built-in: writes a
+    /// new file into the scripts folder) or "Save profile" (a file: rewrites only those values in it). Everything else
+    /// in the workflow is shown, not changed.
+    fn setup_ui(&mut self, ui: &mut egui::Ui, wf: &kvmit_script::Workflow, sel: usize, running: bool) {
+        let builtin = self.library[sel].builtin_file().map(str::to_string);
+        let title = if builtin.is_some() { "Set up your copy" } else { "Approved profile" };
+        let bad = theme::palette(ui.visuals().dark_mode).bad_text;
+        egui::CollapsingHeader::new(title).id_salt(("wf_setup", sel)).default_open(builtin.is_some()).show(ui, |ui| {
+            if builtin.is_some() {
+                ui.label(
+                    "A built-in workflow holds an example organisation. Choose yours: Save my copy writes your own copy into \
+                     the scripts folder, selected next for its reference screens and a run.",
+                );
+            }
+            let mut problem: Option<String> = None;
+            for f in &wf.setup {
+                ui.add_space(4.0);
+                ui.strong(&f.label);
+                if !f.help.is_empty() {
+                    ui.small(&f.help);
+                }
+                let v = self.wf_setup.entry(f.key.clone()).or_insert_with(|| wf.config.get(&f.key).cloned().unwrap_or_default());
+                if f.choices.is_empty() {
+                    ui.add(egui::TextEdit::singleline(v).hint_text(f.key.as_str()).desired_width(260.0));
+                } else {
+                    for c in &f.choices {
+                        ui.radio_value(v, c.value.clone(), c.label.as_str());
+                    }
+                }
+                if let Err(e) = f.check(v) {
+                    ui.colored_label(bad, &e);
+                    problem.get_or_insert(e);
+                }
+            }
+            let fixed: Vec<(&String, &String)> = wf.config.iter().filter(|(k, _)| !wf.setup.iter().any(|f| &f.key == *k)).collect();
+            if !fixed.is_empty() {
+                ui.add_space(4.0);
+                ui.small("Fixed in the file:");
+                egui::Grid::new(("wf_config_fixed", sel)).striped(true).show(ui, |ui| {
+                    for (k, v) in fixed {
+                        ui.label(k);
+                        ui.monospace(v);
+                        ui.end_row();
+                    }
+                });
+            }
+            ui.add_space(4.0);
+            let busy = running.then(|| "A script is running.".to_string());
+            let source = self.library[sel].source.clone();
+            match (builtin, self.library[sel].path.clone()) {
+                (Some(file), _) => {
+                    if !self.wf_setup_name_edited {
+                        self.wf_setup_name = crate::wf_view::copy_file_name(&file, &self.wf_setup);
+                    }
+                    ui.strong("File name");
+                    if ui.add(egui::TextEdit::singleline(&mut self.wf_setup_name).desired_width(f32::INFINITY)).changed() {
+                        self.wf_setup_name_edited = true;
+                    }
+                    let why = problem.or_else(|| crate::wf_view::check_file_name(&self.wf_setup_name).err()).or(busy);
+                    let b = ui.add_enabled(why.is_none(), egui::Button::new("Save my copy"));
+                    let b = match &why {
+                        Some(w) => b.on_disabled_hover_text(w),
+                        None => b.on_hover_text(format!("Writes {} into {}", self.wf_setup_name, self.cfg.script_dir().display())),
+                    };
+                    if b.clicked() {
+                        let dir = self.cfg.script_dir();
+                        let saved = kvmit_script::setup::apply(&source, &self.wf_setup)
+                            .and_then(|t| crate::wf_view::write_new_workflow(&dir, &self.wf_setup_name, &t));
+                        match saved {
+                            Ok(p) => {
+                                self.wf_reload = Some(p.clone());
+                                self.set_notice(format!("Saved {}: next, save its reference screens, then a dry run.", p.display()));
+                            }
+                            Err(e) => self.set_notice(format!("Not saved: {e}")),
+                        }
+                    }
+                }
+                (None, Some(path)) => {
+                    let changed: BTreeMap<String, String> =
+                        self.wf_setup.iter().filter(|(k, v)| wf.config.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), v.clone())).collect();
+                    let why = problem.or(busy).or(changed.is_empty().then(|| "Nothing changed.".to_string()));
+                    ui.horizontal(|ui| {
+                        let b = ui.add_enabled(why.is_none(), egui::Button::new("Save profile"));
+                        let b = match &why {
+                            Some(w) => b.on_disabled_hover_text(w),
+                            None => b.on_hover_text(format!("Changes {} in {}", changed.keys().cloned().collect::<Vec<_>>().join(", "), path.display())),
+                        };
+                        if b.clicked() {
+                            let saved = kvmit_script::setup::apply(&source, &changed)
+                                .and_then(|t| crate::wf_view::rewrite_workflow(&path, &source, &t));
+                            match saved {
+                                Ok(()) => {
+                                    self.wf_reload = Some(path.clone());
+                                    self.set_notice(format!("Saved the profile in {}", path.display()));
+                                }
+                                Err(e) => self.set_notice(format!("Not saved: {e}")),
+                            }
+                        }
+                        if ui.add_enabled(!changed.is_empty(), egui::Button::new("Undo changes")).clicked() {
+                            self.wf_setup = wf.setup.iter().map(|f| (f.key.clone(), wf.config.get(&f.key).cloned().unwrap_or_default())).collect();
+                        }
+                    });
+                    ui.small("Saving changes the file: a checkpoint saved before then is not resumed.");
+                }
+                (None, None) => {}
+            }
+        });
+    }
+
+    /// Re-read the scripts folder; nothing of the previous selection lingers. `select`: the file to select afterwards.
+    fn reload_library(&mut self, select: Option<&std::path::Path>) {
+        self.library = library::load_all(&self.cfg.script_dir());
+        self.selected = None;
+        self.script = None;
+        self.workflow = None;
+        self.forget_workflow_secrets();
+        self.script_err = None;
+        self.preview = None;
+        self.preview_key = None;
+        self.trust_ack = false;
+        self.var_values.clear();
+        self.wf_setup.clear();
+        if let Some(i) = select.and_then(|p| self.library.iter().position(|e| e.path.as_deref() == Some(p))) {
+            self.select_script(i);
+        }
+    }
+
     /// The selected workflow: what it will do, its secrets, run controls, and the live state, timeline and variables.
     fn workflow_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, wf: kvmit_script::Workflow, sel: usize) {
         ui.separator();
@@ -1086,7 +1228,10 @@ impl App {
         }
         let path: Vec<&str> = wf.states.iter().map(|s| s.name.as_str()).collect();
         ui.small(format!("States: {}", path.join(" · ")));
-        if !wf.config.is_empty() {
+        if !wf.setup.is_empty() {
+            let running = self.run_handle.as_ref().is_some_and(|r| r.running());
+            self.setup_ui(ui, &wf, sel, running);
+        } else if !wf.config.is_empty() {
             egui::CollapsingHeader::new("Approved profile").id_salt("wf_config").show(ui, |ui| {
                 egui::Grid::new("wf_config_grid").striped(true).show(ui, |ui| {
                     for (k, v) in &wf.config {
@@ -1097,11 +1242,14 @@ impl App {
                 });
             });
         }
-        for (name, prompt) in &wf.secrets {
-            let v = self.wf_secrets.entry(name.clone()).or_default();
-            ui.horizontal(|ui| {
-                ui.label(prompt);
-                ui.add(egui::TextEdit::singleline(v).password(true).id(secret_field_id(self.wf_generation, name)));
+        if !wf.secrets.is_empty() {
+            egui::Grid::new(("wf_secrets", sel)).num_columns(2).show(ui, |ui| {
+                for (name, prompt) in wf.secrets_in_order() {
+                    let v = self.wf_secrets.entry(name.to_string()).or_default();
+                    ui.label(prompt);
+                    ui.add(egui::TextEdit::singleline(v).password(true).desired_width(220.0).id(secret_field_id(self.wf_generation, name)));
+                    ui.end_row();
+                }
             });
         }
         if !wf.secrets.is_empty() {
@@ -1116,7 +1264,7 @@ impl App {
         }
         let running = self.run_handle.as_ref().is_some_and(|r| r.running());
         let secrets: Vars = self.wf_secrets.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
-        let missing = wf.secrets.keys().find(|k| !secrets.contains_key(*k)).cloned();
+        let missing = wf.secrets_in_order().into_iter().map(|(k, _)| k.to_string()).find(|k| !secrets.contains_key(k));
         let why_ready = if external && !self.trust_ack {
             Some("Tick \"I wrote or reviewed this workflow\" first.".to_string())
         } else {
@@ -1448,7 +1596,11 @@ impl eframe::App for App {
                 let r = ui.add_enabled(idle_ui, egui::Button::new("Type…"));
                 popup(&r, 340.0, |ui| self.text_ui(ui, ctx));
                 let r = ui.add_enabled(idle_ui, egui::Button::new(if running { "Scripts…  (running)" } else { "Scripts…" }));
-                popup(&r, 460.0, |ui| self.scripts_ui(ui, ctx));
+                // The scripts panel scrolls: a workflow's setup, references and timeline are taller than most windows.
+                let tall = (ctx.screen_rect().height() - 140.0).max(200.0);
+                popup(&r, 480.0, |ui| {
+                    egui::ScrollArea::vertical().id_salt("scripts_scroll").max_height(tall).min_scrolled_height(tall).show(ui, |ui| self.scripts_ui(ui, ctx));
+                });
                 let r = ui.add_enabled(idle_ui, egui::Button::new(self.cfg.theme.label()));
                 if r.on_hover_text("Click to cycle: follow the system, light, dark").clicked() {
                     let theme = self.cfg.theme.next();
@@ -1790,6 +1942,9 @@ impl App {
         if !self.purge_ids.is_empty() {
             purge_secret_fields(ctx, &std::mem::take(&mut self.purge_ids));
         }
+        if let Some(p) = self.wf_reload.take() {
+            self.reload_library(Some(&p));
+        }
         let names: Vec<String> = self.library.iter().map(|e| e.name.clone()).collect();
         for (i, n) in names.iter().enumerate() {
             if ui.selectable_label(self.selected == Some(i), n).clicked() && self.selected != Some(i) {
@@ -1798,17 +1953,7 @@ impl App {
             }
         }
         if ui.button("Reload folder").clicked() {
-            self.library = library::load_all(&self.cfg.script_dir());
-            self.selected = None;
-            self.script = None;
-            self.workflow = None;
-            self.forget_workflow_secrets();
-            // nothing of the previous selection may linger
-            self.script_err = None;
-            self.preview = None;
-            self.preview_key = None;
-            self.trust_ack = false;
-            self.var_values.clear();
+            self.reload_library(None);
         }
         ui.small(format!("Folder: {}", self.cfg.script_dir().display()));
         if let Some(e) = &self.script_err {

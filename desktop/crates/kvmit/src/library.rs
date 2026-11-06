@@ -17,6 +17,11 @@ pub const BUILTINS: &[Builtin] = &[
     },
 ];
 
+/// A built-in by its file name, with or without `.toml`.
+pub fn builtin(name: &str) -> Option<&'static Builtin> {
+    BUILTINS.iter().find(|b| b.file == name || b.file.strip_suffix(".toml") == Some(name))
+}
+
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub name: String,
@@ -30,6 +35,16 @@ pub struct Entry {
 /// Whether a file is a workflow: its parsed top level has a `workflow_format` key.
 pub fn is_workflow(source: &str) -> bool {
     kvmit_script::workflow::is_workflow_source(source)
+}
+
+impl Entry {
+    /// A built-in's file name (`None` for a file in the scripts folder).
+    pub fn builtin_file(&self) -> Option<&str> {
+        match self.path {
+            None => self.name.split_once("] ").map(|(_, f)| f),
+            Some(_) => None,
+        }
+    }
 }
 
 pub fn load_all(dir: &Path) -> Vec<Entry> {
@@ -69,6 +84,26 @@ mod tests {
         assert!(!is_workflow("format = 1\n[vars]\nworkflow_format = { default = \"x\" }\n"), "nested, not top level");
         assert!(!is_workflow("format = 1\ndescription = \"\"\"\nworkflow_format = 1\n\"\"\"\n"), "inside a string");
         assert!(!is_workflow("not toml at all ["));
+    }
+
+    #[test]
+    fn the_provisioning_template_is_set_up_by_its_setup_values() {
+        let b = builtin("windows-11-oobe-provisioning").unwrap();
+        let wf = Workflow::parse(b.source).unwrap();
+        let keys: Vec<&str> = wf.setup.iter().map(|f| f.key.as_str()).collect();
+        assert_eq!(keys, ["deployment_mode", "tenant", "accept_license"]);
+        let set = |pairs: &[(&str, &str)]| {
+            kvmit_script::setup::apply(b.source, &pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())
+        };
+        let out = set(&[("deployment_mode", "work_account"), ("tenant", "fabrikam"), ("accept_license", "no")]).unwrap();
+        let mine = Workflow::parse(&out).unwrap();
+        assert_eq!(mine.config["deployment_mode"], "work_account");
+        assert_eq!(mine.tenants.get("fabrikam").map(String::as_str), Some("oobe-win11/tenant-fabrikam.png"));
+        assert_eq!(mine.states, wf.states, "the states are not touched");
+        assert!(set(&[("deployment_mode", "byod")]).is_err());
+        let all = load_all(Path::new("/nonexistent"));
+        let files: Vec<&str> = all.iter().filter_map(|e| e.builtin_file()).collect();
+        assert_eq!(files, BUILTINS.iter().map(|b| b.file).collect::<Vec<_>>());
     }
 
     #[test]
