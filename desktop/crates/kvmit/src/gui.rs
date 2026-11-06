@@ -802,6 +802,7 @@ impl App {
         self.wf_setup.clear();
         self.wf_setup_name_edited = false;
         self.wf_allow_missing = false;
+        self.wf_allow_for.clear();
         if self.library[i].workflow {
             self.script = None;
             match kvmit_script::Workflow::parse(&self.library[i].source) {
@@ -1075,12 +1076,7 @@ impl App {
                 );
             }
             let blind = crate::wf_view::blind_states(wf, &refs);
-            if blind.iter().any(|b| !self.wf_allow_for.contains(b)) {
-                self.wf_allow_missing = false;
-            }
-            if blind.is_empty() {
-                self.wf_allow_missing = false;
-            } else {
+            if !blind.is_empty() {
                 let stops = wf.stop_states(&blind);
                 if ui.checkbox(&mut self.wf_allow_missing, format!("Run without the pictures of {}", blind.join(", "))).changed() {
                     self.wf_allow_for = blind.clone();
@@ -1293,6 +1289,12 @@ impl App {
             ui.small("Secrets: held in memory only, never saved, logged or exported.");
         }
         let base = self.library[sel].path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.cfg.script_dir());
+        // Every frame, whether or not the list is open: an acceptance covers only the screens it named, so a picture
+        // that goes missing afterwards (deleted outside the app) drops it.
+        let blind = crate::wf_view::blind_states(&wf, &crate::wf_view::references(&wf, &base));
+        if blind.is_empty() || blind.iter().any(|b| !self.wf_allow_for.contains(b)) {
+            self.wf_allow_missing = false;
+        }
         self.references_ui(ui, &wf, &base);
         let external = self.library[sel].path.is_some();
         let source = entry_source(&self.library[sel]);

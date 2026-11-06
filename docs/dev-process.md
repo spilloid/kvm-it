@@ -1220,3 +1220,16 @@ reach were probed with no defect.
 | 3 | Low | The acceptance checkbox appeared when only tenant pictures were missing, and stayed ticked if more went missing | **Confirmed.** Shown only for blind states, naming them; the tick is dropped when the list grows. Tenant pictures shown as required. |
 | 4 | Low | Saving a linked workflow file replaced the link with a file | **Confirmed.** Saving a link is refused. |
 | 5 | Low | `..` in a picture path escaped the collision check | **Confirmed.** Such a path counts as a collision (it never loads anyway). |
+
+## 2026-11-06 - Round-65 fixes (`d84dc30`): review round 66 (Claude Opus 5.5, standing in for Codex)
+
+Same deviation as round 65. Read-only, probe re-run. **SIGN-OFF.** All five round-65 fixes verified (the licence probe
+now refuses naming EULA as a lost stop, and with acceptance records `stops: ["EULA"]`); the named-acceptance disposition
+of finding 1 judged honest and sufficient. Two Lows, both fixed:
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Low | The tick was dropped on a growing missing list only while Reference screens was open (the reset ran inside the collapsed header) | **Confirmed.** The reset runs every frame in the panel, outside the header. Checked in the app: the tick holds, and a new selection drops it. |
+| 2 | Low | The accepted list was not cleared on a new selection (harmless: the tick was) | **Confirmed.** Cleared. |
+
+Owed: a Codex `gpt-6-astra` round over the whole release (`main...HEAD`) once its quota resets.
