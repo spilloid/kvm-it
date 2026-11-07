@@ -1,9 +1,10 @@
 # Provision Windows 11 laptops
 
 kvm-it can take a new Windows 11 laptop from the first setup screen to the user's first sign-in, typing only on the
-screens it recognises and stopping (typing nothing) on anything else. You set it up once for your organisation, save a
-picture of each setup screen once, and then run it on each laptop: you plug in the network, approve MFA and choose the
-privacy settings when it asks; it does the rest.
+screens it recognises and stopping (typing nothing) on anything else. It recognises each screen by **reading its text**
+("Is this the right country or region?"), so there is nothing to save first: you set it up once for your
+organisation, then run it on each laptop. You plug in the network, approve MFA and choose the privacy settings when it
+asks; it does the rest.
 
 It works two ways:
 
@@ -12,14 +13,20 @@ It works two ways:
 - **Work or school account**: the laptop is not registered; setup is told it is for work or school and joins Microsoft
   Entra with the user's account.
 
-> **How far it has been tested.** In a Windows 11 25H2 virtual machine, the work-account path ran by itself from the
-> region screen to the work-or-school sign-in page, through updates and a restart. Typing the user name and password,
-> the organisation check, MFA, enrolment, the Autopilot path, and real laptops have not been run yet. Watch your first
-> laptop all the way through, and save a trace if anything stops (see [When it stops](#when-it-stops)).
+> **How far it has been tested (0.6.0).** In a Windows 11 25H2 virtual machine, the work-account path ran by itself
+> from the region screen to the work-or-school sign-in page, recognising every screen by its text alone, through
+> updates and a restart; a typed sign-in was read back in the field, and with Caps Lock on the run stopped before
+> Enter. The password, the organisation check on a real password page, MFA, enrolment, the Autopilot path and real
+> laptops have not been run yet, and the text of the screens after the sign-in is Microsoft's usual wording, not yet
+> seen by kvm-it. Watch your first laptop all the way through, and save a trace if anything stops
+> (see [When it stops](#when-it-stops)).
 
 ## What you need
 
-- kvm-it 0.5.1 or later, with an adapter and a capture card ([Get started](getting-started.md)).
+- kvm-it 0.6.0 or later, with an adapter and a capture card ([Get started](getting-started.md)).
+- A computer that reads text off the screen: **Windows** (built in; English must be among its languages, as it is on
+  English Windows), **macOS** (built in), or **Linux** with Tesseract installed (`sudo apt install tesseract-ocr`).
+  Without it, screens can still be recognised from saved pictures, but a run that checks the sign-in does not start.
 - **One adapter and one capture card per laptop** you want to run at the same time.
 - The user's sign-in name and password for each laptop. They are asked for at the start of each run, held in memory, and
   never saved.
@@ -35,6 +42,7 @@ The built-in workflow names an example organisation. Make your own copy:
 |---|---|
 | How the device joins your organisation | **Windows Autopilot** or **Work or school account** |
 | Your organisation's short name | a short name such as `fabrikam` (letters, digits, `-`, `_`) |
+| Your organisation's sign-in domain | the part after `@` in your users' sign-ins, such as `fabrikam.com` |
 | If setup shows the Windows licence terms | **Accept them**, or **Stop there** for a person to accept |
 
 Click **Save my copy**. It writes `windows-11-oobe-provisioning-<name>.toml` into your scripts folder (shown under the
@@ -49,7 +57,7 @@ kvmit workflow new windows-11-oobe-provisioning
 It asks for each setting (Enter keeps the value shown). To answer up front instead:
 
 ```
-kvmit workflow new windows-11-oobe-provisioning --set deployment_mode=work_account --set tenant=fabrikam --set accept_license=yes
+kvmit workflow new windows-11-oobe-provisioning --set deployment_mode=work_account --set tenant=fabrikam --set tenant_domain=fabrikam.com --set accept_license=yes
 ```
 
 `kvmit workflow show <name or file>` lists the settings and their choices. To change one later, use the copy's
@@ -58,59 +66,51 @@ settings change; the screens and keys stay as they are. A checkpoint saved befor
 
 If you provision for more than one organisation, or with both methods, make a copy for each.
 
-## 2. Save the setup screens (once)
+## 2. The screens it knows
 
-The workflow recognises each screen from a picture of it, so it needs one picture of each screen from your own laptops
-(the capture card and the laptop's resolution change how a screen looks). With your copy selected, open
-**Reference screens**: each picture is listed, marked *missing* until it is saved.
+Each screen is recognised by a phrase it shows, read in the part of the screen where setup puts its heading:
 
-Take one laptop through setup **by hand**, from the keyboard you are driving through kvm-it. At each screen, choose that
-screen's picture under **Save this screen as** and click it:
-
-| Picture | Screen | Who does it |
+| Screen | Recognised by | Who does it |
 |---|---|---|
-| `region.png` | Is this the right country or region? | the workflow (accepts the one selected) |
-| `keyboard.png` | Is this the right keyboard layout? | the workflow (accepts the one selected) |
-| `second-keyboard.png` | Want to add a second keyboard layout? | the workflow (Skip) |
-| `network.png` | Let's connect you to a network | **you**: plug in Ethernet or join Wi-Fi, then Next |
-| `updates.png` | Checking for updates / Just a moment | nobody: it waits (up to 45 min, restarts included) |
-| `license.png` | License agreement | the workflow, if your copy accepts it |
-| `device-name.png` | Name your device | the workflow (Skip; Intune or Autopilot naming can set it) |
-| `setup-choice.png` | How would you like to set up this device? | the workflow (work or school; work-account copies only) |
-| `autopilot-signin.png` | Welcome to your organisation: sign in | the workflow types the user name (Autopilot copies only) |
-| `work-signin.png` | Let's set things up for your work or school | the workflow types the user name (work-account copies only) |
-| `password.png` | Enter password | the workflow types the password, **after** checking your branding |
-| `tenant-<name>.png` | the same Enter password page, with your organisation's branding | the organisation check |
-| `mfa.png` | Approve sign-in request / enter code | **the user**: approves on their phone (up to 10 min) |
-| `privacy.png` | Choose privacy settings for your device | **you**: choose your organisation's settings, then Accept |
-| `esp.png` | Setting up your device for work | nobody: it waits for enrolment (up to 90 min) |
-| `hello.png`, `desktop.png` | Windows Hello / PIN setup, or the desktop | the end: the user takes over |
+| Country or region | *Is this the right country or region?* | the workflow (accepts the one selected) |
+| Keyboard | *Is this the right keyboard layout or input method?* | the workflow (accepts the one selected) |
+| Second keyboard | *Want to add a second keyboard layout?* | the workflow (Skip) |
+| Network | *Let's connect you to a network* | **you**: plug in Ethernet or join Wi-Fi, then Next |
+| Updates | *Checking for updates*, *Please keep your PC on* or *Just a moment* | nobody: it waits (up to 45 min, restarts included) |
+| Licence | *License agreement* | the workflow, if your copy accepts it |
+| Device name | *Name your device* and *Make this device yours* | the workflow (Skip; Intune or Autopilot naming can set it) |
+| Setup choice | *How would you like to set up this device?* | the workflow (work or school; work-account copies only) |
+| Autopilot sign-in | *Welcome to* and *Sign in* | the workflow types the sign-in (Autopilot copies only) |
+| Work sign-in | *Let's set things up for your work or school* | the workflow types the sign-in (work-account copies only) |
+| Password | *Enter password* | the workflow types the password, **after** checking the page shows that sign-in |
+| MFA | *Approve sign in request*, *Enter code* or *Verify your identity* | **the user**: approves on their phone (up to 10 min) |
+| Privacy | *Choose privacy settings for your device* | **you**: choose your organisation's settings, then Accept |
+| Enrolment | *Setting up your device for work* | nobody: it waits for enrolment (up to 90 min) |
+| The end | *Windows Hello*, *Set up a PIN*, *Create a PIN* or the desktop's *Recycle Bin* | the user takes over |
 
-Notes:
+The first eight and the work sign-in were read off Windows 11 25H2; the rest are Microsoft's usual wording. If a laptop
+shows a screen in other words, the run stops there as an unknown screen, typing nothing: finish that screen by hand and
+Resume, and send the trace so the phrase can be added.
 
-- Save every screen you can reach. Some you may not be able to: the licence terms (often not shown; but if your copy
-  says **Stop there**, its picture is what makes the run stop, so save it), the network
-  screen (skipped when Ethernet is plugged in; unplug it for the walkthrough to save it), the other method's sign-in
-  page (`autopilot-signin.png`, or `setup-choice.png` and `work-signin.png`), MFA and enrolment if your organisation has
-  none. To run without them, tick **Run without the missing pictures** under Reference screens (or add
-  `--allow-missing-pictures`). A screen without a picture is not recognised: if it appears, the run usually stops there
-  as an unknown screen, but it **may be taken for a similar screen** and that screen's keys typed. The app and the
-  terminal name the screens where your copy stops the run on purpose (the other method's sign-in, a licence you said
-  not to accept): without their pictures, that stop may not happen. The likeliest case is a laptop on the other method
-  showing its sign-in page, which could be taken for your method's sign-in page and get the user name. The password is still typed only after your organisation's branding matches. A dry run never needs the
-  tick.
-- Your organisation's picture (`tenant-<name>.png`) is required, and so is the picture of every other organisation
-  listed under `[tenants]` in your copy: a run will not start without them.
-- Save `password.png` and `tenant-<name>.png` from the same page, once your organisation's branding (logo, background,
-  sign-in text) has loaded.
-- From a terminal, `kvmit run <your copy>.toml --check` lists the same pictures, present or missing, and
-  `kvmit video snap <path>` saves the current screen as one.
+The sign-in is checked twice before the password is typed:
+
+- **Before Enter on the sign-in page**, the field must show the sign-in exactly as typed. If it shows in capitals,
+  Caps Lock is on at the laptop; if a symbol is wrong (a `"` where the `@` should be), the laptop uses another keyboard
+  layout than US. Either way the run stops before Enter.
+- **On the password page**, it must show that very account, in your sign-in domain. Otherwise the run stops before the
+  password: it may be another organisation's page, or the wrong account.
+
+**Pictures, if you need them.** Where text cannot be read, each screen can be recognised from a saved picture instead
+(**Reference screens** in the app lists them, and **Save this screen as** saves the current video as one; or
+`kvmit video snap <path>`). A run that checks the sign-in still does not start there. `kvmit run <your copy>.toml
+--check` says how each screen will be recognised on this computer.
 
 ## 3. Dry run (once)
 
 Reset a laptop to the first setup screen (or use the next new one), select your copy and click **Dry run**. It watches
-the screen and sends nothing, so it needs no sign-in or password. Click through setup by hand and check that the timeline names each screen as you reach
-it. If a screen is not recognised, save its picture again from that laptop.
+the screen and sends nothing, so it needs no sign-in or password. Click through setup by hand and check that the
+timeline names each screen as you reach it. A screen it does not name is worded differently on your laptops: note it
+for the ticket.
 
 ## 4. Run it on each laptop
 
@@ -140,11 +140,15 @@ first and carries on only from the step it stopped at or the next one.
 
 | It says | What happened | What to do |
 |---|---|---|
-| *the screen was not recognised with confidence (closest: X at N%)* | the screen does not match any saved picture well enough | finish that screen by hand, then save its picture from this laptop for next time |
+| *the screen was not recognised with confidence (closest: X at N%)* | the screen's text matches no screen the workflow knows | finish that screen by hand, then Resume; send the trace so its wording can be added |
+| *what was typed shows with upper and lower case swapped: Caps Lock looks on* | Caps Lock is on at the laptop | turn it off at the laptop, clear the sign-in field, then Resume |
+| *what was typed does not show on screen as typed* | the laptop uses another keyboard layout than US, or the field did not take the text | set the layout to US at the laptop (or check the field), clear it, then Resume |
+| *the page does not show the sign-in entered (an account in X)* | the password page is for another account or organisation, or still loading | check the sign-in; if it is right and the page shows it, Resume |
+| *the sign-in entered is not an account in X* | the sign-in typed at the start is not in your copy's sign-in domain | check the sign-in, or your copy's domain |
+| *this workflow checks the sign-in by reading the screen, and text cannot be read here* | this computer has no text reader (see [What you need](#what-you-need)) | install one (Linux: Tesseract), or use another computer |
 | *expected X but the screen shows Y* | setup went somewhere the workflow does not allow from here | check the laptop; complete the step by hand, then Resume |
 | *entry check failed: deployment_mode* | the laptop showed the other method's screen (Autopilot vs work account) | the laptop is (or is not) registered for Autopilot: use the other copy, or fix the registration |
 | *entry check failed: accept_license* | the licence screen appeared and your copy says stop there | accept it by hand, then Resume |
-| *does not show tenant X's branding; stopped before enrolling* | the password page is not your organisation's (wrong account, or branding still loading) | check the sign-in name; if it is right, save `tenant-<name>.png` again from this page |
 | *the screen did not move on* | the step was done but the next screen never came (slow network, a dialog) | finish by hand, then Resume |
 | *does not match the checkpoint; not resuming* | the laptop is no longer where the run stopped | run again from the start (it recognises the screen it is on) |
 | *another run of this workflow on this adapter is in progress* | a run of this copy is already using this adapter, or one crashed | if none is running, check the laptop, delete the `.lock` file named in the message, then run again |
@@ -158,7 +162,7 @@ Everything lives in your scripts folder (`Documents\kvm-it\scripts` on Windows; 
 | Path | What |
 |---|---|
 | `windows-11-oobe-provisioning-<name>.toml` | your copy |
-| `oobe-win11\*.png` | the saved screens (shared by every copy in the folder) |
+| `oobe-win11\*.png` | saved screen pictures, only where text cannot be read (shared by every copy in the folder) |
 | `checkpoints\` | where a stopped run is kept for Resume (no secrets, no pictures) |
 | `workflow-run-*.trace.jsonl`, `*.notes.md` | saved traces and notes |
 

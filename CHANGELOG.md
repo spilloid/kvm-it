@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased] (0.6.0 in progress: screens recognised by their text)
+
+### Added
+- **Workflow screens are recognised by their text**, read with the operating system's own recogniser: Windows OCR
+  (built in), Apple Vision on macOS, Tesseract on Linux if installed. A state lists the phrases its screen shows
+  (`detect.text`, one set or alternative sets); its pictures become optional. The built-in Windows 11 provisioning
+  workflow has phrases for every screen and needs **no saved pictures** where text can be read. Windows OCR was tried
+  against `ocrs` first: it read every setup screen essentially perfectly in 20-40 ms, `ocrs` misread headings in 1-9 s.
+  The phrases from the region screen to the work sign-in page were read off Windows 11 25H2; VM-verified from REGION to
+  WORK_SIGNIN by text alone. Apple Vision is compiled, not yet run on a Mac; Tesseract is host-tested.
+- **The organisation check reads the password page**: a new setup value, your sign-in domain (`tenant_domain`). The
+  sign-in entered must be an account in it before anything is typed, and the password is typed only when the password
+  page shows that very account (compared whole and exactly). Branding pictures are used only where no sign-in domain
+  is set.
+- **The sign-in is read back before Enter** (`verify_typed`, `submit`): with Caps Lock on at the laptop the run stops
+  naming it; with another keyboard layout (a `"` for the `@`) it stops before Enter. VM-verified both ways.
+- `kvmit run --check` and the app's Reference screens say which screens are recognised by text on this computer and
+  which pictures are not needed.
+
+### Changed
+- A live run of a workflow that checks the sign-in by reading the screen does not start on a computer that cannot read
+  text (it never sends the sign-in unchecked). A dry run still runs.
+
 ## [0.5.1] - 2026-11-06 (set up workflows without a text editor, provisioning guide)
 
 ### Added
