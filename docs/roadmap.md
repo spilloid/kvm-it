@@ -64,6 +64,16 @@ written down instead of open-ended. Direction, not commitments; each release onl
 - [ ] Upgrade check: settings, pairings and saved scripts from 0.4.x still load in 1.0 on each OS.
 - [ ] Known limits listed in one place: US layout only, macOS not notarized, Windows Secure Attention Sequence per environment, unmeasured 1080p60 cost, Bluetooth link count per computer.
 
+## Long-term direction (context, not a workstream)
+
+Workstation builds vary mainly by **hardware SKU** (BIOS, boot path, drivers) and by **client** (enrolment, apps,
+policies, acceptance checks); the procedure itself varies little. The long-term value is a deterministic build engine
+that separates technician expertise from build quality: an engineer approves a procedure, a technician picks the
+client/SKU profile and connects the machine, kvm-it runs it with verified transitions and audit checkpoints, stops on
+an unknown state or a failed check, and leaves evidence of what was run and verified. Nothing is planned for it; it
+guides current work: keep workflows reusable, prefer observed transitions to blind delays, keep explicit stops and
+checkpoints, keep run evidence, and avoid tying a workflow to one machine, technician or client.
+
 ## After 1.0 (candidates)
 
 | Theme | Notes |
