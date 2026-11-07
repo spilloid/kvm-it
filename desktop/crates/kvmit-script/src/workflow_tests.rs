@@ -878,7 +878,7 @@ fn a_secret_anywhere_in_the_definition_is_refused_before_anything_is_published()
     let r = run_workflow(&w, &secrets(), &UsAnsi, &mut sim, &opts(), None, &mut |t, c| {
         seen.push(format!("{t:?} {c:?}"));
     });
-    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "the workflow's name or description".into() }));
+    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "the workflow's name, description or account".into() }));
     assert_eq!(r.context, Context::default(), "no context was built");
     for text in seen.iter().chain([trace_jsonl(&r), trace_markdown(&w, &r), format!("{r:?}")].iter()) {
         assert!(!text.contains("hunter2"), "{text}");
@@ -1476,19 +1476,76 @@ fn caps_lock_or_another_layout_at_the_target_stops_before_enter() {
 }
 
 #[test]
-fn where_text_cannot_be_read_the_sign_in_is_sent_unchecked_and_the_trace_says_so() {
-    // Recognised by pictures, read back by nobody: as before text could be read, and recorded.
+fn where_text_cannot_be_read_a_workflow_that_checks_the_sign_in_does_not_start() {
+    // Recognised by pictures, but its sign-in is read back: never sent unchecked. A dry run types nothing and runs.
     let src = OOBE.replace(
         "actions = [ { text = \"{{region}}\" }, { key = \"ENTER\" } ]",
-        "actions = [ { text = \"{{region}}\" } ]
-verify_typed = \"region\"
-submit = [ { key = \"ENTER\" } ]",
+        "actions = [ { text = \"{{region}}\" } ]\nverify_typed = \"region\"\nsubmit = [ { key = \"ENTER\" } ]",
     );
     let w = Workflow::parse(&src).unwrap();
     let mut sim = Sim { screens: screens(), confirms: [true].into(), ..Default::default() };
     let r = go(&w, &mut sim, &opts(), None);
-    assert_eq!(r.result, Ok(()));
-    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::TypedNotChecked { state, key, why } if state == "REGION" && key == "region" && why == "no recogniser")));
+    assert!(
+        matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("checks the sign-in by reading the screen") && m.contains("no recogniser")),
+        "{:?}",
+        r.result
+    );
+    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing sent");
+    let dry = WorkflowOptions { run: RunOptions { dry_run: true, ..opts().run }, ..opts() };
+    let timeline: Vec<Frame> = [20, 70, 120, 170, 225].into_iter().flat_map(|v| std::iter::repeat_n(solid(v), 12)).collect();
+    let mut sim = Sim { timeline: Some(timeline), screens: screens(), ..Default::default() };
+    assert_eq!(go(&w, &mut sim, &dry, None).result, Ok(()));
+    // The same for the account check: the SIGN_IN workflow without a reader.
+    let w = Workflow::parse(SIGN_IN).unwrap();
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), ..Default::default() };
+    let secrets: Vars = [("username".to_string(), "jane@contoso.com".to_string()), ("password".to_string(), "x".to_string())].into();
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+    assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("checks the sign-in")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"));
+}
+
+#[test]
+fn a_near_miss_account_or_a_sign_in_with_control_characters_is_refused() {
+    // Another organisation's account that only looks close (contoso.com for contoso.co) never passes.
+    let w = Workflow::parse(&SIGN_IN.replace("contoso.com\"", "contoso.co\"")).unwrap();
+    let texts = vec![
+        (20, "Let's set things up for your work or school|Sign in"),
+        (70, "alexander.smith@contoso.com|Enter password"),
+        (120, "Setting up your device for work"),
+    ];
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(texts), ..Default::default() };
+    let secrets: Vars =
+        [("username".to_string(), "alexander.smith@contoso.co".to_string()), ("password".to_string(), "pw".to_string())].into();
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+    assert!(matches!(r.result, Err(WorkflowError::AccountNotShown { .. })), "{:?}", r.result);
+    assert_eq!(enters(&sim), 1, "the password was not typed");
+    // A newline would be typed as Enter before any check; a tab, a space or a second @ is not a sign-in either.
+    for bad in ["jane@contoso.com\n", "jane@contoso.com\t", "jane doe@contoso.com", "jane@x@contoso.com", "@contoso.com"] {
+        let (r, sim) = sign_in("jane@contoso.com|Enter password", bad, false);
+        assert!(matches!(&r.result, Err(WorkflowError::Options(m)) if m.contains("not an account in contoso.com")), "{bad:?}: {:?}", r.result);
+        assert!(sim.keys.iter().all(|k| k == "release_all"), "{bad:?}");
+    }
+    // Punctuation in the domain is read as such.
+    let w = Workflow::parse(&SIGN_IN.replace("contoso.com\"", "contoso-it.com\"")).unwrap();
+    let texts = vec![
+        (20, "Let's set things up for your work or school|Sign in"),
+        (70, "\u{2190} jane@contoso-it.com|Enter password"),
+        (120, "Setting up your device for work"),
+    ];
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(texts), ..Default::default() };
+    let secrets: Vars = [("username".to_string(), "jane@contoso-it.com".to_string()), ("password".to_string(), "pw".to_string())].into();
+    assert_eq!(run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {}).result, Ok(()));
+}
+
+#[test]
+fn a_detect_phrase_holding_a_secret_is_refused_before_anything_is_shown() {
+    let src = SIGN_IN.replace("detect = { text = [\"Enter password\"] }", "detect = { text = [\"Enter password\", \"jane@contoso.com\"] }");
+    let w = Workflow::parse(&src).unwrap();
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(vec![]), ..Default::default() };
+    let secrets: Vars = [("username".to_string(), "jane@contoso.com".to_string()), ("password".to_string(), "pw".to_string())].into();
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+    assert!(matches!(r.result, Err(WorkflowError::SecretInFile { .. })), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"));
 }
 
 #[test]

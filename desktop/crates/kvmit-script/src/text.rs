@@ -109,61 +109,44 @@ pub enum Typed {
     Absent,
 }
 
-/// Whether `value` (just typed) shows on one of `lines`, case and all. Spaces are ignored (readers split and join
-/// words differently) and one misread letter or digit in ten is allowed ("m" read as "rn"); every other character
-/// must be exactly there, since a different keyboard layout shows itself in symbols (`"` typed for `@`). A value
-/// without letters cannot show Caps Lock.
+/// Whether `value` (just typed) is exactly what one line shows, case and all, start to end: a field holding more
+/// (a second copy, text appended) is not it. Spaces are ignored (readers split and join words differently). There
+/// is no tolerance for misreading: an uncertain read is a refusal, and the engine looks again. A value without
+/// letters cannot show Caps Lock.
 pub fn typed_shown(lines: &[TextLine], value: &str) -> Typed {
-    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<Vec<char>>();
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
     let want = squash(value);
     if want.is_empty() {
         return Typed::Absent;
     }
-    let swapped: Vec<char> = want
-        .iter()
-        .flat_map(|c| if c.is_lowercase() { c.to_uppercase().collect::<Vec<_>>() } else { c.to_lowercase().collect() })
-        .collect();
-    let has_letters = want.iter().any(|c| c.is_alphabetic());
-    let (mut best, mut best_swapped) = (0.0f64, 0.0f64);
-    for l in lines {
-        let t = squash(&l.text);
-        best = best.max(approx_in(&t, &want));
-        if has_letters {
-            best_swapped = best_swapped.max(approx_in(&t, &swapped));
-        }
-    }
-    const MATCH: f64 = 0.9;
-    if best >= MATCH && best >= best_swapped {
+    let swapped: String =
+        want.chars().flat_map(|c| if c.is_lowercase() { c.to_uppercase().collect::<Vec<_>>() } else { c.to_lowercase().collect() }).collect();
+    let shown: Vec<String> = lines.iter().map(|l| squash(&l.text)).collect();
+    if shown.contains(&want) {
         Typed::Shown
-    } else if best_swapped >= MATCH && has_letters {
+    } else if swapped != want && shown.contains(&swapped) {
         Typed::CaseSwapped
     } else {
         Typed::Absent
     }
 }
 
-/// One minus the fewest edits turning some stretch of `t` into `p`, over `p`'s length (case-sensitive, anywhere).
-/// Only letters and digits may be edited: a symbol that differs, is missing or is extra rules the stretch out.
-fn approx_in(t: &[char], p: &[char]) -> f64 {
-    let far = t.len() + p.len() + 1;
-    let cost = |c: char| if c.is_alphanumeric() { 1 } else { far };
-    let mut prev: Vec<usize> = vec![0; p.len() + 1];
-    for j in 1..=p.len() {
-        prev[j] = (prev[j - 1] + cost(p[j - 1])).min(far);
-    }
-    let mut best = prev[p.len()];
-    let mut cur = vec![0usize; p.len() + 1];
-    for tc in t {
-        cur[0] = 0;
-        for j in 1..=p.len() {
-            let pc = p[j - 1];
-            let sub = if pc == *tc { 0 } else if pc.is_alphanumeric() && tc.is_alphanumeric() { 1 } else { far };
-            cur[j] = (prev[j - 1] + sub).min(prev[j] + cost(*tc)).min(cur[j - 1] + cost(pc)).min(far);
+/// Every whole e-mail address on the screen (`name@domain`, as one run of address characters with one `@`), as read.
+/// Punctuation inside an address (`contoso-it.com`, `first.last`) is kept: this is not the prose normalisation.
+pub fn accounts_shown(lines: &[TextLine]) -> Vec<String> {
+    let in_address = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-' | '@' | '\'');
+    let mut out = Vec::new();
+    for l in lines {
+        for token in l.text.split(|c: char| !in_address(c)) {
+            let token = token.trim_matches(|c: char| matches!(c, '.' | '-' | '\''));
+            if let Some((name, domain)) = token.split_once('@') {
+                if !name.is_empty() && domain.contains('.') && !domain.contains('@') {
+                    out.push(token.to_string());
+                }
+            }
         }
-        best = best.min(cur[p.len()]);
-        std::mem::swap(&mut prev, &mut cur);
     }
-    (1.0 - best as f64 / p.len() as f64).max(0.0)
+    out
 }
 
 #[cfg(test)]
@@ -200,19 +183,32 @@ mod tests {
     }
 
     #[test]
-    fn a_typed_value_is_shown_shown_with_caps_lock_or_absent() {
+    fn a_typed_value_is_shown_whole_and_exactly_or_with_caps_lock_or_not_at_all() {
         let lines = |t: &str| vec![line("Sign in", 0.5, 0.4), line(t, 0.5, 0.47)];
         assert_eq!(typed_shown(&lines("jane.doe@contoso.com"), "jane.doe@contoso.com"), Typed::Shown);
         assert_eq!(typed_shown(&lines("jane. doe@contoso.com"), "jane.doe@contoso.com"), Typed::Shown, "spaces ignored");
-        assert_eq!(typed_shown(&lines("jane.doe@contoso.corn"), "jane.doe@contoso.com"), Typed::Shown, "one misread");
         assert_eq!(typed_shown(&lines("JANE.DOE@CONTOSO.COM"), "jane.doe@contoso.com"), Typed::CaseSwapped);
         assert_eq!(typed_shown(&lines("jANE@cONTOSO.COM"), "Jane@Contoso.com"), Typed::CaseSwapped);
-        // A UK layout types " for @: the value is not there.
-        assert_eq!(typed_shown(&lines("jane.doe\"contoso.com"), "jane.doe@contoso.com"), Typed::Absent, "a symbol must be exact");
-        assert_eq!(typed_shown(&lines("jane.doecontoso.com"), "jane.doe@contoso.com"), Typed::Absent, "or there");
-        assert_eq!(typed_shown(&lines("someone@example.com"), "jane.doe@contoso.com"), Typed::Absent);
+        for wrong in [
+            "jane.doe@contoso.corn",                  // a misread is not a match: look again
+            "Jane.doe@contoso.com",                   // case is part of what was typed
+            "jane.doe\"contoso.com",                   // a UK layout types " for @
+            "jane.doe@contoso.com.evil",              // more than was typed
+            "jane.doe@contoso.comjane.doe@contoso.com", // typed twice into a field that was not empty
+            "Sign in to jane.doe@contoso.com",        // a label, not the field
+        ] {
+            assert_eq!(typed_shown(&lines(wrong), "jane.doe@contoso.com"), Typed::Absent, "{wrong}");
+        }
         assert_eq!(typed_shown(&lines("12345"), "12345"), Typed::Shown);
         assert_eq!(typed_shown(&lines(""), ""), Typed::Absent);
+    }
+
+    #[test]
+    fn accounts_are_read_whole_with_their_punctuation() {
+        let l = vec![line("\u{2190} alexander.smith@contoso-it.com", 0.5, 0.2), line("Enter password", 0.5, 0.3)];
+        assert_eq!(accounts_shown(&l), ["alexander.smith@contoso-it.com"]);
+        let l = vec![line("Sign in as jane@contoso.com. Or bob@fabrikam.co.uk, not @nobody or a@b@c.com", 0.5, 0.2)];
+        assert_eq!(accounts_shown(&l), ["jane@contoso.com", "bob@fabrikam.co.uk"]);
     }
 
     #[test]

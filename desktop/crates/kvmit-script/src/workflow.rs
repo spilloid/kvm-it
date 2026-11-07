@@ -416,6 +416,13 @@ const MAX_PHRASES: usize = 8;
 /// The `[config]` key naming the organisation's sign-in domain (see [`Workflow::account`]).
 pub const TENANT_DOMAIN: &str = "tenant_domain";
 
+/// `name@domain` exactly as it will be typed: printable ASCII with no spaces, one `@`, a name before it, and the domain
+/// after it equal to `domain` (case aside). A newline or tab would be typed as Enter or Tab before any check.
+pub fn account_in(account: &str, domain: &str) -> bool {
+    let Some((local, dom)) = account.split_once('@') else { return false };
+    !local.is_empty() && !dom.contains('@') && account.chars().all(|c| c.is_ascii_graphic()) && dom.eq_ignore_ascii_case(domain)
+}
+
 /// `contoso.com`, `mail.contoso.co.uk`: letters, digits and hyphens in dot-separated labels, at least two labels.
 pub fn valid_domain(d: &str) -> bool {
     let labels: Vec<&str> = d.split('.').collect();
@@ -427,10 +434,10 @@ pub fn valid_domain(d: &str) -> bool {
 }
 /// How closely each detect phrase must be found: one misread character in ten still matches.
 pub const DEFAULT_TEXT_THRESHOLD: f64 = 0.9;
-/// How closely the password page must show the sign-in typed: one misread character in twenty.
-const ACCOUNT_MATCH: f64 = 0.95;
 /// How long a typed value has to appear on screen before `submit` (it is drawn as typed, so this is generous).
-const TYPED_WAIT: Duration = Duration::from_secs(3);
+const TYPED_WAIT: Duration = Duration::from_secs(5);
+/// The oldest a frame may be when a check on it (an account shown, a value typed) decides that keys are sent.
+const EVIDENCE_AGE: Duration = Duration::from_secs(3);
 const MIN_TIMEOUT: Duration = Duration::from_millis(500);
 
 fn valid_name(s: &str) -> bool {
@@ -889,8 +896,6 @@ pub enum WorkflowEvent {
     TenantVerified { state: String, tenant: String, confidence: f64 },
     /// What was typed for `key` shows on screen as typed (the value itself is never recorded).
     TypedVerified { state: String, key: String },
-    /// What was typed for `key` could not be read back: this computer cannot read text (`why`).
-    TypedNotChecked { state: String, key: String, why: String },
     HumanGateRequested { state: String, message: String, approved: bool },
     /// A `manual` state: the operator was asked to do this by hand; the engine now waits for the screen to move on.
     ManualStepRequested { state: String, message: String, timeout_ms: u64 },
@@ -912,6 +917,12 @@ impl WorkflowEvent {
             }
             WorkflowEvent::Stopped { reason, .. } => secrets.scrub(reason),
             WorkflowEvent::GuardChecked { detail, .. } => secrets.scrub(detail),
+            // Defence in depth: the file was scanned for secrets, but what names a match is published here.
+            WorkflowEvent::StateObserved { observation } => {
+                if let Some(r) = observation.reference.as_mut() {
+                    secrets.scrub(r);
+                }
+            }
             WorkflowEvent::StateEntered { reason, .. } => secrets.scrub(reason),
             WorkflowEvent::ContextChanged { from, to, .. } => {
                 secrets.scrub(to);
@@ -1311,6 +1322,18 @@ impl Engine<'_> {
                 self.missing.insert(n.clone());
             }
         }
+        // Checks on the sign-in read the screen: they are never waived because it cannot be read here.
+        if let (Some(why), false) = (&self.text_unreadable, self.opts.run.dry_run) {
+            let reads_sign_in = wf.states.iter().any(|s| s.verify_typed.is_some())
+                || (wf.config.contains_key(TENANT_DOMAIN) && wf.states.iter().any(|s| s.verify_tenant));
+            if reads_sign_in {
+                let mut why = why.clone();
+                self.secrets.scrub(&mut why);
+                return Err(WorkflowError::Reference(format!(
+                    "this workflow checks the sign-in by reading the screen, and text cannot be read here ({why}); nothing was sent"
+                )));
+            }
+        }
         if wf.states.iter().any(|s| s.verify_tenant) && self.tenant_by_picture() && wf.tenants.is_empty() {
             return Err(WorkflowError::Reference(format!(
                 "the tenant check reads the password page, but text cannot be read here ({}) and the workflow lists no tenant picture",
@@ -1351,9 +1374,11 @@ impl Engine<'_> {
         Ok(())
     }
 
-    /// Whether the tenant check compares branding pictures: when the profile names no sign-in domain, or no text can be
-    /// read here. Otherwise it reads the page.
+    /// Whether the tenant check compares branding pictures: when the profile names no sign-in domain (or, in a dry run
+    /// only, no text can be read here). Otherwise it reads the page.
     fn tenant_by_picture(&self) -> bool {
+        // With a sign-in domain the page is read (a run that cannot read it does not start, see above); a dry run
+        // that cannot read falls back to pictures, as it types nothing.
         !self.wf.config.contains_key(TENANT_DOMAIN) || self.text_unreadable.is_some()
     }
 
@@ -1640,22 +1665,21 @@ impl Engine<'_> {
     fn verify_account_shown(&mut self, s: &StateDef) -> Result<(), WorkflowError> {
         let domain = self.wf.config[TENANT_DOMAIN].to_lowercase();
         let not_shown = || WorkflowError::AccountNotShown { state: s.name.clone(), domain: domain.clone() };
+        // The frame that just settled this state (`still_on` looks right before each burst of keys), read enlarged.
         let frame = self.last_frame.clone().ok_or_else(not_shown)?;
-        let lines = self.host.read_text(&frame).map_err(|e| WorkflowError::Reference(format!("reading the screen's text failed: {e}")))?;
-        let shown = crate::text::screen_text(&lines, None);
-        if !shown.contains(&format!("@{domain}")) {
+        let lines = self.read_fresh(&frame)?;
+        // Whole addresses only, compared exactly (case aside): a near miss is another account, and so another
+        // organisation's page.
+        let accounts = crate::text::accounts_shown(&lines);
+        let ok = match (self.opts.run.dry_run, self.account.0.first()) {
+            (false, Some(account)) => accounts.iter().any(|a| a.eq_ignore_ascii_case(account)),
+            // A dry run typed no sign-in: an account in the domain is all there is to see.
+            _ => accounts.iter().any(|a| a.rsplit_once('@').is_some_and(|(_, d)| d.eq_ignore_ascii_case(&domain))),
+        };
+        if !ok {
             return Err(not_shown());
         }
-        let confidence = match (self.opts.run.dry_run, self.account.0.first()) {
-            (false, Some(account)) => {
-                let score = crate::text::phrase_score(&shown, account);
-                if score < ACCOUNT_MATCH {
-                    return Err(not_shown());
-                }
-                score
-            }
-            _ => 1.0,
-        };
+        let confidence = 1.0;
         let tenant = self.wf.config.get("tenant").cloned().unwrap_or(domain);
         self.emit(WorkflowEvent::TenantVerified { state: s.name.clone(), tenant, confidence });
         Ok(())
@@ -1687,48 +1711,52 @@ impl Engine<'_> {
         })
     }
 
-    /// Right after typing `key`'s value: a frame captured after the typing must show it as typed. The field may take a
-    /// moment to draw, so fresh frames are read for up to [`TYPED_WAIT`]. A dry run typed nothing and checks nothing.
+    /// Right after typing `key`'s value, and right before `submit`: a fresh, settled look must still be this state
+    /// ([`Self::still_on`]: only frames captured after this moment, past the capture latency) and that very frame must
+    /// show the value whole, as typed. A field drawn with its text cursor over a letter reads wrong, so looks repeat
+    /// for up to [`TYPED_WAIT`]; a late success does not count. A dry run typed nothing and checks nothing.
     fn verify_typed(&mut self, s: &StateDef, key: &str) -> Result<(), WorkflowError> {
         if self.opts.run.dry_run {
             return Ok(());
         }
-        if let Some(why) = self.text_unreadable.clone() {
-            // As before text could be read: nothing to check with, and the trace says so.
-            self.emit(WorkflowEvent::TypedNotChecked { state: s.name.clone(), key: key.to_string(), why });
-            return Ok(());
-        }
         let value = self.typed.get(key).and_then(|v| v.0.first()).cloned().unwrap_or_default();
-        let after = self.host.screen().and_then(|f| f.seq).or(self.seen_seq);
         let started = Instant::now();
         let mut swapped = false;
         loop {
             self.check()?;
-            if let Some(frame) = self.host.screen() {
-                let fresh = match (frame.seq, after) {
-                    (Some(sq), Some(a)) => sq > a,
-                    (Some(_), None) => true,
-                    (None, _) => return Err(WorkflowError::NoFrameNumbers),
-                };
-                if fresh {
-                    // Field text is small: read it enlarged (a dot or an @ lost to blur would stop the run).
-                    let frame = if frame.width < 2000 { frame.doubled() } else { frame };
-                    let lines = self.host.read_text(&frame).map_err(|e| WorkflowError::Reference(format!("reading the screen's text failed: {e}")))?;
-                    match crate::text::typed_shown(&lines, &value) {
-                        crate::text::Typed::Shown => {
-                            self.emit(WorkflowEvent::TypedVerified { state: s.name.clone(), key: key.to_string() });
-                            return Ok(());
-                        }
-                        crate::text::Typed::CaseSwapped => swapped = true,
-                        crate::text::Typed::Absent => {}
-                    }
-                }
-            }
-            if started.elapsed() >= TYPED_WAIT {
+            self.still_on(s)?;
+            let frame = self.last_frame.clone().ok_or(WorkflowError::UnknownScreen { best: None })?;
+            let lines = self.read_fresh(&frame)?;
+            let seen = crate::text::typed_shown(&lines, &value);
+            if started.elapsed() > TYPED_WAIT {
                 return Err(WorkflowError::TypedNotShown { state: s.name.clone(), caps_lock: swapped });
             }
-            self.host.sleep(self.opts.run.poll.max(Duration::from_millis(50)));
+            match seen {
+                crate::text::Typed::Shown => {
+                    self.emit(WorkflowEvent::TypedVerified { state: s.name.clone(), key: key.to_string() });
+                    return Ok(());
+                }
+                crate::text::Typed::CaseSwapped => swapped = true,
+                crate::text::Typed::Absent => {}
+            }
         }
+    }
+
+    /// Read `frame` (just settled, so fresh) enlarged, for small text: a sign-in in a field, an account above a
+    /// password box. The answer must come back while the frame is still recent evidence ([`EVIDENCE_AGE`]); a slow
+    /// read is refused rather than trusted.
+    fn read_fresh(&mut self, frame: &Frame) -> Result<Vec<crate::text::TextLine>, WorkflowError> {
+        let big = if frame.width < 2000 { frame.doubled() } else { frame.clone() };
+        let asked = Instant::now();
+        let lines = self.host.read_text(&big).map_err(|e| WorkflowError::Reference(format!("reading the screen's text failed: {e}")))?;
+        let age = frame.captured_at.map_or(asked.elapsed(), |t| t.elapsed());
+        if age > EVIDENCE_AGE {
+            return Err(WorkflowError::Reference(format!(
+                "reading the screen took too long ({} ms): the screen may have changed since; nothing more was sent",
+                age.as_millis()
+            )));
+        }
+        Ok(lines)
     }
 
     /// Record a verified transition out of `from`: history, its derived facts, and entering `to`.
@@ -1856,9 +1884,8 @@ impl Engine<'_> {
                     None => {
                         self.act(&s, ops, attempt)?;
                         if let Some(key) = &s.verify_typed {
+                            // Settled on this state and showing the value, on one fresh frame; then straight on.
                             self.verify_typed(&s, key)?;
-                            // The screen must still be this state's before anything more is sent.
-                            self.still_on(&s)?;
                             self.send(&s, &compiled[&submit_key(&name)])?;
                         }
                     }
@@ -1946,8 +1973,8 @@ fn secret_place(wf: &Workflow, secrets: &Secrets, resume: Option<&Checkpoint>) -
         }
     }
     let hit = |vals: &[&str]| vals.iter().any(|v| secrets.appears_in(v));
-    if hit(&[&wf.name, &wf.description]) {
-        return Some("the workflow's name or description".into());
+    if hit(&[&wf.name, &wf.description]) || wf.account.as_deref().is_some_and(|a| secrets.appears_in(a)) {
+        return Some("the workflow's name, description or account".into());
     }
     if wf.start.iter().any(|v| secrets.appears_in(v)) {
         return Some("the start states".into());
@@ -1976,6 +2003,9 @@ fn secret_place(wf: &Workflow, secrets: &Secrets, resume: Option<&Checkpoint>) -
         vals.extend(st.gate.iter().map(String::as_str));
         vals.extend(st.manual.iter().map(String::as_str));
         steps(&mut vals, &st.actions);
+        steps(&mut vals, &st.submit);
+        vals.extend(st.verify_typed.iter().map(String::as_str));
+        vals.extend(st.detect.text.iter().flatten().map(String::as_str));
         if hit(&vals) {
             return Some(format!("state {} (in file order)", i + 1));
         }
@@ -2081,7 +2111,7 @@ pub fn run_workflow(
         }
         let compiled = compile_workflow(wf, secrets, layout)?;
         if let (Some(domain), false) = (wf.config.get(TENANT_DOMAIN), opts.run.dry_run) {
-            let inside = e.account.0.first().is_some_and(|a| a.trim().to_lowercase().ends_with(&format!("@{}", domain.to_lowercase())));
+            let inside = e.account.0.first().is_some_and(|a| account_in(a, domain));
             if !inside {
                 return Err(WorkflowError::Options(format!(
                     "the sign-in entered is not an account in {domain}, the profile's organisation: check it, or the profile"

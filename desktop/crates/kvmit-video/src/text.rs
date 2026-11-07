@@ -5,10 +5,26 @@
 pub use kvmit_script::text::TextLine;
 use kvmit_script::Frame;
 
+/// The longest one reading may take. A recogniser that hangs must not hold a run, nor answer once its frame is old:
+/// past this the reading is refused (its thread is left to finish on its own).
+pub const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+
 /// Read every line of text on `frame`. An error says why the text cannot be read on this computer (no recogniser,
-/// no English language pack), not that the screen has none: a screen without text gives an empty list.
+/// no English language pack, too slow), not that the screen has none: a screen without text gives an empty list.
 pub fn read_text(frame: &Frame) -> Result<Vec<TextLine>, String> {
-    imp::read_text(frame)
+    // The recognisers copy `width * height` bytes: a frame whose pixels do not match its size is refused here.
+    if frame.width == 0 || frame.height == 0 || frame.width.checked_mul(frame.height) != Some(frame.gray.len()) {
+        return Err("the frame's size and its pixels disagree".into());
+    }
+    let f = frame.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("kvmit-read-text".into())
+        .spawn(move || {
+            let _ = tx.send(imp::read_text(&f));
+        })
+        .map_err(|e| format!("could not start reading the screen: {e}"))?;
+    rx.recv_timeout(READ_TIMEOUT).unwrap_or_else(|_| Err(format!("reading the screen's text took longer than {} s", READ_TIMEOUT.as_secs())))
 }
 
 #[cfg(windows)]
@@ -103,12 +119,35 @@ mod imp {
         pgm.extend_from_slice(&frame.gray);
         let mut stdin = child.stdin.take().expect("piped");
         let writer = std::thread::spawn(move || stdin.write_all(&pgm));
-        let out = child.wait_with_output().map_err(|e| format!("tesseract: {e}"))?;
+        let mut stdout = child.stdout.take().expect("piped");
+        let reader = std::thread::spawn(move || {
+            let mut out = Vec::new();
+            std::io::Read::read_to_end(&mut stdout, &mut out).map(|_| out)
+        });
+        // Killed if it outlives the reading's time limit, so a hung tesseract does not linger.
+        let deadline = std::time::Instant::now() + super::READ_TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(10)),
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("tesseract took too long".into());
+                }
+                Err(e) => return Err(format!("tesseract: {e}")),
+            }
+        };
         let _ = writer.join();
-        if !out.status.success() {
-            return Err(format!("tesseract failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        let out = reader.join().map_err(|_| "tesseract: reading its output failed".to_string())?.map_err(|e| format!("tesseract: {e}"))?;
+        if !status.success() {
+            let mut err = String::new();
+            if let Some(mut e) = child.stderr.take() {
+                let _ = std::io::Read::read_to_string(&mut e, &mut err);
+            }
+            return Err(format!("tesseract failed: {}", err.trim()));
         }
-        Ok(parse_tsv(&String::from_utf8_lossy(&out.stdout), frame.width as f64, frame.height as f64))
+        Ok(parse_tsv(&String::from_utf8_lossy(&out), frame.width as f64, frame.height as f64))
     }
 
     pub(super) fn parse_tsv(tsv: &str, fw: f64, fh: f64) -> Vec<TextLine> {
@@ -151,6 +190,10 @@ mod imp {
 
     /// The frame copied into a one-channel 8-bit pixel buffer, row by row (the buffer's rows may be padded).
     fn pixel_buffer(frame: &Frame) -> Result<CFRetained<CVPixelBuffer>, String> {
+        // Checked by `read_text` too; the copy below relies on it.
+        if frame.width.checked_mul(frame.height) != Some(frame.gray.len()) || frame.width == 0 {
+            return Err("the frame's size and its pixels disagree".into());
+        }
         let mut out: *mut CVPixelBuffer = std::ptr::null_mut();
         // SAFETY: `out` is a valid place for the created buffer; no allocator or attributes are passed.
         let r = unsafe {
@@ -167,8 +210,8 @@ mod imp {
             let base = CVPixelBufferGetBaseAddress(&buf) as *mut u8;
             let stride = CVPixelBufferGetBytesPerRow(&buf);
             if !base.is_null() && stride >= frame.width {
-                for y in 0..frame.height {
-                    std::ptr::copy_nonoverlapping(frame.gray.as_ptr().add(y * frame.width), base.add(y * stride), frame.width);
+                for (y, row) in frame.gray.chunks_exact(frame.width).enumerate() {
+                    std::ptr::copy_nonoverlapping(row.as_ptr(), base.add(y * stride), frame.width);
                 }
             }
             CVPixelBufferUnlockBaseAddress(&buf, CVPixelBufferLockFlags(0));
@@ -210,6 +253,18 @@ mod imp {
 
     pub fn read_text(_frame: &Frame) -> Result<Vec<TextLine>, String> {
         Err("reading text is not supported on this operating system".into())
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    #[test]
+    fn a_frame_whose_pixels_do_not_match_its_size_is_refused_before_any_reader() {
+        let mut f = kvmit_script::Frame::new(4, 2, vec![0; 8]).unwrap();
+        f.gray.clear();
+        assert_eq!(super::read_text(&f).unwrap_err(), "the frame's size and its pixels disagree");
+        f.width = 0;
+        assert!(super::read_text(&f).is_err());
     }
 }
 

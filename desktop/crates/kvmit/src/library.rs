@@ -213,11 +213,13 @@ mod tests {
             seq: u64,
             /// The screen each typed character (not Enter, not a modifier) landed on.
             pub typed: Vec<&'static str>,
+            /// What a sign-in field shows once typed into (the test's sign-in, or how the target mangled it).
+            pub echo: &'static str,
         }
 
         impl Target {
             pub fn new(screens: Vec<(&'static str, Next)>) -> Target {
-                Target { screens, pos: 0, looks_here: 0, seq: 0, typed: Vec::new() }
+                Target { screens, pos: 0, looks_here: 0, seq: 0, typed: Vec::new(), echo: "ada@contoso.com" }
             }
             fn here(&self) -> &'static str {
                 self.screens[self.pos].0
@@ -263,6 +265,41 @@ mod tests {
                 }
                 self.seq += 1;
                 Some(pattern(self.here()).with_seq(Some(self.seq)).with_captured_at(Some(std::time::Instant::now())))
+            }
+            fn read_text(&mut self, _: &Frame) -> Result<Vec<kvmit_script::text::TextLine>, String> {
+                // What each Windows 11 setup screen says (as Windows OCR reads it: headings wrap), and on a sign-in
+                // page, once something was typed there, the sign-in the field shows.
+                let text = match self.here() {
+                    "region" => "Is this the right country or region?|United States|Afghanistan",
+                    "keyboard" => "Is this the right keyboard layout or input|method?|US",
+                    "second-keyboard" => "Want to add a second keyboard layout?|Add layout|Skip",
+                    "network" => "Let's connect you to a network|Install driver",
+                    "updates" => "Checking for updates",
+                    "license" => "License agreement|Accept",
+                    "device-name" => "Name your device|Make this device yours with unique names.|Skip",
+                    "setup-choice" => "How would you like to set up this|device?|Set up for work or school",
+                    "autopilot-signin" => "Welcome to Contoso|Sign in",
+                    "work-signin" => "Let's set things up for your work or|school|Sign in",
+                    "tenant-contoso" => "\u{2190} ada@contoso.com|Enter password",
+                    "tenant-fabrikam" => "\u{2190} ada@fabrikam.com|Enter password",
+                    "mfa" => "Approve sign in request",
+                    "privacy" => "Choose privacy settings for your device",
+                    "esp" => "Setting up your device for work",
+                    "hello" => "Windows Hello",
+                    "desktop" => "Recycle Bin",
+                    _ => "",
+                };
+                let echo = match (self.here(), self.typed_on(self.here())) {
+                    ("autopilot-signin" | "work-signin", n) if n > 0 => self.echo,
+                    _ => "",
+                };
+                Ok(text
+                    .split('|')
+                    .chain([echo])
+                    .filter(|l| !l.is_empty())
+                    .enumerate()
+                    .map(|(i, l)| kvmit_script::text::TextLine { text: l.into(), rect: [0.55, 0.2 + 0.05 * i as f64, 0.3, 0.03] })
+                    .collect())
             }
             fn reference(&mut self, name: &str) -> Result<Frame, String> {
                 // The password page is the organisation's branded page: its reference is the tenant's picture.
@@ -369,8 +406,16 @@ mod tests {
         // Another organisation's sign-in page: the password is never typed.
         let mut t = sim::Target::new(vec![("autopilot-signin", Enter), ("tenant-fabrikam", Enter), ("esp", Looks(1000))]);
         let r = provision(&provisioning("autopilot"), &mut t);
-        assert!(r.result.is_err(), "{:?}", r.result);
+        assert!(matches!(r.result, Err(kvmit_script::WorkflowError::AccountNotShown { .. })), "{:?}", r.result);
         assert_eq!(t.typed_on("tenant-fabrikam"), 0, "no password typed into another organisation's page");
+
+        // Caps Lock on at the target: the sign-in shows in capitals, and Enter is never pressed on it.
+        let mut t = sim::Target::new(vec![("work-signin", Enter), ("tenant-contoso", Enter)]);
+        t.echo = "ADA@CONTOSO.COM";
+        let r = provision(&provisioning("work_account"), &mut t);
+        assert!(matches!(r.result, Err(kvmit_script::WorkflowError::TypedNotShown { caps_lock: true, .. })), "{:?}", r.result);
+        assert_eq!(t.pos, 0, "still on the sign-in page");
+        assert_eq!(t.typed_on("tenant-contoso"), 0);
     }
 
     #[test]
