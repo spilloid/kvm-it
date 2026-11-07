@@ -1249,3 +1249,25 @@ provisioning guide: no defect. Open, for the next release:
 
 The same day astra ran a general project review: [reviews/2026-11-07-astra-general.md](reviews/2026-11-07-astra-general.md)
 (26 findings, 6 owner decisions).
+
+## 2026-11-07 - 0.6 text recognition (`main...3226271`): review round 68 (Codex `gpt-6-astra`)
+
+Read-only, over the first three 0.6 commits: screens recognised by text (Windows OCR, Vision, Tesseract), the tenant
+check reading the password page, and the typed sign-in read back before Enter. **NO SIGN-OFF**: 8 High, 2 Medium; all
+confirmed, all fixed in `c9bcb56` and `1072f25`.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | The account check fuzzy-matched: `alexander.smith@contoso.com` passed for `contoso.co` (0.96), so another organisation's password page could get the password | **Confirmed.** Whole addresses are extracted (`accounts_shown`, address punctuation kept) and compared exactly. Test. |
+| 2 | High | A sign-in ending in a newline passed the trimmed domain check, then was typed untrimmed: the newline is Enter, before any read-back | **Confirmed.** `account_in`: printable ASCII, one `@`, a name, the domain equal; checked on the value as typed. Test. |
+| 3 | High | The read-back accepted more than was typed (`...com.evil`, a second copy), a different case, and a label elsewhere on screen | **Confirmed.** A whole line must equal the value exactly, case and all; no edit tolerance (an uncertain read is a refusal and another look). Tests. |
+| 4 | High | The read-back ignored frame time and the latency window, and submit followed a separate look that did not re-check the value | **Confirmed.** The read-back runs on `still_on`'s settled look and that frame; submit follows directly. |
+| 5 | High | Where text cannot be read, the sign-in was sent unchecked, and the tenant check fell back to pictures | **Confirmed.** A live run of a workflow that checks the sign-in by reading does not start there; `TypedNotChecked` removed. Tests. |
+| 6 | High | OCR calls were unbounded, and a slow read of an older frame could approve the password | **Confirmed.** Every read bounded (4 s; Tesseract killed); a check refuses evidence older than `evidence_age` (3 s). |
+| 7 | High | Detect phrases, `submit` and `verify_typed` were not in the secret scan; observation references were published unscrubbed | **Confirmed.** Scanned; references scrubbed. Test. |
+| 8 | High | Vision copied `width * height` bytes from a frame whose public fields could disagree (undefined behaviour from safe code) | **Confirmed.** `read_text` refuses a mismatched frame; Vision copies bounds-checked rows. Test. |
+| 9 | Medium | Hyphenated domains never matched (prose normalisation split them) | **Confirmed.** Fixed by #1. Test. |
+| 10 | Medium | The text-reader probe error was published unscrubbed | **Confirmed.** Scrubbed (and the event removed with #5). |
+
+Also found while VM-verifying the fixes: Windows OCR drops the letter under the text cursor, so the built-in workflow
+presses Home after typing the sign-in; text failures now have their own error (`WorkflowError::Text`).
