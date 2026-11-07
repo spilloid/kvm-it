@@ -1711,6 +1711,8 @@ impl Engine<'_> {
                     (None, _) => return Err(WorkflowError::NoFrameNumbers),
                 };
                 if fresh {
+                    // Field text is small: read it enlarged (a dot or an @ lost to blur would stop the run).
+                    let frame = if frame.width < 2000 { frame.doubled() } else { frame };
                     let lines = self.host.read_text(&frame).map_err(|e| WorkflowError::Reference(format!("reading the screen's text failed: {e}")))?;
                     match crate::text::typed_shown(&lines, &value) {
                         crate::text::Typed::Shown => {
