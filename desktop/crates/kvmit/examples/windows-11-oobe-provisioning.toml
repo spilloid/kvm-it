@@ -1,9 +1,11 @@
 workflow_format = 1
 name = "windows-11-oobe-provisioning"
-description = "Windows 11 setup to the user's first sign-in: Windows Autopilot (user-driven) or joining Microsoft Entra with a work or school account. TEMPLATE: REGION to the work-or-school sign-in page are VM-verified (25H2); sign-in and every later screen are host-tested only. Before the first run, save its reference screens (Reference screens, below)."
+description = "Windows 11 setup to the user's first sign-in: Windows Autopilot (user-driven) or joining Microsoft Entra with a work or school account. Each screen is recognised by its text (no pictures needed where the computer reads text: Windows today). TEMPLATE: the phrases from REGION to the work-or-school sign-in page were read off Windows 11 25H2 in a VM; the later screens' phrases are Microsoft's usual wording, not yet seen by kvm-it."
 # Every state may be where a run begins: each is recognised from its screen, so starting mid-way is safe.
 start = ["REGION", "KEYBOARD", "SECOND_KEYBOARD", "NETWORK", "UPDATES", "EULA", "DEVICE_NAME", "SETUP_CHOICE", "AUTOPILOT_SIGNIN", "WORK_SIGNIN", "PASSWORD"]
 match = "structure"
+# The secret typed as the sign-in: the tenant check reads it back off the password page.
+account = "username"
 
 # The approved profile. Set it up in the app ("Set up your copy") or with `kvmit workflow new`, which write your own
 # copy into the scripts folder; a run never changes it.
@@ -13,8 +15,11 @@ match = "structure"
 # A device that shows the other path's screen stops the run before anything is typed there (when that screen's picture
 # is saved: without it, the screen may be taken for a similar one).
 deployment_mode = "autopilot"
-# The organisation whose sign-in branding must be on screen before the password is typed. Name it under [tenants].
+# The organisation's short name (names its branding picture under [tenants], used only where text cannot be read).
 tenant = "contoso"
+# The organisation's sign-in domain, the part after @. The sign-in entered must be an account in it, and the password is
+# typed only once the password page shows that very account.
+tenant_domain = "contoso.com"
 # The Microsoft Software License Terms screen is accepted only when the approved profile says so.
 accept_license = "yes"
 
@@ -23,7 +28,7 @@ accept_license = "yes"
 username = { prompt = "User's sign-in (name@organisation)" }
 password = { prompt = "User's password" }
 
-# Each allowed organisation and a picture of its password page (with its branding). Save it from your own tenant.
+# Each allowed organisation and a picture of its password page (with its branding): needed only where text cannot be read.
 [tenants]
 contoso = "oobe-win11/tenant-contoso.png"
 
@@ -31,7 +36,7 @@ contoso = "oobe-win11/tenant-contoso.png"
 [[setup]]
 key = "deployment_mode"
 label = "How the device joins your organisation"
-help = "Windows Autopilot: the device is registered for Autopilot and shows your organisation's sign-in right after the network. Work or school account: it is not registered; setup is told it is for work or school and joins Microsoft Entra with the user's account. A device that shows the other path's screen stops the run, if that screen's picture is saved."
+help = "Windows Autopilot: the device is registered for Autopilot and shows your organisation's sign-in right after the network. Work or school account: it is not registered; setup is told it is for work or school and joins Microsoft Entra with the user's account. A device that shows the other path's screen stops the run before anything is typed there."
 choices = [
     { value = "autopilot", label = "Windows Autopilot (the device is registered)" },
     { value = "work_account", label = "Work or school account (Microsoft Entra join)" },
@@ -40,20 +45,25 @@ choices = [
 [[setup]]
 key = "tenant"
 label = "Your organisation's short name"
-help = "Letters, digits, - and _ (for example fabrikam). The password is typed only once the password page shows your organisation's branding: save that page as its picture (Reference screens) before the first run."
+help = "Letters, digits, - and _ (for example fabrikam). It names your copy and, where text cannot be read, your branding picture."
+
+[[setup]]
+key = "tenant_domain"
+label = "Your organisation's sign-in domain"
+help = "The part after @ in your users' sign-ins (for example fabrikam.com). The sign-in entered must be in it, and the password is typed only once the password page shows that very account."
 
 [[setup]]
 key = "accept_license"
 label = "If setup shows the Windows licence terms"
 choices = [
     { value = "yes", label = "Accept them" },
-    { value = "no", label = "Stop there (a person accepts; needs the licence screen's picture)" },
+    { value = "no", label = "Stop there (a person accepts)" },
 ]
 
 [[states]]
 name = "REGION"
 description = "Is this the right country or region? (accepts the one selected)"
-detect = { screen = "oobe-win11/region.png", region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screen = "oobe-win11/region.png", region = [0.52, 0.12, 0.40, 0.75], text = ["Is this the right country or region?"] }
 next = ["KEYBOARD"]
 actions = [ { key = "ENTER" } ]
 timeout = "30s"
@@ -62,7 +72,7 @@ derive = { region = "accepted as selected" }
 [[states]]
 name = "KEYBOARD"
 description = "Is this the right keyboard layout or input method? (accepts the one selected)"
-detect = { screen = "oobe-win11/keyboard.png", region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screen = "oobe-win11/keyboard.png", region = [0.52, 0.12, 0.40, 0.75], text = ["Is this the right keyboard layout or input method?"] }
 next = ["SECOND_KEYBOARD"]
 actions = [ { key = "ENTER" } ]
 timeout = "30s"
@@ -71,7 +81,7 @@ derive = { keyboard = "accepted as selected" }
 [[states]]
 name = "SECOND_KEYBOARD"
 description = "Want to add a second keyboard layout? (Skip has focus)"
-detect = { screen = "oobe-win11/second-keyboard.png", region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screen = "oobe-win11/second-keyboard.png", region = [0.52, 0.12, 0.40, 0.75], text = ["Want to add a second keyboard layout?"] }
 next = ["NETWORK", "UPDATES", "EULA", "DEVICE_NAME", "SETUP_CHOICE", "AUTOPILOT_SIGNIN"]
 actions = [ { key = "ENTER" } ]
 timeout = "60s"
@@ -80,7 +90,7 @@ derive = { second_keyboard = "skipped" }
 [[states]]
 name = "NETWORK"
 description = "Let's connect you to a network"
-detect = { screen = "oobe-win11/network.png", region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screen = "oobe-win11/network.png", region = [0.52, 0.12, 0.40, 0.75], text = ["Let's connect you to a network"] }
 manual = "Connect the target to a network: plug in Ethernet, or choose Wi-Fi and join it at the target. Then select Next on the target."
 next = ["UPDATES", "EULA", "DEVICE_NAME", "SETUP_CHOICE", "AUTOPILOT_SIGNIN"]
 timeout = "15m"
@@ -89,14 +99,14 @@ derive = { network = "connected" }
 [[states]]
 name = "UPDATES"
 description = "Checking for updates / Just a moment (the target may restart)"
-detect = { screen = "oobe-win11/updates.png" }
+detect = { screen = "oobe-win11/updates.png", text = [["Checking for updates"], ["Please keep your PC on"], ["Just a moment"]] }
 next = ["EULA", "DEVICE_NAME", "SETUP_CHOICE", "AUTOPILOT_SIGNIN"]
 timeout = "45m"
 
 [[states]]
 name = "EULA"
 description = "License agreement (Accept)"
-detect = { screen = "oobe-win11/license.png", region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screen = "oobe-win11/license.png", region = [0.52, 0.12, 0.40, 0.75], text = ["License agreement"] }
 require = { accept_license = "yes" }
 next = ["DEVICE_NAME", "SETUP_CHOICE", "AUTOPILOT_SIGNIN", "UPDATES"]
 actions = [ { key = "ENTER" } ]
@@ -106,7 +116,7 @@ derive = { license = "accepted" }
 [[states]]
 name = "DEVICE_NAME"
 description = "Name your device (Skip: Windows keeps its generated name; Intune or Autopilot naming can set one)"
-detect = { screen = "oobe-win11/device-name.png", region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screen = "oobe-win11/device-name.png", region = [0.52, 0.12, 0.40, 0.75], text = ["Name your device", "Make this device yours"] }
 next = ["SETUP_CHOICE", "AUTOPILOT_SIGNIN", "UPDATES"]
 # Focus starts in the name box; Tab moves it to Skip. (VM-verified, 25H2.)
 actions = [ { key = "TAB" }, { key = "ENTER" } ]
@@ -116,7 +126,7 @@ derive = { device_name = "skipped (generated name kept)" }
 [[states]]
 name = "SETUP_CHOICE"
 description = "How would you like to set up this device? (work or school)"
-detect = { screen = "oobe-win11/setup-choice.png", region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screen = "oobe-win11/setup-choice.png", region = [0.52, 0.12, 0.40, 0.75], text = ["How would you like to set up this device?"] }
 require = { deployment_mode = "work_account" }
 next = ["WORK_SIGNIN"]
 # Nothing is selected at first: Down moves focus to "work or school", Space selects it (Next becomes enabled), Enter
@@ -128,7 +138,7 @@ derive = { setup_for = "work or school" }
 [[states]]
 name = "AUTOPILOT_SIGNIN"
 description = "Welcome to your organisation: sign in (Windows Autopilot)"
-detect = { screen = "oobe-win11/autopilot-signin.png", region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screen = "oobe-win11/autopilot-signin.png", region = [0.52, 0.12, 0.40, 0.75], text = ["Welcome to", "Sign in"] }
 require = { deployment_mode = "autopilot" }
 next = ["PASSWORD"]
 actions = [ { secret_text = "{{username}}" }, { key = "ENTER" } ]
@@ -138,7 +148,7 @@ derive = { enrolment = "Windows Autopilot" }
 [[states]]
 name = "WORK_SIGNIN"
 description = "Let's set things up for your work or school: sign in"
-detect = { screen = "oobe-win11/work-signin.png", region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screen = "oobe-win11/work-signin.png", region = [0.52, 0.12, 0.40, 0.75], text = ["Let's set things up for your work or school"] }
 require = { deployment_mode = "work_account" }
 next = ["PASSWORD"]
 actions = [ { secret_text = "{{username}}" }, { key = "ENTER" } ]
@@ -148,7 +158,7 @@ derive = { enrolment = "Microsoft Entra join" }
 [[states]]
 name = "PASSWORD"
 description = "Enter password (the organisation's branding is checked first)"
-detect = { screen = "oobe-win11/password.png", region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screen = "oobe-win11/password.png", region = [0.52, 0.12, 0.40, 0.75], text = ["Enter password"] }
 verify_tenant = true
 next = ["MFA", "PRIVACY", "ESP", "HANDOFF"]
 actions = [ { secret_text = "{{password}}" }, { key = "ENTER" } ]
@@ -158,7 +168,7 @@ derive = { signed_in = "yes" }
 [[states]]
 name = "MFA"
 description = "Approve sign-in request / enter code"
-detect = { screens = ["oobe-win11/mfa.png"], region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screens = ["oobe-win11/mfa.png"], region = [0.52, 0.12, 0.40, 0.75], text = [["Approve sign in request"], ["Enter code"], ["Verify your identity"]] }
 manual = "The user approves the sign-in (Authenticator, or the code at the target)."
 next = ["PRIVACY", "ESP", "HANDOFF"]
 timeout = "10m"
@@ -167,7 +177,7 @@ derive = { mfa = "approved" }
 [[states]]
 name = "PRIVACY"
 description = "Choose privacy settings for your device"
-detect = { screen = "oobe-win11/privacy.png", region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screen = "oobe-win11/privacy.png", region = [0.52, 0.12, 0.40, 0.75], text = ["Choose privacy settings for your device"] }
 manual = "Choose the privacy settings your organisation requires at the target, then select Accept."
 next = ["ESP", "HANDOFF"]
 timeout = "15m"
@@ -175,12 +185,12 @@ timeout = "15m"
 [[states]]
 name = "ESP"
 description = "Setting up your device for work (enrolment status: device preparation, device setup, account setup; may restart)"
-detect = { screen = "oobe-win11/esp.png", region = [0.52, 0.12, 0.40, 0.75] }
+detect = { screen = "oobe-win11/esp.png", region = [0.52, 0.12, 0.40, 0.75], text = [["Setting up your device for work"], ["Device preparation", "Account setup"]] }
 next = ["HANDOFF"]
 timeout = "90m"
 
 [[states]]
 name = "HANDOFF"
 description = "Windows Hello / PIN setup or the desktop: the user takes over"
-detect = { screens = ["oobe-win11/hello.png", "oobe-win11/desktop.png"] }
+detect = { screens = ["oobe-win11/hello.png", "oobe-win11/desktop.png"], text = [["Windows Hello"], ["Set up a PIN"], ["Create a PIN"], ["Recycle Bin"]] }
 terminal = true

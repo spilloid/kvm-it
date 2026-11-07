@@ -91,7 +91,7 @@ mod tests {
         let b = builtin("windows-11-oobe-provisioning").unwrap();
         let wf = Workflow::parse(b.source).unwrap();
         let keys: Vec<&str> = wf.setup.iter().map(|f| f.key.as_str()).collect();
-        assert_eq!(keys, ["deployment_mode", "tenant", "accept_license"]);
+        assert_eq!(keys, ["deployment_mode", "tenant", "tenant_domain", "accept_license"]);
         let set = |pairs: &[(&str, &str)]| {
             kvmit_script::setup::apply(b.source, &pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())
         };
@@ -117,6 +117,39 @@ mod tests {
     /// The provisioning template's safety rules: both paths are guarded by the approved profile, the password is typed
     /// only after the tenant check, secrets are only typed as secret text, and only screens a person must handle wait
     /// for one.
+    #[test]
+    fn the_provisioning_templates_phrases_recognise_what_windows_ocr_read_off_real_setup_screens() {
+        // `tests/oobe-text/<STATE>.txt`: Windows OCR's lines (x y w h|text) for Windows 11 25H2's setup screens in a VM,
+        // read on 2026-11-07. Each must be its state, clearly ahead of every other state.
+        let wf = Workflow::parse(builtin("windows-11-oobe-provisioning").expect("built in").source).unwrap();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/oobe-text");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let want = path.file_stem().unwrap().to_string_lossy().split('-').next().unwrap().to_string();
+            let lines: Vec<kvmit_script::text::TextLine> = std::fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| {
+                    let (r, text) = l.split_once('|').unwrap();
+                    let v: Vec<f64> = r.split(' ').map(|x| x.parse().unwrap()).collect();
+                    kvmit_script::text::TextLine { text: text.into(), rect: [v[0], v[1], v[2], v[3]] }
+                })
+                .collect();
+            let mut scores: Vec<(&str, f64)> =
+                wf.states.iter().filter_map(|s| s.detect.text_score(&lines).map(|(v, _)| (s.name.as_str(), v))).collect();
+            scores.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let (best, runner) = (scores[0], scores[1]);
+            assert_eq!(best.0, want, "{}: {scores:?}", path.display());
+            let state = wf.state(&want).unwrap();
+            assert!(best.1 >= state.detect.text_threshold, "{want}: {best:?}");
+            assert!(best.1 - runner.1 >= 0.2, "{want} is ambiguous: {scores:?}");
+            seen += 1;
+        }
+        assert_eq!(seen, 9);
+    }
+
     #[test]
     fn the_provisioning_template_keeps_its_safety_rules() {
         let b = BUILTINS.iter().find(|b| b.file == "windows-11-oobe-provisioning.toml").unwrap();
@@ -255,7 +288,7 @@ mod tests {
 
     fn provision(wf: &Workflow, target: &mut sim::Target) -> kvmit_script::WorkflowReport {
         let secrets: kvmit_script::Vars =
-            [("username".to_string(), "ada@contoso.example".to_string()), ("password".to_string(), "pw-123".to_string())].into();
+            [("username".to_string(), "ada@contoso.com".to_string()), ("password".to_string(), "pw-123".to_string())].into();
         let mut opts = kvmit_script::WorkflowOptions::default();
         opts.run.key_hold = std::time::Duration::ZERO;
         opts.run.key_gap = std::time::Duration::ZERO;
@@ -285,9 +318,9 @@ mod tests {
         let r = provision(&provisioning("autopilot"), &mut t);
         assert_eq!(r.result, Ok(()), "{:#?}", r.trace);
         assert_eq!(path(&r), ["KEYBOARD", "SECOND_KEYBOARD", "NETWORK", "UPDATES", "AUTOPILOT_SIGNIN", "PASSWORD", "MFA", "ESP", "HANDOFF"]);
-        assert_eq!(t.typed_on("autopilot-signin"), "ada@contoso.example".len());
+        assert_eq!(t.typed_on("autopilot-signin"), "ada@contoso.com".len());
         assert_eq!(t.typed_on("tenant-contoso"), "pw-123".len(), "the password only on the verified password page");
-        assert_eq!(t.typed.len(), "ada@contoso.example".len() + "pw-123".len(), "nothing typed anywhere else");
+        assert_eq!(t.typed.len(), "ada@contoso.com".len() + "pw-123".len(), "nothing typed anywhere else");
         assert_eq!(r.context.derived["enrolment"].0, "Windows Autopilot");
 
         // Work or school account: licence, device name by hand, "work or school", sign-in, privacy by hand.

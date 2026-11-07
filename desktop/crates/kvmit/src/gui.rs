@@ -1054,12 +1054,36 @@ impl App {
     /// the target through setup by hand once, saving each screen under the name its state expects.
     fn references_ui(&mut self, ui: &mut egui::Ui, wf: &kvmit_script::Workflow, base: &std::path::Path) {
         let refs = crate::wf_view::references(wf, base);
-        let missing = refs.iter().filter(|r| !r.present).count();
-        let title = if missing == 0 { "Reference screens (all present)".to_string() } else { format!("Reference screens ({missing} of {} missing)", refs.len()) };
+        let reader = crate::wf_view::text_reader();
+        let reads_text = reader.is_ok();
+        let by_text = crate::wf_view::by_text(wf, reads_text);
+        let needed = |r: &crate::wf_view::Reference| crate::wf_view::picture_needed(wf, &r.image, reads_text);
+        let missing = refs.iter().filter(|r| !r.present && needed(r)).count();
+        let title = match missing {
+            0 if !by_text.is_empty() => format!("Screens ({} of {} recognised by their text)", by_text.len(), wf.states.len()),
+            0 => "Reference screens (all present)".to_string(),
+            n => format!("Reference screens ({n} needed, not saved)"),
+        };
         egui::CollapsingHeader::new(title).id_salt("wf_refs").default_open(missing > 0).show(ui, |ui| {
+            match (&reader, by_text.is_empty()) {
+                (Ok(()), false) => {
+                    ui.small(format!("Recognised by their text, no picture needed: {}.", by_text.join(", ")));
+                }
+                (Err(why), _) if wf.states.iter().any(|s| !s.detect.text.is_empty()) => {
+                    ui.colored_label(
+                        health_color(Health::Working, ui),
+                        format!("Text cannot be read on this computer ({why}): screens are recognised by their pictures."),
+                    );
+                }
+                _ => {}
+            }
             for r in &refs {
                 ui.horizontal_wrapped(|ui| {
-                    let (h, t) = if r.present { (Health::Good, "ok") } else { (Health::Bad, "missing") };
+                    let (h, t) = match (r.present, needed(r)) {
+                        (true, _) => (Health::Good, "ok"),
+                        (false, true) => (Health::Bad, "missing"),
+                        (false, false) => (Health::Idle, "not needed"),
+                    };
                     ui.colored_label(health_color(h, ui), t);
                     ui.monospace(&r.image);
                     ui.small(r.used_by.join(", "));
@@ -1068,14 +1092,14 @@ impl App {
             if refs.is_empty() {
                 return;
             }
-            let tenants = crate::wf_view::missing_tenant_pictures(wf, &refs);
+            let tenants = crate::wf_view::missing_tenant_pictures(wf, &refs, reads_text);
             if !tenants.is_empty() {
                 ui.colored_label(
                     health_color(Health::Bad, ui),
                     format!("Required before any run: {} (the organisation check compares every listed organisation).", tenants.join(", ")),
                 );
             }
-            let blind = crate::wf_view::blind_states(wf, &refs);
+            let blind = crate::wf_view::blind_states(wf, &refs, reads_text);
             if !blind.is_empty() {
                 let stops = wf.stop_states(&blind);
                 if ui.checkbox(&mut self.wf_allow_missing, format!("Run without the pictures of {}", blind.join(", "))).changed() {
@@ -1121,7 +1145,7 @@ impl App {
                     }
                 }
             });
-            ui.small("Each state is recognised by its screen: bring the target to it (by hand, or a dry run up to it) and save it.");
+            ui.small("A state without phrases (or where text cannot be read) is recognised by its picture: bring the target to it (by hand, or a dry run up to it) and save it.");
         });
     }
 
@@ -1291,7 +1315,7 @@ impl App {
         let base = self.library[sel].path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.cfg.script_dir());
         // Every frame, whether or not the list is open: an acceptance covers only the screens it named, so a picture
         // that goes missing afterwards (deleted outside the app) drops it.
-        let blind = crate::wf_view::blind_states(&wf, &crate::wf_view::references(&wf, &base));
+        let blind = crate::wf_view::blind_states(&wf, &crate::wf_view::references(&wf, &base), crate::wf_view::text_reader().is_ok());
         if blind.is_empty() || blind.iter().any(|b| !self.wf_allow_for.contains(b)) {
             self.wf_allow_missing = false;
         }

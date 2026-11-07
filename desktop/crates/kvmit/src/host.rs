@@ -60,6 +60,9 @@ impl Host for ScriptHost {
     }
     /// A valid picture name with nothing saved there yet. A name the path rule refuses is not "missing": loading it
     /// reports why.
+    fn read_text(&mut self, frame: &Frame) -> Result<Vec<kvmit_script::text::TextLine>, String> {
+        kvmit_video::text::read_text(frame)
+    }
     fn reference_missing(&mut self, name: &str) -> bool {
         crate::wf_view::reference_path(&self.base_dir, name).is_ok_and(|p| std::fs::symlink_metadata(&p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound))
     }

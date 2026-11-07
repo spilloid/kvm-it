@@ -193,16 +193,48 @@ pub fn save_reference(base: &std::path::Path, name: &str, w: usize, h: usize, rg
     Ok(dest)
 }
 
-/// Every reference image of a workflow, in file order (states, then tenants), each listed once.
-/// The states none of whose pictures is present in `refs` (as [`references`] lists them): not recognisable in a run.
-pub fn blind_states(wf: &kvmit_script::Workflow, refs: &[Reference]) -> Vec<String> {
-    let present = |i: &String| refs.iter().any(|r| &r.image == i && r.present);
-    wf.states.iter().filter(|s| !s.detect.screens.iter().any(present)).map(|s| s.name.clone()).collect()
+/// Whether this computer reads text off the screen (each operating system's own recogniser), probed once: the error
+/// says why not. Workflows recognise screens with phrases by their text wherever it can be read.
+pub fn text_reader() -> Result<(), String> {
+    static READER: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    READER
+        .get_or_init(|| {
+            let blank = kvmit_script::Frame::new(64, 36, vec![255; 64 * 36]).expect("valid size");
+            kvmit_video::text::read_text(&blank).map(|_| ())
+        })
+        .clone()
 }
 
-/// The tenant pictures missing while some state checks the tenant: a run will not start without them.
-pub fn missing_tenant_pictures(wf: &kvmit_script::Workflow, refs: &[Reference]) -> Vec<String> {
-    if !wf.states.iter().any(|s| s.verify_tenant) {
+/// The states recognised by their text in a run here (they have phrases, and `reads_text`): their pictures are not used.
+pub fn by_text(wf: &kvmit_script::Workflow, reads_text: bool) -> Vec<String> {
+    wf.states.iter().filter(|s| reads_text && !s.detect.text.is_empty()).map(|s| s.name.clone()).collect()
+}
+
+/// Whether a run here uses this picture: a state that is not recognised by text shows it, or the tenant check compares
+/// it (when it cannot read the page).
+pub fn picture_needed(wf: &kvmit_script::Workflow, image: &str, reads_text: bool) -> bool {
+    let text = by_text(wf, reads_text);
+    wf.states.iter().any(|s| s.detect.screens.iter().any(|i| i == image) && !text.contains(&s.name))
+        || (tenant_by_picture(wf, reads_text) && wf.tenants.values().any(|i| i == image))
+}
+
+/// The tenant check compares pictures unless it can read the page (text is read here and the profile names its
+/// sign-in domain).
+fn tenant_by_picture(wf: &kvmit_script::Workflow, reads_text: bool) -> bool {
+    wf.states.iter().any(|s| s.verify_tenant) && !(reads_text && wf.config.contains_key(kvmit_script::workflow::TENANT_DOMAIN))
+}
+
+/// Every reference image of a workflow, in file order (states, then tenants), each listed once.
+/// The states not recognisable in a run here: not by text, and none of their pictures present in `refs`.
+pub fn blind_states(wf: &kvmit_script::Workflow, refs: &[Reference], reads_text: bool) -> Vec<String> {
+    let present = |i: &String| refs.iter().any(|r| &r.image == i && r.present);
+    let text = by_text(wf, reads_text);
+    wf.states.iter().filter(|s| !text.contains(&s.name) && !s.detect.screens.iter().any(present)).map(|s| s.name.clone()).collect()
+}
+
+/// The tenant pictures missing while the tenant check compares pictures: a run will not start without them.
+pub fn missing_tenant_pictures(wf: &kvmit_script::Workflow, refs: &[Reference], reads_text: bool) -> Vec<String> {
+    if !tenant_by_picture(wf, reads_text) {
         return Vec::new();
     }
     wf.tenants.values().filter(|i| !refs.iter().any(|r| &r.image == *i && r.present)).cloned().collect()

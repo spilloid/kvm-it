@@ -26,16 +26,35 @@ pub const WORKFLOW_FORMAT: u32 = 1;
 
 // ---------- definition ----------
 
-/// How a state is recognised on screen.
+/// How a state is recognised on screen: by the phrases it shows, read off the screen (when the computer can read
+/// text), or else by comparing it with reference pictures.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Detect {
-    /// Reference images (relative to the workflow file); the best match counts.
+    /// Reference images (relative to the workflow file); the best match counts. Optional when `text` is given.
     pub screens: Vec<String>,
     /// Minimum similarity to count as this state.
     pub threshold: f64,
+    /// Phrases the screen shows (in `region`, if given), as alternatives: the screen matches when every phrase of any
+    /// one set is found (a screen Windows words differently from build to build gets one set per wording). A state
+    /// with phrases is recognised by them whenever text can be read, and its pictures are not used.
+    pub text: Vec<Vec<String>>,
+    /// Minimum [`crate::text::phrase_score`] each phrase needs.
+    pub text_threshold: f64,
     /// Compare only this part of the screen: `[x, y, width, height]` as fractions of the frame (both the capture and
     /// the reference are cropped the same way).
     pub region: Option<[f64; 4]>,
+}
+
+impl Detect {
+    /// How well the screen's text (`lines`, read off the whole frame) shows this state's phrases, and the best set: a set
+    /// scores its weakest phrase (every one must be there), the state its best set. `None` without phrases.
+    pub fn text_score(&self, lines: &[crate::text::TextLine]) -> Option<(f64, &Vec<String>)> {
+        let shown = crate::text::screen_text(lines, self.region);
+        self.text
+            .iter()
+            .map(|set| (set.iter().map(|p| crate::text::phrase_score(&shown, p)).fold(f64::INFINITY, f64::min), set))
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+    }
 }
 
 /// How a frame is compared with a reference.
@@ -88,7 +107,12 @@ pub struct Workflow {
     /// Secrets prompted at run time (name → prompt). Never given defaults, never stored.
     pub secrets: BTreeMap<String, String>,
     /// Allowed tenants and the reference image of each one's sign-in branding. `config.tenant` must be one of them.
+    /// Used by the tenant check only when it cannot read text, or the profile has no `tenant_domain`.
     pub tenants: BTreeMap<String, String>,
+    /// The secret typed as the user's sign-in (`name@domain`). With `config.tenant_domain`, the tenant check reads the
+    /// page: the sign-in must be an account in that domain before anything is typed, and the password page must show
+    /// it before the password is.
+    pub account: Option<String>,
     /// The profile values a person may set (in the app's setup form or `kvmit workflow new|set`), in file order. Nothing
     /// else in the file is changed that way: states, actions and guards stay as written.
     pub setup: Vec<SetupField>,
@@ -176,6 +200,34 @@ struct RawDetect {
     threshold: Option<f64>,
     #[serde(default)]
     region: Option<[f64; 4]>,
+    #[serde(default)]
+    text: RawText,
+    #[serde(default)]
+    text_threshold: Option<f64>,
+}
+
+/// `text = ["a", "b"]` (one set: all of them) or `text = [["a"], ["b", "c"]]` (any one set).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawText {
+    One(Vec<String>),
+    Any(Vec<Vec<String>>),
+}
+
+impl Default for RawText {
+    fn default() -> Self {
+        RawText::One(Vec::new())
+    }
+}
+
+impl RawText {
+    fn sets(self) -> Vec<Vec<String>> {
+        match self {
+            RawText::One(v) if v.is_empty() => Vec::new(),
+            RawText::One(v) => vec![v],
+            RawText::Any(v) => v,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -230,6 +282,8 @@ struct RawWorkflow {
     secrets: BTreeMap<String, RawSecret>,
     #[serde(default)]
     tenants: BTreeMap<String, String>,
+    #[serde(default)]
+    account: Option<String>,
     #[serde(default)]
     setup: Vec<RawSetup>,
     #[serde(default)]
@@ -348,6 +402,23 @@ fn setup_fields(
     Ok(out)
 }
 const MAX_RETRIES: u32 = 5;
+const MAX_PHRASES: usize = 8;
+/// The `[config]` key naming the organisation's sign-in domain (see [`Workflow::account`]).
+pub const TENANT_DOMAIN: &str = "tenant_domain";
+
+/// `contoso.com`, `mail.contoso.co.uk`: letters, digits and hyphens in dot-separated labels, at least two labels.
+pub fn valid_domain(d: &str) -> bool {
+    let labels: Vec<&str> = d.split('.').collect();
+    d.len() <= 253
+        && labels.len() >= 2
+        && labels.iter().all(|l| {
+            !l.is_empty() && l.len() <= 63 && !l.starts_with('-') && !l.ends_with('-') && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
+}
+/// How closely each detect phrase must be found: one misread character in ten still matches.
+pub const DEFAULT_TEXT_THRESHOLD: f64 = 0.9;
+/// How closely the password page must show the sign-in typed: one misread character in twenty.
+const ACCOUNT_MATCH: f64 = 0.95;
 const MIN_TIMEOUT: Duration = Duration::from_millis(500);
 
 fn valid_name(s: &str) -> bool {
@@ -451,6 +522,19 @@ impl Workflow {
                 None => return Err("the workflow lists tenants but config has no `tenant`".into()),
             }
         }
+        if let Some(a) = &raw.account {
+            if !raw.secrets.contains_key(a) {
+                return Err(format!("account {a:?} must name a secret (the sign-in typed)"));
+            }
+        }
+        if let Some(d) = raw.config.get(TENANT_DOMAIN) {
+            if !valid_domain(d) {
+                return Err(format!("config {TENANT_DOMAIN} {d:?} must be a domain like contoso.com (the part after @)"));
+            }
+            if raw.account.is_none() {
+                return Err(format!("config {TENANT_DOMAIN} needs `account`: the secret typed as the sign-in"));
+            }
+        }
         let setup = setup_fields(raw.setup, &raw.config, &raw.tenants)?;
         let mut states = Vec::new();
         let mut names = BTreeSet::new();
@@ -463,8 +547,27 @@ impl Workflow {
             }
             let mut screens = r.detect.screens;
             screens.extend(r.detect.screen);
-            if screens.is_empty() {
-                return Err(format!("state {:?} needs at least one detect screen", r.name));
+            let text = r.detect.text.sets();
+            if screens.is_empty() && text.is_empty() {
+                return Err(format!("state {:?} needs detect text or at least one detect screen", r.name));
+            }
+            if text.iter().any(Vec::is_empty) {
+                return Err(format!("state {:?}: a detect text set needs at least one phrase", r.name));
+            }
+            if text.iter().map(Vec::len).sum::<usize>() > MAX_PHRASES {
+                return Err(format!("state {:?}: at most {MAX_PHRASES} detect phrases", r.name));
+            }
+            if let Some(t) = text.iter().flatten().find(|t| {
+                crate::text::normalize(t).chars().count() < 3 || t.chars().count() > 200 || t.contains('\n')
+            }) {
+                return Err(format!(
+                    "state {:?}: detect phrase {t:?} must be one line of 3 to 200 characters (letters or digits)",
+                    r.name
+                ));
+            }
+            let text_threshold = r.detect.text_threshold.unwrap_or(DEFAULT_TEXT_THRESHOLD);
+            if !(0.6..=1.0).contains(&text_threshold) {
+                return Err(format!("state {:?}: text_threshold must be within 0.6..=1", r.name));
             }
             if let Some([x, y, w, h]) = r.detect.region {
                 let ok = [x, y, w, h].iter().all(|v| (0.0..=1.0).contains(v)) && w > 0.0 && h > 0.0 && x + w <= 1.0 && y + h <= 1.0;
@@ -508,8 +611,11 @@ impl Workflow {
                     ));
                 }
             }
-            if r.verify_tenant && raw.tenants.is_empty() {
-                return Err(format!("state {:?} verifies the tenant but the workflow lists no tenants", r.name));
+            if r.verify_tenant && raw.tenants.is_empty() && !raw.config.contains_key(TENANT_DOMAIN) {
+                return Err(format!(
+                    "state {:?} verifies the tenant but the workflow lists no tenants and config has no {TENANT_DOMAIN}",
+                    r.name
+                ));
             }
             for (k, v) in &r.derive {
                 if !valid_name(k) || raw.config.contains_key(k) || raw.secrets.contains_key(k) {
@@ -542,7 +648,7 @@ impl Workflow {
                 actions,
                 name: r.name,
                 description: r.description,
-                detect: Detect { screens, threshold, region: r.detect.region },
+                detect: Detect { screens, threshold, region: r.detect.region, text, text_threshold },
                 next: r.next,
                 require: r.require,
                 gate: r.gate,
@@ -562,6 +668,7 @@ impl Workflow {
         if raw.start.is_empty() {
             return Err("`start` must name at least one state".into());
         }
+        let text_only = states.iter().all(|s| s.detect.screens.is_empty()) && raw.tenants.is_empty();
         Ok(Workflow {
             name: raw.name,
             description: raw.description,
@@ -569,9 +676,12 @@ impl Workflow {
             config: raw.config,
             secrets: raw.secrets.into_iter().map(|(k, v)| (k, v.prompt)).collect(),
             tenants: raw.tenants,
+            account: raw.account,
             setup,
             ambiguity_margin: margin,
             matching: match raw.matching.as_deref() {
+                // Only pictures are compared this way: a workflow recognising every screen by text needs no `match`.
+                None if text_only => Matching::Structure,
                 None => {
                     return Err("`match` is required: \"structure\" (the pattern of light and dark, for real screens) or \"luma\" (brightness); thresholds mean different things for each".into())
                 }
@@ -612,7 +722,7 @@ pub struct Observation {
     pub confidence: f64,
     /// The runner-up and its similarity, when there was one.
     pub runner_up: Option<(String, f64)>,
-    /// The reference image that matched best.
+    /// The reference image that matched best, or `text: <phrase>` when the state was recognised by its phrases.
     pub reference: Option<String>,
     /// A short hash of the captured frame's comparison thumbnail (evidence, not the image).
     pub frame_hash: String,
@@ -859,6 +969,9 @@ impl Host for Scrubbed<'_> {
     fn reference_missing(&mut self, name: &str) -> bool {
         self.inner.reference_missing(name)
     }
+    fn read_text(&mut self, frame: &Frame) -> Result<Vec<crate::text::TextLine>, String> {
+        self.inner.read_text(frame)
+    }
     fn confirm(&mut self, message: &str) -> bool {
         self.inner.confirm(message)
     }
@@ -903,6 +1016,8 @@ pub enum WorkflowError {
     Unexpected { expected: Vec<String>, saw: String },
     Guard { state: String, detail: String },
     TenantMismatch { state: String, expected: String },
+    /// The page does not show the sign-in typed, as an account in the profile's domain.
+    AccountNotShown { state: String, domain: String },
     GateDeclined { state: String },
     TimedOut { state: String, attempts: u32 },
     ResumeMismatch { checkpoint: String },
@@ -937,6 +1052,10 @@ impl std::fmt::Display for WorkflowError {
             WorkflowError::TenantMismatch { state, expected } => write!(
                 f,
                 "state {state}: the screen does not show tenant {expected}'s branding; stopped before enrolling"
+            ),
+            WorkflowError::AccountNotShown { state, domain } => write!(
+                f,
+                "state {state}: the page does not show the sign-in entered (an account in {domain}); stopped before the password"
             ),
             WorkflowError::GateDeclined { state } => write!(f, "state {state}: the operator stopped the run"),
             WorkflowError::TimedOut { state, attempts } => {
@@ -1067,6 +1186,10 @@ struct Engine<'a> {
     refs: BTreeMap<String, Frame>,
     /// Reference pictures not saved yet (see [`Host::reference_missing`]): never compared.
     missing: BTreeSet<String>,
+    /// Why text cannot be read on this computer, if it cannot (probed once, before the first look).
+    text_unreadable: Option<String>,
+    /// The sign-in typed (the `account` secret), for the tenant check; empty when there is none. Wiped on drop.
+    account: Secrets,
     /// The frame behind the latest settled classification: later checks use the same evidence.
     last_frame: Option<Frame>,
     /// The newest capture number seen. Frames at or below a boundary taken after acting were captured before the
@@ -1123,23 +1246,36 @@ impl Engine<'_> {
     /// only with `allow_missing_pictures`; a dry run, which sends nothing, always does.
     fn note_missing_pictures(&mut self) -> Result<(), WorkflowError> {
         let wf = self.wf;
+        if wf.states.iter().any(|s| !s.detect.text.is_empty()) {
+            // A blank frame tells whether this computer reads text at all, before any screen depends on it.
+            let blank = Frame::new(64, 36, vec![255; 64 * 36]).expect("valid size");
+            self.text_unreadable = self.host.read_text(&blank).err();
+        }
         let names: BTreeSet<&String> = wf.states.iter().flat_map(|s| &s.detect.screens).chain(wf.tenants.values()).collect();
         for n in names {
             if self.host.reference_missing(n) {
                 self.missing.insert(n.clone());
             }
         }
-        if wf.states.iter().any(|s| s.verify_tenant) {
+        if wf.states.iter().any(|s| s.verify_tenant) && self.tenant_by_picture() && wf.tenants.is_empty() {
+            return Err(WorkflowError::Reference(format!(
+                "the tenant check reads the password page, but text cannot be read here ({}) and the workflow lists no tenant picture",
+                self.text_unreadable.as_deref().unwrap_or("no recogniser")
+            )));
+        }
+        if wf.states.iter().any(|s| s.verify_tenant) && self.tenant_by_picture() {
             if let Some((tenant, image)) = wf.tenants.iter().find(|(_, i)| self.missing.contains(*i)) {
                 return Err(WorkflowError::Reference(format!(
                     "{image}, the picture of tenant {tenant}'s sign-in, is not saved: the tenant check compares every allowed tenant's picture before the password is typed"
                 )));
             }
         }
-        let blind: Vec<String> =
-            wf.states.iter().filter(|s| s.detect.screens.iter().all(|x| self.missing.contains(x))).map(|s| s.name.clone()).collect();
+        let blind: Vec<String> = wf.states.iter().filter(|s| self.is_blind(s)).map(|s| s.name.clone()).collect();
         if blind.len() == wf.states.len() {
-            return Err(WorkflowError::Reference("no reference picture is saved yet: save the screens first".into()));
+            return Err(WorkflowError::Reference(match &self.text_unreadable {
+                Some(why) => format!("no screen can be recognised: text cannot be read here ({why}) and no reference picture is saved"),
+                None => "no reference picture is saved yet: save the screens first".into(),
+            }));
         }
         if !blind.is_empty() {
             let stops: Vec<String> = wf.stop_states(&blind).into_iter().map(str::to_string).collect();
@@ -1159,6 +1295,18 @@ impl Engine<'_> {
             self.emit(WorkflowEvent::PicturesMissing { states: blind, stops });
         }
         Ok(())
+    }
+
+    /// Whether the tenant check compares branding pictures: when the profile names no sign-in domain, or no text can be
+    /// read here. Otherwise it reads the page.
+    fn tenant_by_picture(&self) -> bool {
+        !self.wf.config.contains_key(TENANT_DOMAIN) || self.text_unreadable.is_some()
+    }
+
+    /// A state that cannot be recognised this run: no phrases it can be read by, and none of its pictures saved.
+    fn is_blind(&self, s: &StateDef) -> bool {
+        let by_text = !s.detect.text.is_empty() && self.text_unreadable.is_none();
+        !by_text && s.detect.screens.iter().all(|x| self.missing.contains(x))
     }
 
     /// The winner among `scores` (name, similarity, threshold), if it clears its threshold and beats the runner-up
@@ -1185,7 +1333,21 @@ impl Engine<'_> {
     fn classify(&mut self, frame: &Frame) -> Result<Observation, WorkflowError> {
         let mut scores: Vec<(String, f64, f64)> = Vec::new(); // state, similarity, threshold
         let mut refs: BTreeMap<String, String> = BTreeMap::new();
+        let reads_text = self.text_unreadable.is_none() && self.wf.states.iter().any(|s| !s.detect.text.is_empty());
+        let lines = match reads_text {
+            true => self
+                .host
+                .read_text(frame)
+                .map_err(|e| WorkflowError::Reference(format!("reading the screen's text failed: {e}")))?,
+            false => Vec::new(),
+        };
         for s in &self.wf.states {
+            if reads_text && !s.detect.text.is_empty() {
+                let (score, set) = s.detect.text_score(&lines).expect("a state with text has a set");
+                refs.insert(s.name.clone(), format!("text: {}", set.join(" + ")));
+                scores.push((s.name.clone(), score, s.detect.text_threshold));
+                continue;
+            }
             let mut best: Option<(f64, String)> = None;
             for screen in &s.detect.screens {
                 if self.missing.contains(screen) {
@@ -1399,6 +1561,9 @@ impl Engine<'_> {
     /// The configured tenant's branding must be on screen (the frame that classified it), and match better than any
     /// other allowed tenant's.
     fn verify_tenant(&mut self, s: &StateDef) -> Result<(), WorkflowError> {
+        if !self.tenant_by_picture() {
+            return self.verify_account_shown(s);
+        }
         let expected = self.wf.config.get("tenant").cloned().unwrap_or_default();
         let mismatch = || WorkflowError::TenantMismatch { state: s.name.clone(), expected: expected.clone() };
         let frame = self.last_frame.clone().ok_or_else(mismatch)?;
@@ -1413,6 +1578,32 @@ impl Engine<'_> {
         }
         let confidence = scores[0].1;
         self.emit(WorkflowEvent::TenantVerified { state: s.name.clone(), tenant: expected, confidence });
+        Ok(())
+    }
+
+    /// Read the page that classified as `s`: it must show an account in the profile's domain and, in a live run, the
+    /// very sign-in typed (a dry run typed none). Microsoft's password page shows the account above "Enter password".
+    fn verify_account_shown(&mut self, s: &StateDef) -> Result<(), WorkflowError> {
+        let domain = self.wf.config[TENANT_DOMAIN].to_lowercase();
+        let not_shown = || WorkflowError::AccountNotShown { state: s.name.clone(), domain: domain.clone() };
+        let frame = self.last_frame.clone().ok_or_else(not_shown)?;
+        let lines = self.host.read_text(&frame).map_err(|e| WorkflowError::Reference(format!("reading the screen's text failed: {e}")))?;
+        let shown = crate::text::screen_text(&lines, None);
+        if !shown.contains(&format!("@{domain}")) {
+            return Err(not_shown());
+        }
+        let confidence = match (self.opts.run.dry_run, self.account.0.first()) {
+            (false, Some(account)) => {
+                let score = crate::text::phrase_score(&shown, account);
+                if score < ACCOUNT_MATCH {
+                    return Err(not_shown());
+                }
+                score
+            }
+            _ => 1.0,
+        };
+        let tenant = self.wf.config.get("tenant").cloned().unwrap_or(domain);
+        self.emit(WorkflowEvent::TenantVerified { state: s.name.clone(), tenant, confidence });
         Ok(())
     }
 
@@ -1748,6 +1939,8 @@ pub fn run_workflow(
         opts,
         refs: BTreeMap::new(),
         missing: BTreeSet::new(),
+        text_unreadable: None,
+        account: Secrets(wf.account.as_ref().and_then(|a| secrets.get(a).cloned()).into_iter().collect()),
         last_frame: None,
         seen_seq: None,
         secrets: secret_values,
@@ -1768,6 +1961,14 @@ pub fn run_workflow(
             }
         }
         let compiled = compile_workflow(wf, secrets, layout)?;
+        if let (Some(domain), false) = (wf.config.get(TENANT_DOMAIN), opts.run.dry_run) {
+            let inside = e.account.0.first().is_some_and(|a| a.trim().to_lowercase().ends_with(&format!("@{}", domain.to_lowercase())));
+            if !inside {
+                return Err(WorkflowError::Options(format!(
+                    "the sign-in entered is not an account in {domain}, the profile's organisation: check it, or the profile"
+                )));
+            }
+        }
         e.note_missing_pictures()?;
         for (i, st) in wf.states.iter().enumerate() {
             if action_time(&compiled[&st.name], &opts.run, true) > MAX_ACTION_TIME {
@@ -1851,7 +2052,10 @@ pub fn trace_markdown(wf: &Workflow, report: &WorkflowReport) -> String {
     for v in report.context.inspect() {
         md.push_str(&format!("| {} | {} | {} | {:?} |\n", v.namespace, v.key, v.value.replace('|', "\\|"), v.provenance));
     }
-    md.push_str("\nPrompted secrets are never recorded. Screens were matched against reference images; this is not a hardware verification record.\n");
+    md.push_str(
+        "\nPrompted secrets are never recorded. Screens were recognised by their text or matched against reference \
+         pictures (each observation names which); this is not a hardware verification record.\n",
+    );
     md
 }
 

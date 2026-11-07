@@ -124,6 +124,11 @@ pub trait Host {
     fn reference_missing(&mut self, _name: &str) -> bool {
         false
     }
+    /// Every line of text on `frame` and where it is. An error means this computer cannot read text (no recogniser),
+    /// not that the screen has none. Hosts without a recogniser keep this default.
+    fn read_text(&mut self, _frame: &Frame) -> Result<Vec<crate::text::TextLine>, String> {
+        Err("this host cannot read text".into())
+    }
     fn confirm(&mut self, message: &str) -> bool;
     fn cancelled(&self) -> bool;
     fn event(&mut self, ev: RunEvent);

@@ -497,22 +497,32 @@ fn check_workflow(file: &std::path::Path, src: &str) -> R<()> {
     let wf = kvmit_script::Workflow::parse(src).map_err(|e| format!("{}: {e}", file.display()))?;
     let base = file.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
     let refs = kvmit::wf_view::references(&wf, &base);
+    let reader = kvmit::wf_view::text_reader();
+    let reads_text = reader.is_ok();
     println!("{}: {} states, {} reference images", file.display(), wf.states.len(), refs.len());
+    let by_text = kvmit::wf_view::by_text(&wf, reads_text);
+    if !by_text.is_empty() {
+        println!("  recognised by their text (no picture needed): {}", by_text.join(", "));
+    } else if let (Err(why), true) = (&reader, wf.states.iter().any(|s| !s.detect.text.is_empty())) {
+        println!("  text cannot be read on this computer ({why}): screens are recognised by their pictures");
+    }
     let mut missing = 0;
     for r in &refs {
+        let needed = kvmit::wf_view::picture_needed(&wf, &r.image, reads_text);
         let (mark, path) = match &r.path {
             Ok(p) if r.present => ("ok     ", p.display().to_string()),
+            Ok(p) if !needed => ("unused ", p.display().to_string()),
             Ok(p) => ("MISSING", p.display().to_string()),
             Err(e) => ("INVALID", e.clone()),
         };
-        missing += usize::from(!r.present);
+        missing += usize::from(!r.present && needed);
         println!("  {mark} {path}  ({})", r.used_by.join(", "));
     }
     let invalid = refs.iter().filter(|r| r.path.is_err()).count();
     if invalid > 0 {
         return Err(format!("{invalid} reference image name(s) are not valid paths: fix them in the file").into());
     }
-    let tenants = kvmit::wf_view::missing_tenant_pictures(&wf, &refs);
+    let tenants = kvmit::wf_view::missing_tenant_pictures(&wf, &refs, reads_text);
     if !tenants.is_empty() {
         return Err(format!(
             "required: {} (the organisation check compares every listed organisation's picture): no run starts without them",
@@ -520,7 +530,7 @@ fn check_workflow(file: &std::path::Path, src: &str) -> R<()> {
         )
         .into());
     }
-    let blind = kvmit::wf_view::blind_states(&wf, &refs);
+    let blind = kvmit::wf_view::blind_states(&wf, &refs, reads_text);
     if !blind.is_empty() {
         println!(
             "not recognisable (no picture saved): {}. A live run needs --allow-missing-pictures; such a screen usually stops the run, but may be taken for a similar one.",
@@ -537,7 +547,7 @@ fn check_workflow(file: &std::path::Path, src: &str) -> R<()> {
         );
         return Ok(());
     }
-    println!("ready: every reference image is present");
+    println!("ready: every screen can be recognised");
     Ok(())
 }
 

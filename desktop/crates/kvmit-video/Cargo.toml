@@ -13,7 +13,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 v4l = "0.14"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Media_MediaFoundation", "Win32_System_Com", "Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage_Streams"] }
 
 # macOS: AVFoundation capture (frames arrive as 32BGRA pixel buffers; the OS decodes MJPEG/YUV itself).
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -166,6 +166,9 @@ impl Host for Qemu {
     fn reference(&mut self, name: &str) -> Result<Frame, String> {
         kvmit_video::convert::load_reference(&self.base.join(name))
     }
+    fn read_text(&mut self, frame: &Frame) -> Result<Vec<kvmit_script::text::TextLine>, String> {
+        kvmit_video::text::read_text(frame)
+    }
     fn confirm(&mut self, message: &str) -> bool {
         print!("\n? {message} [y/N] ");
         let _ = std::io::stdout().flush();

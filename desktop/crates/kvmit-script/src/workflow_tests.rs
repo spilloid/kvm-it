@@ -65,6 +65,8 @@ struct Sim {
     events: Vec<crate::exec::RunEvent>,
     /// Reference pictures not saved yet.
     missing: Vec<&'static str>,
+    /// The text each screen shows, by its grey level (`None`: this host cannot read text). Lines are `|`-separated.
+    texts: Option<Vec<(u8, &'static str)>>,
 }
 
 impl Host for Sim {
@@ -166,6 +168,16 @@ impl Host for Sim {
     }
     fn reference_missing(&mut self, name: &str) -> bool {
         self.missing.contains(&name)
+    }
+    fn read_text(&mut self, frame: &Frame) -> Result<Vec<crate::text::TextLine>, String> {
+        let texts = self.texts.as_ref().ok_or("no recogniser")?;
+        let shown = texts.iter().find(|(v, _)| *v == frame.gray[0]).map_or("", |(_, t)| *t);
+        Ok(shown
+            .split('|')
+            .filter(|l| !l.is_empty())
+            .enumerate()
+            .map(|(i, l)| crate::text::TextLine { text: l.into(), rect: [0.55, 0.15 + 0.05 * i as f64, 0.3, 0.03] })
+            .collect())
     }
     fn confirm(&mut self, message: &str) -> bool {
         self.asked.push(message.to_string());
@@ -1186,4 +1198,227 @@ fn the_configured_tenants_picture_or_any_picture_at_all_is_needed_before_startin
     let mut sim = Sim { screens: screens(), missing: all, ..Default::default() };
     let r = go(&wf(), &mut sim, &opts(), None);
     assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("no reference picture")), "{:?}", r.result);
+}
+
+// ---------- recognised by text ----------
+
+const BY_TEXT: &str = r#"
+workflow_format = 1
+name = "by-text"
+start = ["REGION"]
+
+[[states]]
+name = "REGION"
+detect = { text = ["Is this the right country or region?"], region = [0.52, 0.12, 0.40, 0.75] }
+next = ["KEYBOARD"]
+actions = [ { key = "ENTER" } ]
+timeout = "2s"
+
+[[states]]
+name = "KEYBOARD"
+detect = { text = ["Is this the right keyboard layout or input method?"], region = [0.52, 0.12, 0.40, 0.75] }
+next = ["DEVICE_NAME"]
+actions = [ { key = "ENTER" } ]
+timeout = "2s"
+
+[[states]]
+name = "DEVICE_NAME"
+detect = { text = ["Name your device", "Make this device yours"] }
+terminal = true
+"#;
+
+fn oobe_text() -> Vec<(u8, &'static str)> {
+    vec![
+        (20, "Is this the right country or region?|United States|Afghanistan"),
+        // Wrapped onto two lines, as Windows shows it, and one letter misread.
+        (70, "Is this the right keybaard layout or input|method?|US"),
+        (120, "Name your device|Make this device yours with unique names.|Skip"),
+    ]
+}
+
+#[test]
+fn screens_are_recognised_by_their_text_with_no_pictures_at_all() {
+    let w = Workflow::parse(BY_TEXT).expect("a text-only workflow needs no pictures and no `match`");
+    assert!(w.states.iter().all(|s| s.detect.screens.is_empty()));
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(oobe_text()), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()));
+    let path: Vec<_> = r.context.history.iter().map(|t| (t.from.as_str(), t.to.as_str())).collect();
+    assert_eq!(path, [("REGION", "KEYBOARD"), ("KEYBOARD", "DEVICE_NAME")]);
+    assert!(!events(&r).iter().any(|e| matches!(e, WorkflowEvent::PicturesMissing { .. })), "nothing is missing");
+    let seen = events(&r).iter().find_map(|e| match e {
+        WorkflowEvent::StateObserved { observation } if observation.state.as_deref() == Some("KEYBOARD") => Some(observation.clone()),
+        _ => None,
+    });
+    let seen = seen.expect("KEYBOARD observed");
+    assert!(seen.confidence > 0.95 && seen.confidence < 1.0, "one misread letter: {}", seen.confidence);
+    assert_eq!(seen.reference.as_deref(), Some("text: Is this the right keyboard layout or input method?"));
+}
+
+#[test]
+fn a_screen_worded_differently_matches_any_one_of_its_phrase_sets() {
+    let src = BY_TEXT.replace(
+        "detect = { text = [\"Name your device\", \"Make this device yours\"] }",
+        "detect = { text = [[\"Checking for updates\"], [\"Please keep your PC on\"]] }",
+    );
+    let w = Workflow::parse(&src).unwrap();
+    assert_eq!(w.states[2].detect.text, [vec!["Checking for updates".to_string()], vec!["Please keep your PC on".to_string()]]);
+    let mut text = oobe_text();
+    text[2] = (120, "Please keep your PC on");
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(text), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()));
+    assert!(Workflow::parse(&BY_TEXT.replacen("text = [\"Name your device\", \"Make this device yours\"]", "text = [[]]", 1))
+        .unwrap_err()
+        .contains("at least one phrase"));
+}
+
+#[test]
+fn a_screen_whose_phrases_are_not_all_there_is_unknown_and_nothing_is_typed_on_it() {
+    // The device-name screen needs both its phrases: here only the heading is shown.
+    let mut text = oobe_text();
+    text[2] = (120, "Name your device|Skip");
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(text), ..Default::default() };
+    let r = go(&Workflow::parse(BY_TEXT).unwrap(), &mut sim, &opts(), None);
+    assert!(r.result.is_err(), "{:?}", r.result);
+    assert_ne!(r.context.current.as_deref(), Some("DEVICE_NAME"));
+    assert_eq!(enters(&sim), 2, "only REGION and KEYBOARD were acted on");
+}
+
+#[test]
+fn without_a_text_reader_a_text_only_workflow_says_why_before_sending_anything() {
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: None, ..Default::default() };
+    let r = go(&Workflow::parse(BY_TEXT).unwrap(), &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("text cannot be read here (no recogniser)")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing sent");
+}
+
+#[test]
+fn a_state_with_phrases_needs_no_picture_while_text_can_be_read_and_falls_back_to_it_otherwise() {
+    // KEYBOARD has phrases and a picture that is not saved: with a reader it is not missing; without one it is blind.
+    let src = OOBE.replace(
+        "detect = { screen = \"keyboard.png\" }",
+        "detect = { screen = \"keyboard.png\", text = [\"keyboard layout or input method\"] }",
+    );
+    let w = Workflow::parse(&src).unwrap();
+    let text = vec![(70, "Is this the right keyboard layout or input method?")];
+    let allow = WorkflowOptions { allow_missing_pictures: true, ..opts() };
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png"], texts: Some(text), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()), "the keyboard screen was read, not compared");
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png"], ..Default::default() };
+    let r = go(&w, &mut sim, &allow, None);
+    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::PicturesMissing { states, .. } if states == &["KEYBOARD"])), "{:?}", r.result);
+}
+
+#[test]
+fn detect_phrases_are_checked_when_the_file_is_read() {
+    let bad = |from: &str, to: &str| Workflow::parse(&BY_TEXT.replacen(from, to, 1)).unwrap_err();
+    assert!(bad("text = [\"Is this the right country or region?\"]", "text = [\"?!\"]").contains("3 to 200 characters"));
+    assert!(bad("text = [\"Is this the right country or region?\"]", "text = []").contains("needs detect text or at least one detect screen"));
+    assert!(bad("region = [0.52, 0.12, 0.40, 0.75] }
+next = [\"KEYBOARD\"]", "region = [0.52, 0.12, 0.40, 0.75], text_threshold = 0.3 }
+next = [\"KEYBOARD\"]")
+        .contains("text_threshold"));
+    // Pictures still need a comparison method.
+    assert!(bad("detect = { text = [\"Name your device\", \"Make this device yours\"] }", "detect = { screen = \"done.png\" }").contains("`match` is required"));
+}
+
+// ---------- the tenant check reads the password page ----------
+
+const SIGN_IN: &str = r#"
+workflow_format = 1
+name = "sign-in"
+start = ["WORK_SIGNIN"]
+account = "username"
+
+[config]
+tenant_domain = "contoso.com"
+
+[secrets]
+username = { prompt = "Sign-in" }
+password = { prompt = "Password" }
+
+[[states]]
+name = "WORK_SIGNIN"
+detect = { text = ["Let's set things up for your work or school"] }
+next = ["PASSWORD"]
+actions = [ { secret_text = "{{username}}" }, { key = "ENTER" } ]
+timeout = "2s"
+
+[[states]]
+name = "PASSWORD"
+detect = { text = ["Enter password"] }
+verify_tenant = true
+next = ["DONE"]
+actions = [ { secret_text = "{{password}}" }, { key = "ENTER" } ]
+timeout = "2s"
+
+[[states]]
+name = "DONE"
+detect = { text = ["Setting up your device for work"] }
+terminal = true
+"#;
+
+fn sign_in(page: &'static str, user: &str, dry: bool) -> (WorkflowReport, Sim) {
+    let w = Workflow::parse(SIGN_IN).unwrap();
+    let texts = vec![(20, "Let's set things up for your work or school|Sign in"), (70, page), (120, "Setting up your device for work")];
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(texts), ..Default::default() };
+    if dry {
+        sim.timeline = Some(sim.screens.iter().flat_map(|f| std::iter::repeat_n(f.clone(), 12)).collect());
+    }
+    let secrets: Vars = [("username".to_string(), user.to_string()), ("password".to_string(), "Hunter2!pw".to_string())].into();
+    let o = WorkflowOptions { run: RunOptions { dry_run: dry, ..opts().run }, ..opts() };
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &o, None, &mut |_, _| {});
+    (r, sim)
+}
+
+#[test]
+fn the_password_is_typed_only_on_a_page_showing_the_sign_in_entered() {
+    let (r, sim) = sign_in("\u{2190} Jane@Contoso.com|Enter password|Forgot my password", "jane@contoso.com", false);
+    assert_eq!(r.result, Ok(()));
+    assert_eq!(enters(&sim), 2, "sign-in and password");
+    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::TenantVerified { tenant, .. } if tenant == "contoso.com")));
+    let trace = trace_jsonl(&r);
+    assert!(!trace.contains("jane@contoso.com") && !trace.contains("Hunter2"), "secrets stay out of the trace");
+}
+
+#[test]
+fn a_page_showing_another_account_or_organisation_stops_before_the_password() {
+    for page in ["bob@contoso.com|Enter password", "jane@fabrikam.com|Enter password", "Enter password"] {
+        let (r, sim) = sign_in(page, "jane@contoso.com", false);
+        assert!(matches!(&r.result, Err(WorkflowError::AccountNotShown { state, domain }) if state == "PASSWORD" && domain == "contoso.com"), "{page}: {:?}", r.result);
+        assert_eq!(enters(&sim), 1, "{page}: only the sign-in was sent");
+    }
+}
+
+#[test]
+fn a_sign_in_outside_the_profiles_domain_is_refused_before_anything_is_sent() {
+    let (r, sim) = sign_in("jane@fabrikam.com|Enter password", "jane@fabrikam.com", false);
+    assert!(matches!(&r.result, Err(WorkflowError::Options(m)) if m.contains("not an account in contoso.com")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"));
+    // A dry run has no sign-in: the page needs only to show an account in the domain.
+    let (r, _) = sign_in("someone@contoso.com|Enter password", "placeholder", true);
+    assert_eq!(r.result, Ok(()), "{:?}", r.result);
+    let (r, _) = sign_in("someone@fabrikam.com|Enter password", "placeholder", true);
+    assert!(matches!(r.result, Err(WorkflowError::AccountNotShown { .. })), "{:?}", r.result);
+}
+
+#[test]
+fn without_text_the_tenant_check_needs_a_picture_or_refuses_to_start() {
+    let w = Workflow::parse(SIGN_IN).unwrap();
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: None, ..Default::default() };
+    let secrets: Vars = [("username".to_string(), "jane@contoso.com".to_string()), ("password".to_string(), "x".to_string())].into();
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+    assert!(matches!(&r.result, Err(WorkflowError::Reference(_))), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"));
+    for (from, to, why) in [
+        ("tenant_domain = \"contoso.com\"", "tenant_domain = \"contoso\"", "must be a domain"),
+        ("account = \"username\"\n", "", "needs `account`"),
+        ("account = \"username\"", "account = \"nobody\"", "must name a secret"),
+    ] {
+        let e = Workflow::parse(&SIGN_IN.replacen(from, to, 1)).unwrap_err();
+        assert!(e.contains(why), "{e}");
+    }
+    assert!(valid_domain("mail.contoso.co.uk") && !valid_domain("-bad.com") && !valid_domain("contoso") && !valid_domain("a..b"));
 }
