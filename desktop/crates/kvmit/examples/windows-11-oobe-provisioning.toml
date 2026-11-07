@@ -1,15 +1,17 @@
 workflow_format = 1
 name = "windows-11-oobe-provisioning"
-description = "Windows 11 setup to the user's first sign-in: Windows Autopilot (user-driven) or joining Microsoft Entra with a work or school account. TEMPLATE: REGION to the work-or-school sign-in page are VM-verified (25H2); sign-in and every later screen are host-tested only. Save your own reference screens first (Reference screens, below)."
+description = "Windows 11 setup to the user's first sign-in: Windows Autopilot (user-driven) or joining Microsoft Entra with a work or school account. TEMPLATE: REGION to the work-or-school sign-in page are VM-verified (25H2); sign-in and every later screen are host-tested only. Before the first run, save its reference screens (Reference screens, below)."
 # Every state may be where a run begins: each is recognised from its screen, so starting mid-way is safe.
 start = ["REGION", "KEYBOARD", "SECOND_KEYBOARD", "NETWORK", "UPDATES", "EULA", "DEVICE_NAME", "SETUP_CHOICE", "AUTOPILOT_SIGNIN", "WORK_SIGNIN", "PASSWORD"]
 match = "structure"
 
-# The approved profile. Copy this file into your scripts folder and edit it there; a run never changes it.
+# The approved profile. Set it up in the app ("Set up your copy") or with `kvmit workflow new`, which write your own
+# copy into the scripts folder; a run never changes it.
 [config]
 # "autopilot": the device is registered for Windows Autopilot and shows the organisation's sign-in after the network.
 # "work_account": it is not; setup is told "Set up for work or school" and joins Microsoft Entra with the user's account.
-# A device that shows the other path's screen stops the run before anything is typed there.
+# A device that shows the other path's screen stops the run before anything is typed there (when that screen's picture
+# is saved: without it, the screen may be taken for a similar one).
 deployment_mode = "autopilot"
 # The organisation whose sign-in branding must be on screen before the password is typed. Name it under [tenants].
 tenant = "contoso"
@@ -24,6 +26,29 @@ password = { prompt = "User's password" }
 # Each allowed organisation and a picture of its password page (with its branding). Save it from your own tenant.
 [tenants]
 contoso = "oobe-win11/tenant-contoso.png"
+
+# What "Set up your copy" (and `kvmit workflow new` / `set`) asks for. Nothing else in this file changes that way.
+[[setup]]
+key = "deployment_mode"
+label = "How the device joins your organisation"
+help = "Windows Autopilot: the device is registered for Autopilot and shows your organisation's sign-in right after the network. Work or school account: it is not registered; setup is told it is for work or school and joins Microsoft Entra with the user's account. A device that shows the other path's screen stops the run, if that screen's picture is saved."
+choices = [
+    { value = "autopilot", label = "Windows Autopilot (the device is registered)" },
+    { value = "work_account", label = "Work or school account (Microsoft Entra join)" },
+]
+
+[[setup]]
+key = "tenant"
+label = "Your organisation's short name"
+help = "Letters, digits, - and _ (for example fabrikam). The password is typed only once the password page shows your organisation's branding: save that page as its picture (Reference screens) before the first run."
+
+[[setup]]
+key = "accept_license"
+label = "If setup shows the Windows licence terms"
+choices = [
+    { value = "yes", label = "Accept them" },
+    { value = "no", label = "Stop there (a person accepts; needs the licence screen's picture)" },
+]
 
 [[states]]
 name = "REGION"

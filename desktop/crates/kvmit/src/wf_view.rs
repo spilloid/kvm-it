@@ -2,6 +2,7 @@
 //! `uistate`: the state chip, the transition timeline, and the names of exported files. `gui.rs` only draws these.
 use crate::uistate::Health;
 use kvmit_script::workflow::{TraceEntry, WorkflowEvent};
+use std::collections::BTreeMap;
 
 /// The current state, from the trace: the last state entered, and how the run stands.
 pub fn state_chip(trace: &[TraceEntry], running: bool) -> (Health, String) {
@@ -50,6 +51,17 @@ pub fn timeline(trace: &[TraceEntry]) -> Vec<Row> {
         .filter_map(|t| {
             let (text, health) = match &t.event {
                 WorkflowEvent::StateEntered { state, reason, .. } => (format!("Entered {state} ({reason})"), Health::Idle),
+                WorkflowEvent::PicturesMissing { states, stops } => (
+                    format!(
+                        "Not recognised this run (picture not saved): {}. If one appears, the run usually stops there (it may be taken for a similar screen).{}",
+                        states.join(", "),
+                        match stops.is_empty() {
+                            true => String::new(),
+                            false => format!(" This profile's stop at {} may not happen.", stops.join(", ")),
+                        }
+                    ),
+                    Health::Working,
+                ),
                 // A state with nothing to type only waits for the target (updates, a restart, enrolment).
                 WorkflowEvent::ActionAttempted { state, steps: 0, .. } => {
                     (format!("Waiting in {state} for the screen to move on"), Health::Working)
@@ -182,6 +194,20 @@ pub fn save_reference(base: &std::path::Path, name: &str, w: usize, h: usize, rg
 }
 
 /// Every reference image of a workflow, in file order (states, then tenants), each listed once.
+/// The states none of whose pictures is present in `refs` (as [`references`] lists them): not recognisable in a run.
+pub fn blind_states(wf: &kvmit_script::Workflow, refs: &[Reference]) -> Vec<String> {
+    let present = |i: &String| refs.iter().any(|r| &r.image == i && r.present);
+    wf.states.iter().filter(|s| !s.detect.screens.iter().any(present)).map(|s| s.name.clone()).collect()
+}
+
+/// The tenant pictures missing while some state checks the tenant: a run will not start without them.
+pub fn missing_tenant_pictures(wf: &kvmit_script::Workflow, refs: &[Reference]) -> Vec<String> {
+    if !wf.states.iter().any(|s| s.verify_tenant) {
+        return Vec::new();
+    }
+    wf.tenants.values().filter(|i| !refs.iter().any(|r| &r.image == *i && r.present)).cloned().collect()
+}
+
 pub fn references(wf: &kvmit_script::Workflow, base: &std::path::Path) -> Vec<Reference> {
     let mut out: Vec<Reference> = Vec::new();
     let uses = wf
@@ -299,6 +325,115 @@ fn fnv(bytes: &[u8]) -> String {
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{h:016x}")
+}
+
+/// A new copy's default file name: the workflow's name with the organisation (its `tenant` setup value) appended.
+pub fn copy_file_name(file: &str, values: &BTreeMap<String, String>) -> String {
+    let stem = file.strip_suffix(".toml").unwrap_or(file);
+    match values.get("tenant").filter(|t| !t.is_empty()) {
+        Some(t) => format!("{stem}-{t}.toml"),
+        None => format!("{stem}-copy.toml"),
+    }
+}
+
+/// A plain file name for the scripts folder: `<name>.toml`, of letters, digits, spaces, `.`, `-` and `_`, not hidden.
+pub fn check_file_name(name: &str) -> Result<(), String> {
+    let stem = name.strip_suffix(".toml").unwrap_or("");
+    let plain = !stem.is_empty()
+        && stem.len() <= 100
+        && !stem.starts_with(['.', ' '])
+        && !stem.ends_with(['.', ' '])
+        && stem.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '.' | '-' | '_'));
+    if !plain {
+        return Err("a file name ending in .toml, of letters, digits, spaces, . - and _".into());
+    }
+    // Windows device names, with any extension: `con.toml` is not a file there.
+    let device = stem.split('.').next().unwrap_or("").trim().to_ascii_uppercase();
+    let reserved = matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((device.starts_with("COM") || device.starts_with("LPT")) && device.len() == 4 && device.as_bytes()[3].is_ascii_digit());
+    match reserved {
+        true => Err(format!("{device} is a device name on Windows: choose another file name")),
+        false => Ok(()),
+    }
+}
+
+/// What a dry run passes for prompted secrets left empty: a dry run sends nothing, so it needs no real value. Unique
+/// to this run, so it never matches text in the workflow file (which the secret checks would refuse).
+pub fn dry_run_secrets(wf: &kvmit_script::Workflow, given: &kvmit_script::Vars) -> kvmit_script::Vars {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let mut all = given.clone();
+    for k in wf.secrets.keys() {
+        all.entry(k.clone()).or_insert_with(|| format!("dry-run-{}-{nanos:x}-{k}", std::process::id()));
+    }
+    all
+}
+
+/// Write a new workflow file into the scripts folder. Never replaces a file already there.
+pub fn write_new_workflow(dir: &std::path::Path, name: &str, text: &str) -> Result<std::path::PathBuf, String> {
+    check_file_name(name)?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let path = dir.join(name);
+    use std::io::Write;
+    let mut f = match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(format!("{} already exists: choose another name, or select that file and change its profile", path.display()))
+        }
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    if let Err(e) = f.write_all(text.as_bytes()).and_then(|_| f.sync_all()) {
+        drop(f);
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("{}: {e}", path.display()));
+    }
+    Ok(path)
+}
+
+/// Replace a workflow file's text, only if it still holds `was` (what the caller read and changed): a change made
+/// elsewhere in between is never overwritten. Written to a temporary file and renamed, so a reader sees one whole
+/// version or the other.
+pub fn rewrite_workflow(path: &std::path::Path, was: &str, text: &str) -> Result<(), String> {
+    // One save at a time (the app and `kvmit workflow set`): the lock covers the comparison and the replacement. An
+    // editor saving in that instant is not covered.
+    let lock = path.with_extension("toml.saving");
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(format!(
+                "another save of {} is in progress (or one crashed: then delete {})",
+                path.display(),
+                lock.display()
+            ))
+        }
+        Err(e) => return Err(format!("{}: {e}", lock.display())),
+    }
+    let r = replace_if_unchanged(path, was, text);
+    let _ = std::fs::remove_file(&lock);
+    r
+}
+
+fn replace_if_unchanged(path: &std::path::Path, was: &str, text: &str) -> Result<(), String> {
+    // Renaming over a link would replace the link, not the file it points to.
+    if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(format!("{} is a link: save the file it points to instead", path.display()));
+    }
+    let now = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if now != was {
+        return Err(format!("{} changed since it was opened: reload it and set it up again", path.display()));
+    }
+    use std::io::Write;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let tmp = path.with_extension(format!("toml.{}-{nanos}.tmp", std::process::id()));
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(text.as_bytes()).and_then(|_| f.sync_all()))
+        .and_then(|_| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written.map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// Which run a checkpoint belongs to: a workflow (its file, or its built-in name) **on one adapter**. Several targets
@@ -843,6 +978,36 @@ mod tests {
         assert!(resume_from_claim(&dir, &a, text, claim, &shown).unwrap_err().contains("changed"));
         assert_eq!(load_checkpoint(&dir, &a, text).unwrap().map(|c| c.state), Some("B".into()));
         assert!(claim_checkpoint(&dir, &a).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_set_up_copy_is_written_new_and_rewritten_only_unchanged() {
+        let dir = std::env::temp_dir().join(format!("kvmit-setup-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let values: BTreeMap<String, String> = [("tenant".to_string(), "fabrikam".to_string())].into();
+        assert_eq!(copy_file_name("w.toml", &values), "w-fabrikam.toml");
+        assert_eq!(copy_file_name("w.toml", &BTreeMap::new()), "w-copy.toml");
+        for bad in ["", ".toml", "x", "x.txt", "../x.toml", "a/b.toml", "a\\b.toml", ".hidden.toml", "c:x.toml", "x .toml", "con.toml", "NUL.x.toml", "com1.toml", "Lpt9.toml"] {
+            assert!(check_file_name(bad).is_err(), "{bad:?}");
+        }
+        let p = write_new_workflow(&dir, "w-fabrikam.toml", "one").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "one");
+        assert!(write_new_workflow(&dir, "w-fabrikam.toml", "two").unwrap_err().contains("already exists"));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "one", "never replaced");
+        assert!(rewrite_workflow(&p, "not what it holds", "two").unwrap_err().contains("changed since"));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "one");
+        rewrite_workflow(&p, "one", "two").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "two");
+        // A save in progress (its lock) refuses a second one, and the lock is left for its owner.
+        let lock = p.with_extension("toml.saving");
+        std::fs::write(&lock, "").unwrap();
+        assert!(rewrite_workflow(&p, "two", "three").unwrap_err().contains("in progress"));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "two");
+        std::fs::remove_file(&lock).unwrap();
+        assert!(check_file_name("console.toml").is_ok() && check_file_name("com10.toml").is_ok());
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+        assert_eq!(left.len(), 1, "no temporary file left: {left:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

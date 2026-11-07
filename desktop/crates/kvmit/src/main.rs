@@ -107,6 +107,10 @@ enum Cmd {
         /// Make a missing one with `kvmit video snap <path>` while the target shows that screen.
         #[arg(long)]
         check: bool,
+        /// Workflows: run although some screens have no saved picture. Such a screen is not recognised: if it appears
+        /// the run usually stops there, but it may be taken for a similar screen. A dry run never needs this.
+        #[arg(long)]
+        allow_missing_pictures: bool,
     },
     /// Convert a DuckyScript payload to the native format and list anything untranslatable
     Import {
@@ -118,6 +122,41 @@ enum Cmd {
     Video {
         #[command(subcommand)]
         cmd: VideoCmd,
+    },
+    /// Workflows: make your own copy of a built-in one and set its profile (deployment mode, organisation, ...)
+    Workflow {
+        #[command(subcommand)]
+        cmd: WorkflowCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkflowCmd {
+    /// List the built-in workflows and the workflow files in the scripts folder
+    List,
+    /// Show a workflow's setup values: what each means, its value now, and its choices
+    Show {
+        /// A built-in workflow's name, or a workflow file
+        workflow: String,
+    },
+    /// Make your own copy of a built-in workflow in the scripts folder, with its setup values. In a terminal, asks
+    /// for each one not given with --set (Enter keeps the value shown).
+    New {
+        /// The built-in workflow's name (`kvmit workflow list`)
+        workflow: String,
+        /// name=value, for a setup value (`kvmit workflow show <workflow>` lists them)
+        #[arg(long = "set", value_parser = parse_kv)]
+        set: Vec<(String, String)>,
+        /// The new file's name in the scripts folder (default: the workflow's name and the organisation's)
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Change setup values of a workflow file in place. A checkpoint saved from it before no longer resumes.
+    Set {
+        file: PathBuf,
+        /// name=value, for a setup value
+        #[arg(long = "set", value_parser = parse_kv, required = true)]
+        set: Vec<(String, String)>,
     },
 }
 
@@ -294,7 +333,7 @@ fn real_main(cli: Cli) -> R<()> {
             script.steps.push(if keys.len() == 1 { Step::Key(keys[0].clone()) } else { Step::Chord(keys) });
             execute(cli.device, None, cfg, script, PathBuf::from("."), Vars::new(), false, true)
         }
-        Cmd::Run { file, vars, dry_run, yes, video, resume, save_trace, check } => {
+        Cmd::Run { file, vars, dry_run, yes, video, resume, save_trace, check, allow_missing_pictures } => {
             let src = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             if kvmit_script::workflow::is_workflow_source(&src) {
                 if !vars.is_empty() {
@@ -303,11 +342,11 @@ fn real_main(cli: Cli) -> R<()> {
                 if check {
                     return check_workflow(&file, &src);
                 }
-                let run = WfRun { file, dry: dry_run, yes, resume, save_trace };
+                let run = WfRun { file, dry: dry_run, yes, resume, save_trace, allow_missing_pictures };
                 return run_workflow_cmd(cli.device, video, cfg, &src, run);
             }
-            if resume || save_trace || check {
-                return Err("--resume, --save-trace and --check are for workflows (files with `workflow_format = 1`)".into());
+            if resume || save_trace || check || allow_missing_pictures {
+                return Err("--resume, --save-trace, --check and --allow-missing-pictures are for workflows (files with `workflow_format = 1`)".into());
             }
             let script = Script::parse(&src)?;
             let mut v: Vars = vars.into_iter().collect();
@@ -353,6 +392,7 @@ fn real_main(cli: Cli) -> R<()> {
             }
             Ok(())
         }
+        Cmd::Workflow { cmd } => workflow_cmd(cmd, &cfg),
         Cmd::Video { cmd } => match cmd {
             VideoCmd::List => {
                 let d = kvmit_video::list_devices();
@@ -468,14 +508,154 @@ fn check_workflow(file: &std::path::Path, src: &str) -> R<()> {
         missing += usize::from(!r.present);
         println!("  {mark} {path}  ({})", r.used_by.join(", "));
     }
-    if missing > 0 {
+    let invalid = refs.iter().filter(|r| r.path.is_err()).count();
+    if invalid > 0 {
+        return Err(format!("{invalid} reference image name(s) are not valid paths: fix them in the file").into());
+    }
+    let tenants = kvmit::wf_view::missing_tenant_pictures(&wf, &refs);
+    if !tenants.is_empty() {
         return Err(format!(
-            "{missing} reference image(s) missing: bring the target to each screen and run `kvmit video snap <path>` (or use Save this screen as… in the app)"
+            "required: {} (the organisation check compares every listed organisation's picture): no run starts without them",
+            tenants.join(", ")
         )
         .into());
     }
+    let blind = kvmit::wf_view::blind_states(&wf, &refs);
+    if !blind.is_empty() {
+        println!(
+            "not recognisable (no picture saved): {}. A live run needs --allow-missing-pictures; such a screen usually stops the run, but may be taken for a similar one.",
+            blind.join(", ")
+        );
+        let stops = wf.stop_states(&blind);
+        if !stops.is_empty() {
+            println!("this profile stops the run at {}: without those pictures, that stop may not happen", stops.join(", "));
+        }
+    }
+    if missing > 0 {
+        println!(
+            "{missing} reference image(s) missing. Bring the target to each screen you can and run `kvmit video snap <path>` (or use Save this screen as in the app)."
+        );
+        return Ok(());
+    }
     println!("ready: every reference image is present");
     Ok(())
+}
+
+/// A workflow named on the command line: an existing file, else a built-in's name. Returns its text and how to call it.
+fn named_workflow(name: &str) -> R<(String, String, Option<PathBuf>)> {
+    let path = PathBuf::from(name);
+    if path.is_file() {
+        let src = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        return Ok((src, path.display().to_string(), Some(path)));
+    }
+    match kvmit::library::builtin(name) {
+        Some(b) if kvmit::library::is_workflow(b.source) => Ok((b.source.to_string(), format!("{} (built in)", b.file), None)),
+        _ => Err(format!("{name}: no such file, and not a built-in workflow (`kvmit workflow list`)").into()),
+    }
+}
+
+fn print_setup(wf: &kvmit_script::Workflow) {
+    if wf.setup.is_empty() {
+        println!("  no setup values: change it by editing its file");
+    }
+    for f in &wf.setup {
+        let now = wf.config.get(&f.key).map(String::as_str).unwrap_or("");
+        println!("  {} = {now:?}   {}", f.key, f.label);
+        if !f.help.is_empty() {
+            println!("      {}", f.help);
+        }
+        for c in &f.choices {
+            println!("      {} {}: {}", if c.value == now { "*" } else { "-" }, c.value, c.label);
+        }
+    }
+}
+
+/// Ask for one setup value in the terminal: Enter keeps `now`; a choice is given by its number or its value.
+fn ask_setup(f: &kvmit_script::workflow::SetupField, now: &str) -> R<String> {
+    println!("{}", f.label);
+    if !f.help.is_empty() {
+        println!("  {}", f.help);
+    }
+    for (i, c) in f.choices.iter().enumerate() {
+        println!("  {}. {}{}", i + 1, c.label, if c.value == now { " (now)" } else { "" });
+    }
+    loop {
+        print!("{} [{now}]: ", f.key);
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        if std::io::stdin().read_line(&mut answer)? == 0 {
+            return Err("no answer (end of input)".into());
+        }
+        let v = match answer.trim() {
+            "" => now.to_string(),
+            a => match a.parse::<usize>() {
+                Ok(n) if (1..=f.choices.len()).contains(&n) => f.choices[n - 1].value.clone(),
+                _ => a.to_string(),
+            },
+        };
+        match f.check(&v) {
+            Ok(()) => return Ok(v),
+            Err(e) => println!("  {e}"),
+        }
+    }
+}
+
+fn workflow_cmd(cmd: WorkflowCmd, cfg: &Config) -> R<()> {
+    use std::io::IsTerminal;
+    let dir = cfg.script_dir();
+    match cmd {
+        WorkflowCmd::List => {
+            for e in kvmit::library::load_all(&dir).iter().filter(|e| e.workflow) {
+                match (&e.path, e.builtin_file()) {
+                    (_, Some(f)) => println!("{f}  (built in: `kvmit workflow new {}`)", f.trim_end_matches(".toml")),
+                    (Some(p), None) => println!("{}{}", p.display(), e.error.as_ref().map(|x| format!("  (does not parse: {x})")).unwrap_or_default()),
+                    (None, None) => {}
+                }
+            }
+            println!("scripts folder: {}", dir.display());
+            Ok(())
+        }
+        WorkflowCmd::Show { workflow } => {
+            let (src, label, _) = named_workflow(&workflow)?;
+            let wf = kvmit_script::Workflow::parse(&src).map_err(|e| format!("{label}: {e}"))?;
+            println!("{label}: {}", if wf.name.is_empty() { "workflow" } else { &wf.name });
+            print_setup(&wf);
+            Ok(())
+        }
+        WorkflowCmd::New { workflow, set, name } => {
+            let Some(b) = kvmit::library::builtin(&workflow).filter(|b| kvmit::library::is_workflow(b.source)) else {
+                return Err(format!("{workflow}: not a built-in workflow (`kvmit workflow list`); to change a file of yours, use `kvmit workflow set`").into());
+            };
+            let wf = kvmit_script::Workflow::parse(b.source)?;
+            let mut values: std::collections::BTreeMap<String, String> = set.into_iter().collect();
+            if std::io::stdin().is_terminal() {
+                for f in &wf.setup {
+                    if !values.contains_key(&f.key) {
+                        let v = ask_setup(f, wf.config.get(&f.key).map(String::as_str).unwrap_or(""))?;
+                        values.insert(f.key.clone(), v);
+                    }
+                }
+            }
+            let text = kvmit_script::setup::apply(b.source, &values)?;
+            let name = name.unwrap_or_else(|| kvmit::wf_view::copy_file_name(b.file, &values));
+            let path = kvmit::wf_view::write_new_workflow(&dir, &name, &text)?;
+            println!("wrote {}", path.display());
+            print_setup(&kvmit_script::Workflow::parse(&text)?);
+            println!("next: save its reference screens (`kvmit run {} --check` lists them), then a dry run", path.display());
+            Ok(())
+        }
+        WorkflowCmd::Set { file, set } => {
+            let was = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+            if !kvmit_script::workflow::is_workflow_source(&was) {
+                return Err(format!("{}: not a workflow file", file.display()).into());
+            }
+            let text = kvmit_script::setup::apply(&was, &set.into_iter().collect())?;
+            kvmit::wf_view::rewrite_workflow(&file, &was, &text)?;
+            println!("updated {}", file.display());
+            print_setup(&kvmit_script::Workflow::parse(&text)?);
+            Ok(())
+        }
+    }
 }
 
 struct WfRun {
@@ -484,6 +664,7 @@ struct WfRun {
     yes: bool,
     resume: bool,
     save_trace: bool,
+    allow_missing_pictures: bool,
 }
 
 /// `kvmit run` for a workflow: what the app's workflow panel does, in a terminal. Secrets are prompted without echo,
@@ -497,12 +678,18 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     // Secrets first: nothing from the file (or its checkpoint) is printed until it is known not to hold a secret's
     // value, since this output may be going to a log.
     let mut secrets = Vars::new();
-    for (name, prompt) in &wf.secrets {
+    for (name, prompt) in wf.secrets_in_order() {
+        if a.dry {
+            break; // a dry run sends nothing: placeholders below
+        }
         let v = rpassword::prompt_password(format!("{prompt} (hidden): "))?;
         if v.is_empty() {
             return Err(format!("{prompt}: a value is required").into());
         }
-        secrets.insert(name.clone(), v);
+        secrets.insert(name.to_string(), v);
+    }
+    if a.dry {
+        secrets = wf_view::dry_run_secrets(&wf, &secrets);
     }
     // Checkpoints belong to a workflow on one adapter: the one this run will use.
     // (A dry run sends nothing and saves no checkpoint: it needs an adapter only to look one up for --resume.)
@@ -549,7 +736,7 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
             // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
             on_event: Box::new(|_| {}),
         };
-        let mut opts = kvmit_script::WorkflowOptions::default();
+        let mut opts = kvmit_script::WorkflowOptions { allow_missing_pictures: a.allow_missing_pictures, ..Default::default() };
         opts.run.dry_run = a.dry;
         kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume, &mut |t, _| {
             for line in wf_view::cli_lines(t) {

@@ -151,23 +151,27 @@ screen it expects, checks that the next screen arrived, and stops (typing nothin
 The built-in one, `windows-11-oobe-provisioning.toml`, goes from the region screen to the user's first sign-in, by
 **Windows Autopilot** or by **joining Microsoft Entra with a work or school account**. It is a template: the screens after
 the work-or-school sign-in page have not yet been run on any machine (up to there it has run in a virtual machine).
-Try it on one machine, with a dry run first.
+Try it on one machine, with a dry run first. The full guide, with every screen and what to do when it stops, is
+[Provision Windows 11 laptops](provisioning.md).
 
-1. **Make it yours.** Copy `windows-11-oobe-provisioning.toml` into your scripts folder (the app's Scripts list shows the
-   folder). In `[config]`, set `deployment_mode` to `autopilot` or `work_account`, and `tenant` to your organisation's
-   short name; under `[tenants]`, name the same organisation and the picture of its password page.
+1. **Make it yours.** In **Scripts…**, select **[built-in workflow] windows-11-oobe-provisioning.toml** and fill in
+   **Set up your copy**: Windows Autopilot or a work or school account, your organisation's short name, and whether to
+   accept the licence terms. **Save my copy** writes your copy into the scripts folder and selects it (from a terminal:
+   `kvmit workflow new windows-11-oobe-provisioning`). No text editor needed; change it later in its
+   **Approved profile**.
 2. **Save its screens once.** Select it in the Scripts list and open **Reference screens**: every screen it needs is
    listed, marked missing. Take one machine through setup by hand. At each screen, choose that screen's name under
    **Save this screen as** and click it. For the organisation's picture, save the password page (with your branding)
    under the tenant's name. `kvmit run <file> --check` lists the same from a terminal; `kvmit video snap <path>` saves one.
 3. **Dry run.** Reset the machine to the first setup screen and click **Dry run**: it watches the screen and sends
-   nothing. Click through setup by hand and check that the timeline names each screen as you reach it.
+   nothing (no sign-in or password needed). Click through setup by hand and check that the timeline names each screen as you reach it.
 4. **Run.** Enter the user's sign-in and password (held in memory only, never saved), tick that you reviewed the file and
    click **Run**. The timeline says **Your turn** at the steps a person must do: connect the network, approve the
    sign-in on a phone, choose privacy settings. Do those at the target; the run sees the screen move on and continues.
    It ends at Windows Hello or the desktop, for the user to take over.
 5. **If it stops**, it says why and saves a checkpoint. Fix the target, then click **Resume** (or `kvmit run <file>
    --resume`): it looks at the screen first and carries on only from the state it stopped in or the next one.
+   [What each stop means](provisioning.md#when-it-stops).
 
 From a terminal the whole run is `kvmit run <your copy>.toml` (add `--save-trace` for a record for the ticket).
 

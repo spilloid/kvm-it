@@ -89,10 +89,80 @@ pub struct Workflow {
     pub secrets: BTreeMap<String, String>,
     /// Allowed tenants and the reference image of each one's sign-in branding. `config.tenant` must be one of them.
     pub tenants: BTreeMap<String, String>,
+    /// The profile values a person may set (in the app's setup form or `kvmit workflow new|set`), in file order. Nothing
+    /// else in the file is changed that way: states, actions and guards stay as written.
+    pub setup: Vec<SetupField>,
     /// A classification must beat the runner-up by at least this much similarity.
     pub ambiguity_margin: f64,
     pub matching: Matching,
     pub states: Vec<StateDef>,
+}
+
+/// One settable profile value: a `[config]` key with a label, optional help, and either a fixed list of choices or
+/// free text. The `tenant` key, when the workflow lists tenants, is the organisation's name: setting it to a new name
+/// renames the configured tenant and points it at `tenant-<name>.png` beside the old picture.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetupField {
+    pub key: String,
+    pub label: String,
+    pub help: String,
+    /// Empty: free text.
+    pub choices: Vec<SetupChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetupChoice {
+    pub value: String,
+    pub label: String,
+}
+
+impl SetupField {
+    /// Whether `value` may be set: one of the choices, or (free text) 1-64 printable characters; an organisation name
+    /// is letters, digits, `-` and `_` only, since it names a file.
+    pub fn check(&self, value: &str) -> Result<(), String> {
+        if !self.choices.is_empty() {
+            return match self.choices.iter().any(|c| c.value == value) {
+                true => Ok(()),
+                false => Err(format!(
+                    "{}: {value:?} is not one of {}",
+                    self.key,
+                    self.choices.iter().map(|c| c.value.as_str()).collect::<Vec<_>>().join(", ")
+                )),
+            };
+        }
+        if self.key == "tenant" {
+            if value.is_empty() || value.len() > 64 || !value.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return Err("the organisation's name is 1-64 letters, digits, - and _ (it names its picture's file)".into());
+            }
+            return Ok(());
+        }
+        if !setup_text(value) {
+            return Err(format!("{}: 1-64 characters, no line breaks or control characters", self.key));
+        }
+        Ok(())
+    }
+}
+
+fn setup_text(s: &str) -> bool {
+    !s.trim().is_empty() && s.chars().count() <= 64 && !s.chars().any(char::is_control)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawSetup {
+    key: String,
+    label: String,
+    #[serde(default)]
+    help: String,
+    #[serde(default)]
+    choices: Vec<RawChoice>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawChoice {
+    Plain(String),
+    Labelled { value: String, label: String },
 }
 
 #[derive(Deserialize)]
@@ -161,13 +231,122 @@ struct RawWorkflow {
     #[serde(default)]
     tenants: BTreeMap<String, String>,
     #[serde(default)]
+    setup: Vec<RawSetup>,
+    #[serde(default)]
     ambiguity_margin: Option<f64>,
     #[serde(default, rename = "match")]
     matching: Option<String>,
     states: Vec<RawState>,
 }
 
+impl Workflow {
+    /// Of these states, the ones whose entry guard the profile already fails (on `[config]` alone): states that exist
+    /// so the run stops there, such as the other deployment method's screen or a licence the profile does not accept.
+    /// Without a picture of such a screen, that stop is not made: the screen may be taken for a similar state.
+    pub fn stop_states<'a>(&self, states: &'a [String]) -> Vec<&'a str> {
+        states
+            .iter()
+            .filter(|n| {
+                self.state(n).is_some_and(|s| s.require.iter().any(|(k, v)| self.config.get(k).is_some_and(|c| c != v)))
+            })
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// The prompted secrets (name, prompt) in the order the run types them (first use, states in file order), then any
+    /// not typed at all: what the app shows and the command line asks, so the sign-in comes before the password.
+    pub fn secrets_in_order(&self) -> Vec<(&str, &str)> {
+        // `{{ name }}` placeholders of a template, in order (spaces allowed, as the compiler allows them).
+        fn names(t: &str) -> Vec<&str> {
+            let mut out = Vec::new();
+            let mut rest = t;
+            while let Some(i) = rest.find("{{") {
+                let after = &rest[i + 2..];
+                let Some(j) = after.find("}}") else { break };
+                out.push(after[..j].trim());
+                rest = &after[j + 2..];
+            }
+            out
+        }
+        fn walk<'a>(steps: &'a [crate::model::Step], used: &mut Vec<&'a str>) {
+            for step in steps {
+                match step {
+                    crate::model::Step::SecretText(t) => used.extend(names(t)),
+                    crate::model::Step::Repeat { steps, .. } => walk(steps, used),
+                    _ => {}
+                }
+            }
+        }
+        let mut used = Vec::new();
+        for st in &self.states {
+            walk(&st.actions, &mut used);
+        }
+        let mut out: Vec<(&str, &str)> = Vec::new();
+        for name in used {
+            if let Some((k, p)) = self.secrets.get_key_value(name) {
+                if !out.iter().any(|(o, _)| o == k) {
+                    out.push((k, p));
+                }
+            }
+        }
+        for (k, p) in &self.secrets {
+            if !out.iter().any(|(o, _)| o == k) {
+                out.push((k, p));
+            }
+        }
+        out
+    }
+}
+
 const MAX_STATES: usize = 64;
+const MAX_SETUP: usize = 16;
+
+/// `[[setup]]`: each names a `[config]` key once, with a label; choices are distinct and include the configured value.
+fn setup_fields(
+    raw: Vec<RawSetup>,
+    config: &BTreeMap<String, String>,
+    tenants: &BTreeMap<String, String>,
+) -> Result<Vec<SetupField>, String> {
+    if raw.len() > MAX_SETUP {
+        return Err(format!("at most {MAX_SETUP} setup values"));
+    }
+    let mut out: Vec<SetupField> = Vec::new();
+    for r in raw {
+        let Some(current) = config.get(&r.key) else {
+            return Err(format!("setup value {:?} is not in [config]", r.key));
+        };
+        if out.iter().any(|f| f.key == r.key) {
+            return Err(format!("setup value {:?} is listed twice", r.key));
+        }
+        if r.label.trim().is_empty() || r.label.chars().count() > 80 {
+            return Err(format!("setup value {:?}: its label is 1-80 characters", r.key));
+        }
+        if r.help.chars().count() > 400 {
+            return Err(format!("setup value {:?}: its help is at most 400 characters", r.key));
+        }
+        if r.key == "tenant" && !tenants.is_empty() && !r.choices.is_empty() {
+            return Err("the tenant setup value is the organisation's name: it takes no choices".into());
+        }
+        let mut choices: Vec<SetupChoice> = Vec::new();
+        for c in r.choices {
+            let c = match c {
+                RawChoice::Plain(v) => SetupChoice { label: v.clone(), value: v },
+                RawChoice::Labelled { value, label } => SetupChoice { value, label },
+            };
+            if !setup_text(&c.value) || c.label.trim().is_empty() || c.label.chars().count() > 80 {
+                return Err(format!("setup value {:?}: a choice is 1-64 characters, its label 1-80", r.key));
+            }
+            if choices.iter().any(|d| d.value == c.value) {
+                return Err(format!("setup value {:?}: choice {:?} is listed twice", r.key, c.value));
+            }
+            choices.push(c);
+        }
+        let field = SetupField { key: r.key, label: r.label, help: r.help, choices };
+        field.check(current).map_err(|e| format!("[config] does not fit its setup: {e}"))?;
+        out.push(field);
+    }
+    Ok(out)
+}
 const MAX_RETRIES: u32 = 5;
 const MIN_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -272,6 +451,7 @@ impl Workflow {
                 None => return Err("the workflow lists tenants but config has no `tenant`".into()),
             }
         }
+        let setup = setup_fields(raw.setup, &raw.config, &raw.tenants)?;
         let mut states = Vec::new();
         let mut names = BTreeSet::new();
         for r in raw.states {
@@ -389,6 +569,7 @@ impl Workflow {
             config: raw.config,
             secrets: raw.secrets.into_iter().map(|(k, v)| (k, v.prompt)).collect(),
             tenants: raw.tenants,
+            setup,
             ambiguity_margin: margin,
             matching: match raw.matching.as_deref() {
                 None => {
@@ -558,6 +739,9 @@ impl Checkpoint {
 #[serde(tag = "event")]
 pub enum WorkflowEvent {
     Started { workflow: String, dry_run: bool, resumed_from: Option<String> },
+    /// States that cannot be recognised in this run because none of their pictures is saved: if one of those screens
+    /// appears, it is an unknown screen and the run stops there.
+    PicturesMissing { states: Vec<String>, stops: Vec<String> },
     StateObserved { observation: Observation },
     StateEntered { state: String, from: Option<String>, reason: String },
     GuardChecked { state: String, ok: bool, detail: String },
@@ -671,6 +855,9 @@ impl Host for Scrubbed<'_> {
     }
     fn reference(&mut self, name: &str) -> Result<Frame, String> {
         self.inner.reference(name)
+    }
+    fn reference_missing(&mut self, name: &str) -> bool {
+        self.inner.reference_missing(name)
     }
     fn confirm(&mut self, message: &str) -> bool {
         self.inner.confirm(message)
@@ -793,6 +980,9 @@ pub struct WorkflowOptions {
     /// After a boundary (an action, an approval), frames arriving within this time may still be pictures from before
     /// it, already in the capture's queue, and are not used as evidence.
     pub capture_latency: Duration,
+    /// Run although some states have no saved picture (they cannot be recognised). Off by default: such a screen is
+    /// usually unknown, but may be taken for a similar state. A dry run never needs it.
+    pub allow_missing_pictures: bool,
 }
 
 impl Default for WorkflowOptions {
@@ -803,6 +993,7 @@ impl Default for WorkflowOptions {
             settle_frames: 2,
             offer_manual_recovery: true,
             capture_latency: Duration::from_millis(300),
+            allow_missing_pictures: false,
         }
     }
 }
@@ -874,6 +1065,8 @@ struct Engine<'a> {
     host: &'a mut dyn Host,
     opts: &'a WorkflowOptions,
     refs: BTreeMap<String, Frame>,
+    /// Reference pictures not saved yet (see [`Host::reference_missing`]): never compared.
+    missing: BTreeSet<String>,
     /// The frame behind the latest settled classification: later checks use the same evidence.
     last_frame: Option<Frame>,
     /// The newest capture number seen. Frames at or below a boundary taken after acting were captured before the
@@ -923,6 +1116,51 @@ impl Engine<'_> {
         Ok(f)
     }
 
+    /// Before the first look: which pictures are not saved yet, each probed once (one snapshot, so states sharing a
+    /// picture always agree). The tenant check needs every allowed tenant's picture: a missing competitor could let the
+    /// wrong organisation's page pass. A state none of whose pictures is saved cannot be recognised, and its screen, if
+    /// it appears, is usually unknown (the run stops) but may be taken for a similar state: a live run accepts that
+    /// only with `allow_missing_pictures`; a dry run, which sends nothing, always does.
+    fn note_missing_pictures(&mut self) -> Result<(), WorkflowError> {
+        let wf = self.wf;
+        let names: BTreeSet<&String> = wf.states.iter().flat_map(|s| &s.detect.screens).chain(wf.tenants.values()).collect();
+        for n in names {
+            if self.host.reference_missing(n) {
+                self.missing.insert(n.clone());
+            }
+        }
+        if wf.states.iter().any(|s| s.verify_tenant) {
+            if let Some((tenant, image)) = wf.tenants.iter().find(|(_, i)| self.missing.contains(*i)) {
+                return Err(WorkflowError::Reference(format!(
+                    "{image}, the picture of tenant {tenant}'s sign-in, is not saved: the tenant check compares every allowed tenant's picture before the password is typed"
+                )));
+            }
+        }
+        let blind: Vec<String> =
+            wf.states.iter().filter(|s| s.detect.screens.iter().all(|x| self.missing.contains(x))).map(|s| s.name.clone()).collect();
+        if blind.len() == wf.states.len() {
+            return Err(WorkflowError::Reference("no reference picture is saved yet: save the screens first".into()));
+        }
+        if !blind.is_empty() {
+            let stops: Vec<String> = wf.stop_states(&blind).into_iter().map(str::to_string).collect();
+            if !self.opts.run.dry_run && !self.opts.allow_missing_pictures {
+                let lost = match stops.is_empty() {
+                    true => String::new(),
+                    false => format!(
+                        "; this profile stops the run at {}, and without their pictures it may not",
+                        stops.join(", ")
+                    ),
+                };
+                return Err(WorkflowError::Reference(format!(
+                    "no picture is saved for {}: save them, or run without them (a screen without a picture is usually stopped at as unknown, but may be taken for a similar one){lost}",
+                    blind.join(", ")
+                )));
+            }
+            self.emit(WorkflowEvent::PicturesMissing { states: blind, stops });
+        }
+        Ok(())
+    }
+
     /// The winner among `scores` (name, similarity, threshold), if it clears its threshold and beats the runner-up
     /// by the margin. A tie never wins, whatever the margin.
     fn winner(&self, scores: &[(String, f64, f64)]) -> Option<String> {
@@ -950,15 +1188,22 @@ impl Engine<'_> {
         for s in &self.wf.states {
             let mut best: Option<(f64, String)> = None;
             for screen in &s.detect.screens {
+                if self.missing.contains(screen) {
+                    continue;
+                }
                 let r = self.reference(screen)?;
                 let sim = self.compare(frame, &r, s.detect.region);
                 if best.as_ref().is_none_or(|(b, _)| sim > *b) {
                     best = Some((sim, screen.clone()));
                 }
             }
-            let (sim, screen) = best.expect("every state has a screen");
+            // A state none of whose pictures is saved cannot be recognised (the run checked at least one state can).
+            let Some((sim, screen)) = best else { continue };
             refs.insert(s.name.clone(), screen);
             scores.push((s.name.clone(), sim, s.detect.threshold));
+        }
+        if scores.is_empty() {
+            return Err(WorkflowError::Reference("no state's picture could be compared".into()));
         }
         scores.sort_by(|a, b| b.1.total_cmp(&a.1));
         let state = self.winner(&scores);
@@ -1502,6 +1747,7 @@ pub fn run_workflow(
         host,
         opts,
         refs: BTreeMap::new(),
+        missing: BTreeSet::new(),
         last_frame: None,
         seen_seq: None,
         secrets: secret_values,
@@ -1522,6 +1768,7 @@ pub fn run_workflow(
             }
         }
         let compiled = compile_workflow(wf, secrets, layout)?;
+        e.note_missing_pictures()?;
         for (i, st) in wf.states.iter().enumerate() {
             if action_time(&compiled[&st.name], &opts.run, true) > MAX_ACTION_TIME {
                 return Err(WorkflowError::Options(format!(

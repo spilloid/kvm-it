@@ -58,6 +58,11 @@ impl Host for ScriptHost {
     fn reference(&mut self, name: &str) -> Result<Frame, String> {
         kvmit_video::convert::load_reference(&crate::wf_view::reference_path(&self.base_dir, name)?)
     }
+    /// A valid picture name with nothing saved there yet. A name the path rule refuses is not "missing": loading it
+    /// reports why.
+    fn reference_missing(&mut self, name: &str) -> bool {
+        crate::wf_view::reference_path(&self.base_dir, name).is_ok_and(|p| std::fs::symlink_metadata(&p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound))
+    }
     fn confirm(&mut self, message: &str) -> bool {
         (self.confirm)(message)
     }

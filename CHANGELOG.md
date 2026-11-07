@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.5.1] - 2026-11-06 (set up workflows without a text editor, provisioning guide)
+
+### Added
+- **Set up your copy** of a built-in workflow in the app: select **[built-in workflow]
+  windows-11-oobe-provisioning.toml** and choose Windows Autopilot or a work or school account, your organisation's short
+  name, and whether to accept the licence terms; **Save my copy** writes your own copy into the scripts folder (never over
+  an existing file) and selects it. A copy's **Approved profile** is the same form, with **Save profile** and **Undo
+  changes**. Run in the app on Windows 11 with the demo video source.
+- **`kvmit workflow`**: `list` (built-in workflows and the workflow files in the scripts folder), `show` (a workflow's
+  settings, their values and choices), `new` (your copy of a built-in, asking for each setting in a terminal, or
+  `--set name=value`), `set` (change settings of a file in place). Same rules as the app.
+- Workflow files may list their settings (`[[setup]]`: a `[config]` key, a label, help, and choices or free text). Only
+  those values change, the file's comments and layout are kept, and the change is refused unless the result is the same
+  workflow with only those values changed. A new organisation name renames the configured tenant and points it at
+  `tenant-<name>.png`. Host-tested.
+- **[Provision Windows 11 laptops](docs/provisioning.md)**: the guide for the built-in workflow, from setting up your copy
+  and saving each screen to running several laptops at once and what each stop means.
+
+### Fixed
+- **A workflow can run with pictures missing.** In 0.5.0 one missing reference picture stopped the run before the first
+  screen, so every screen had to be saved, including ones a laptop never shows (the licence terms, the other
+  method's sign-in). Now a live run with missing pictures is refused unless you accept it (**Run without the missing
+  pictures** in the app, `kvmit run --allow-missing-pictures`); a dry run accepts it by itself. A screen without a
+  picture is not recognised: the run lists those screens when it starts, and if one appears it usually stops there,
+  but it may be taken for a similar screen. A picture name that is not a valid path is still an error, and every
+  allowed organisation's picture is required when the workflow checks the organisation. `kvmit run --check` reports
+  missing pictures without failing. Host-tested.
+- A dry run needs no sign-in or password (app and `kvmit run --dry-run`): it sends nothing.
+- The scripts panel scrolls inside the window: a workflow's settings, reference list and run controls no longer run off
+  the bottom of the screen.
+- A workflow's secret boxes (app) and prompts (`kvmit run`) come in the order the run types them: the sign-in before the
+  password.
+- The workflow panel was looked at on screen for the first time (Windows 11, 150 %, demo video, no adapter). The state
+  chip, timeline and variables during a live run still have not been.
+
 ## [0.5.0] - 2026-11-04 (stateful workflows, Windows 11 provisioning, reconnect after power loss)
 
 ### Added
