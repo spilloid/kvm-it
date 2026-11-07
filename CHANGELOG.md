@@ -22,6 +22,11 @@
 ### Changed
 - A live run of a workflow that checks the sign-in by reading the screen does not start on a computer that cannot read
   text (it never sends the sign-in unchecked). A dry run still runs.
+- **Firmware: a paired adapter no longer opens a pairing window when it powers on.** Before, every power-on accepted a
+  new controller for 15 s, so an adapter carried from laptop to laptop was open to pairing each time. Now the 15 s
+  boot window opens only while no controller is trusted (a new adapter, or after a 10 s BOOT hold); replacing the
+  controller takes a BOOT press. Your paired controller reconnects as before. Reflash the adapter to get it
+  (Adapter > Flash adapter). Built in CI; **not yet run on a board**.
 
 ## [0.5.1] - 2026-11-06 (set up workflows without a text editor, provisioning guide)
 

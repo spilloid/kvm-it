@@ -402,7 +402,7 @@ impl App {
                 if let Err(e) = backend::pair(&id).await {
                     with_link(&|l: &mut Link| {
                         *l = Link::Disconnected;
-                        *notice.lock().unwrap() = format!("Pairing failed: {e}. Re-plug the adapter (15 s pairing window) or press BOOT briefly on it, then try again.");
+                        *notice.lock().unwrap() = format!("Pairing failed: {e}. Press BOOT briefly on the adapter (it opens a 5-minute pairing window; a new adapter also opens one for 15 s after it is plugged in), then try again.");
                     });
                     ctx.request_repaint();
                     return;

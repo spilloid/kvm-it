@@ -49,8 +49,9 @@ tell us how it goes.)
 ## 4. Pair (once)
 
 1. Move the cable: plug the adapter's **USB** port into the **target**. (COM can stay plugged in or not.)
-2. For **15 seconds** after it powers up, it accepts a new pairing. Missed it? Press **BOOT** briefly: that reopens the window
-   for 5 minutes. No physical access, no pairing. That is the entire security model, and it is a feature.
+2. For **15 seconds** after it first powers up, it accepts a pairing. Missed it? Press **BOOT** briefly: that reopens the
+   window for 5 minutes. Once paired, it never opens a window by itself again: pairing another controller takes a BOOT
+   press. No physical access, no pairing. That is the entire security model, and it is a feature.
 3. In kvm-it: **Adapter** chip, **Scan for adapters**, **Pair & connect**. On Windows this pairs with no system dialog at all.
 
 From then on, move the cables to the next machine and the app reconnects by itself.
