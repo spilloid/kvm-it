@@ -1233,3 +1233,19 @@ of finding 1 judged honest and sufficient. Two Lows, both fixed:
 | 2 | Low | The accepted list was not cleared on a new selection (harmless: the tick was) | **Confirmed.** Cleared. |
 
 Owed: a Codex `gpt-6-astra` round over the whole release (`main...HEAD`) once its quota resets.
+
+## 2026-11-07 - 0.5.1 release (`v0.5.0..v0.5.1`): review round 67 (Codex `gpt-6-astra`)
+
+The cross-model round owed for rounds 65-66 (Opus stand-in). Read-only, over the tagged release. **NO SIGN-OFF**:
+3 Medium, none reproduced in a file-changing probe (source review, a read-only Windows alias probe, 85 tests). Password
+before tenant check, secret logging and persistence, secret order, dry-run placeholders, value preservation and the
+provisioning guide: no defect. Open, for the next release:
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Medium | Only a yes/no reaches the run, not the states accepted: a picture removed between the app's check and the run's probe is accepted too, dropping a stop nobody approved | **Open.** Pass the accepted states; refuse unless the run's missing set is within them. |
+| 2 | Medium | Windows path aliases (`pics.` and `pics`) pass the tenant-picture collision check, so a renamed tenant can overwrite a state's picture | **Open.** Refuse trailing-dot/space components; regression test. |
+| 3 | Medium | Save profile replaces the file with default permissions (a `0600` file becomes `0644` on Linux/macOS) | **Open.** Copy the original permissions to the temp file before the rename; fail if that fails. |
+
+The same day astra ran a general project review: [reviews/2026-11-07-astra-general.md](reviews/2026-11-07-astra-general.md)
+(26 findings, 6 owner decisions).
