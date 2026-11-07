@@ -1414,7 +1414,7 @@ fn without_text_the_tenant_check_needs_a_picture_or_refuses_to_start() {
     let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: None, ..Default::default() };
     let secrets: Vars = [("username".to_string(), "jane@contoso.com".to_string()), ("password".to_string(), "x".to_string())].into();
     let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
-    assert!(matches!(&r.result, Err(WorkflowError::Reference(_))), "{:?}", r.result);
+    assert!(matches!(&r.result, Err(WorkflowError::Text(_))), "{:?}", r.result);
     assert!(sim.keys.iter().all(|k| k == "release_all"));
     for (from, to, why) in [
         ("tenant_domain = \"contoso.com\"", "tenant_domain = \"contoso\"", "must be a domain"),
@@ -1486,7 +1486,7 @@ fn where_text_cannot_be_read_a_workflow_that_checks_the_sign_in_does_not_start()
     let mut sim = Sim { screens: screens(), confirms: [true].into(), ..Default::default() };
     let r = go(&w, &mut sim, &opts(), None);
     assert!(
-        matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("checks the sign-in by reading the screen") && m.contains("no recogniser")),
+        matches!(&r.result, Err(WorkflowError::Text(m)) if m.contains("checks the sign-in by reading the screen") && m.contains("no recogniser")),
         "{:?}",
         r.result
     );
@@ -1500,7 +1500,7 @@ fn where_text_cannot_be_read_a_workflow_that_checks_the_sign_in_does_not_start()
     let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), ..Default::default() };
     let secrets: Vars = [("username".to_string(), "jane@contoso.com".to_string()), ("password".to_string(), "x".to_string())].into();
     let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
-    assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("checks the sign-in")), "{:?}", r.result);
+    assert!(matches!(&r.result, Err(WorkflowError::Text(m)) if m.contains("checks the sign-in")), "{:?}", r.result);
     assert!(sim.keys.iter().all(|k| k == "release_all"));
 }
 

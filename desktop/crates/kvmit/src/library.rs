@@ -239,7 +239,7 @@ mod tests {
                         self.pos += 1;
                         self.looks_here = 0;
                     }
-                } else if !(0xe0..=0xe7).contains(&k.0) && k.0 != 0x51 {
+                } else if !(0xe0..=0xe7).contains(&k.0) && !(0x4a..=0x52).contains(&k.0) {
                     let here = self.here();
                     self.typed.push(here);
                 }

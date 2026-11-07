@@ -142,7 +142,8 @@ detect = { screen = "oobe-win11/autopilot-signin.png", region = [0.52, 0.12, 0.4
 require = { deployment_mode = "autopilot" }
 next = ["PASSWORD"]
 # Enter is pressed only once the sign-in shows as typed: Caps Lock or a non-US keyboard layout at the target stops here.
-actions = [ { secret_text = "{{username}}" } ]
+# Home moves the text cursor off the last letter, which the reader would otherwise misread.
+actions = [ { secret_text = "{{username}}" }, { key = "HOME" } ]
 verify_typed = "username"
 submit = [ { key = "ENTER" } ]
 timeout = "60s"
@@ -155,7 +156,8 @@ detect = { screen = "oobe-win11/work-signin.png", region = [0.52, 0.12, 0.40, 0.
 require = { deployment_mode = "work_account" }
 next = ["PASSWORD"]
 # Enter is pressed only once the sign-in shows as typed: Caps Lock or a non-US keyboard layout at the target stops here.
-actions = [ { secret_text = "{{username}}" } ]
+# Home moves the text cursor off the last letter, which the reader would otherwise misread.
+actions = [ { secret_text = "{{username}}" }, { key = "HOME" } ]
 verify_typed = "username"
 submit = [ { key = "ENTER" } ]
 timeout = "60s"

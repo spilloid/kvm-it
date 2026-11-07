@@ -436,8 +436,7 @@ pub fn valid_domain(d: &str) -> bool {
 pub const DEFAULT_TEXT_THRESHOLD: f64 = 0.9;
 /// How long a typed value has to appear on screen before `submit` (it is drawn as typed, so this is generous).
 const TYPED_WAIT: Duration = Duration::from_secs(5);
-/// The oldest a frame may be when a check on it (an account shown, a value typed) decides that keys are sent.
-const EVIDENCE_AGE: Duration = Duration::from_secs(3);
+
 const MIN_TIMEOUT: Duration = Duration::from_millis(500);
 
 fn valid_name(s: &str) -> bool {
@@ -1056,6 +1055,8 @@ pub enum WorkflowError {
     /// A state's actions failed to compile (bad key, missing secret, untypable text). Nothing was sent.
     Compile { state: String, error: RunError },
     Reference(String),
+    /// Reading the screen's text failed, was too slow, or is not possible here for a check that needs it.
+    Text(String),
     /// The screen could not be classified with confidence.
     UnknownScreen { best: Option<(String, f64)> },
     /// The screen showed a state the workflow does not allow here.
@@ -1085,6 +1086,7 @@ impl std::fmt::Display for WorkflowError {
         match self {
             WorkflowError::Compile { state, error } => write!(f, "state {state}: {error}"),
             WorkflowError::Reference(s) => write!(f, "cannot load reference image: {s}"),
+            WorkflowError::Text(s) => write!(f, "{s}"),
             WorkflowError::UnknownScreen { best: Some((s, c)) } => write!(
                 f,
                 "the screen was not recognised with confidence (closest: {s} at {:.0}%); stopped without typing",
@@ -1158,6 +1160,10 @@ pub struct WorkflowOptions {
     /// Run although some states have no saved picture (they cannot be recognised). Off by default: such a screen is
     /// usually unknown, but may be taken for a similar state. A dry run never needs it.
     pub allow_missing_pictures: bool,
+    /// The oldest a frame may be (from capture to the end of reading it) when a check on it decides that keys are
+    /// sent: the account shown before a password, a value typed before Enter. 3 s by default; a slow capture
+    /// (a VM's screendump over SSH) needs more.
+    pub evidence_age: Duration,
 }
 
 impl Default for WorkflowOptions {
@@ -1168,6 +1174,7 @@ impl Default for WorkflowOptions {
             settle_frames: 2,
             offer_manual_recovery: true,
             capture_latency: Duration::from_millis(300),
+            evidence_age: Duration::from_secs(3),
             allow_missing_pictures: false,
         }
     }
@@ -1329,7 +1336,7 @@ impl Engine<'_> {
             if reads_sign_in {
                 let mut why = why.clone();
                 self.secrets.scrub(&mut why);
-                return Err(WorkflowError::Reference(format!(
+                return Err(WorkflowError::Text(format!(
                     "this workflow checks the sign-in by reading the screen, and text cannot be read here ({why}); nothing was sent"
                 )));
             }
@@ -1417,7 +1424,7 @@ impl Engine<'_> {
             true => self
                 .host
                 .read_text(frame)
-                .map_err(|e| WorkflowError::Reference(format!("reading the screen's text failed: {e}")))?,
+                .map_err(|e| WorkflowError::Text(format!("reading the screen's text failed: {e}")))?,
             false => Vec::new(),
         };
         for s in &self.wf.states {
@@ -1727,11 +1734,8 @@ impl Engine<'_> {
             self.still_on(s)?;
             let frame = self.last_frame.clone().ok_or(WorkflowError::UnknownScreen { best: None })?;
             let lines = self.read_fresh(&frame)?;
-            let seen = crate::text::typed_shown(&lines, &value);
-            if started.elapsed() > TYPED_WAIT {
-                return Err(WorkflowError::TypedNotShown { state: s.name.clone(), caps_lock: swapped });
-            }
-            match seen {
+            // The frame is fresh (`read_fresh` refuses old evidence); the deadline bounds looking again.
+            match crate::text::typed_shown(&lines, &value) {
                 crate::text::Typed::Shown => {
                     self.emit(WorkflowEvent::TypedVerified { state: s.name.clone(), key: key.to_string() });
                     return Ok(());
@@ -1739,19 +1743,22 @@ impl Engine<'_> {
                 crate::text::Typed::CaseSwapped => swapped = true,
                 crate::text::Typed::Absent => {}
             }
+            if started.elapsed() > TYPED_WAIT {
+                return Err(WorkflowError::TypedNotShown { state: s.name.clone(), caps_lock: swapped });
+            }
         }
     }
 
     /// Read `frame` (just settled, so fresh) enlarged, for small text: a sign-in in a field, an account above a
-    /// password box. The answer must come back while the frame is still recent evidence ([`EVIDENCE_AGE`]); a slow
-    /// read is refused rather than trusted.
+    /// password box. The answer must come back while the frame is still recent evidence
+    /// ([`WorkflowOptions::evidence_age`]); a slow read is refused rather than trusted.
     fn read_fresh(&mut self, frame: &Frame) -> Result<Vec<crate::text::TextLine>, WorkflowError> {
         let big = if frame.width < 2000 { frame.doubled() } else { frame.clone() };
         let asked = Instant::now();
-        let lines = self.host.read_text(&big).map_err(|e| WorkflowError::Reference(format!("reading the screen's text failed: {e}")))?;
+        let lines = self.host.read_text(&big).map_err(|e| WorkflowError::Text(format!("reading the screen's text failed: {e}")))?;
         let age = frame.captured_at.map_or(asked.elapsed(), |t| t.elapsed());
-        if age > EVIDENCE_AGE {
-            return Err(WorkflowError::Reference(format!(
+        if age > self.opts.evidence_age {
+            return Err(WorkflowError::Text(format!(
                 "reading the screen took too long ({} ms): the screen may have changed since; nothing more was sent",
                 age.as_millis()
             )));
@@ -2140,7 +2147,9 @@ pub fn run_workflow(
     if let Err(err) = &mut result {
         // Host diagnostics are free text: scrub them in the returned error as well as in the trace.
         match err {
-            WorkflowError::Reference(m) | WorkflowError::Action { error: RunError::Host(m), .. } => e.secrets.scrub(m),
+            WorkflowError::Reference(m) | WorkflowError::Text(m) | WorkflowError::Action { error: RunError::Host(m), .. } => {
+                e.secrets.scrub(m)
+            }
             _ => {}
         }
         let state = e.ctx.current.clone();

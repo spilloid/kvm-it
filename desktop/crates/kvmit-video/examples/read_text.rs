@@ -1,5 +1,5 @@
 //! Dev tool: print the text the OS's recogniser reads on each picture, with where each line is (fractions of the frame)
-//! and how long the reading took. `cargo run -p kvmit-video --example read_text -- <picture.png>...`
+//! and how long the reading took. `cargo run -p kvmit-video --example read_text -- <picture.png>...` (`DOUBLE=1`: enlarged)
 fn main() {
     for p in std::env::args().skip(1) {
         let frame = match kvmit_video::convert::load_reference(std::path::Path::new(&p)) {
@@ -9,6 +9,8 @@ fn main() {
                 continue;
             }
         };
+        // DOUBLE=1: read it enlarged, as workflows read a typed value or an account.
+        let frame = if std::env::var_os("DOUBLE").is_some() { frame.doubled() } else { frame };
         let t = std::time::Instant::now();
         match kvmit_video::text::read_text(&frame) {
             Ok(lines) => {

@@ -209,6 +209,8 @@ fn main() {
     let mut opts = WorkflowOptions {
         run: RunOptions { key_hold: Duration::ZERO, key_gap: Duration::from_millis(50), poll: Duration::from_millis(500), ..Default::default() },
         observe_timeout: Duration::from_secs(60),
+        // A screendump over SSH takes seconds, and each frame is stamped before it starts.
+        evidence_age: Duration::from_secs(12),
         ..Default::default()
     };
     opts.run.dry_run = args.iter().any(|a| a == "--dry-run");
