@@ -67,6 +67,8 @@ struct Sim {
     missing: Vec<&'static str>,
     /// The text each screen shows, by its grey level (`None`: this host cannot read text). Lines are `|`-separated.
     texts: Option<Vec<(u8, &'static str)>>,
+    /// Once anything is typed, the current screen also shows this line (what the field displays).
+    echo: Option<&'static str>,
 }
 
 impl Host for Sim {
@@ -172,8 +174,10 @@ impl Host for Sim {
     fn read_text(&mut self, frame: &Frame) -> Result<Vec<crate::text::TextLine>, String> {
         let texts = self.texts.as_ref().ok_or("no recogniser")?;
         let shown = texts.iter().find(|(v, _)| *v == frame.gray[0]).map_or("", |(_, t)| *t);
+        let echo = self.echo.filter(|_| self.typed > 0 && self.enters_seen == 0).unwrap_or("");
         Ok(shown
             .split('|')
+            .chain([echo])
             .filter(|l| !l.is_empty())
             .enumerate()
             .map(|(i, l)| crate::text::TextLine { text: l.into(), rect: [0.55, 0.15 + 0.05 * i as f64, 0.3, 0.03] })
@@ -1421,4 +1425,88 @@ fn without_text_the_tenant_check_needs_a_picture_or_refuses_to_start() {
         assert!(e.contains(why), "{e}");
     }
     assert!(valid_domain("mail.contoso.co.uk") && !valid_domain("-bad.com") && !valid_domain("contoso") && !valid_domain("a..b"));
+}
+
+// ---------- what was typed is read back before Enter ----------
+
+fn typed_back(echo: Option<&'static str>, dry: bool) -> (WorkflowReport, Sim) {
+    let src = SIGN_IN.replace(
+        "actions = [ { secret_text = \"{{username}}\" }, { key = \"ENTER\" } ]",
+        "actions = [ { secret_text = \"{{username}}\" } ]
+verify_typed = \"username\"
+submit = [ { key = \"ENTER\" } ]",
+    );
+    let w = Workflow::parse(&src).unwrap();
+    let texts = vec![
+        (20, "Let's set things up for your work or school|Sign in"),
+        (70, "jane@contoso.com|Enter password"),
+        (120, "Setting up your device for work"),
+    ];
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(texts), echo, ..Default::default() };
+    if dry {
+        sim.timeline = Some(sim.screens.iter().flat_map(|f| std::iter::repeat_n(f.clone(), 12)).collect());
+    }
+    let secrets: Vars = [("username".to_string(), "jane@contoso.com".to_string()), ("password".to_string(), "Hunter2!pw".to_string())].into();
+    let o = WorkflowOptions { run: RunOptions { dry_run: dry, ..opts().run }, ..opts() };
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &o, None, &mut |_, _| {});
+    (r, sim)
+}
+
+#[test]
+fn enter_is_pressed_on_the_sign_in_only_once_it_shows_as_typed() {
+    let (r, sim) = typed_back(Some("jane@contoso.com"), false);
+    assert_eq!(r.result, Ok(()));
+    assert_eq!(enters(&sim), 2);
+    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::TypedVerified { state, key } if state == "WORK_SIGNIN" && key == "username")));
+    assert!(!trace_jsonl(&r).contains("jane@contoso.com"));
+}
+
+#[test]
+fn caps_lock_or_another_layout_at_the_target_stops_before_enter() {
+    for (echo, caps) in [(Some("JANE@CONTOSO.COM"), true), (Some("jane\"contoso.com"), false), (None, false)] {
+        let (r, sim) = typed_back(echo, false);
+        assert!(matches!(&r.result, Err(WorkflowError::TypedNotShown { state, caps_lock }) if state == "WORK_SIGNIN" && *caps_lock == caps), "{echo:?}: {:?}", r.result);
+        assert_eq!(enters(&sim), 0, "{echo:?}: Enter was not pressed");
+        let msg = r.result.unwrap_err().to_string();
+        assert!(!msg.contains("jane"), "the value is never in the message: {msg}");
+    }
+    // A dry run typed nothing to read back.
+    let (r, _) = typed_back(None, true);
+    assert_eq!(r.result, Ok(()), "{:?}", r.result);
+}
+
+#[test]
+fn where_text_cannot_be_read_the_sign_in_is_sent_unchecked_and_the_trace_says_so() {
+    // Recognised by pictures, read back by nobody: as before text could be read, and recorded.
+    let src = OOBE.replace(
+        "actions = [ { text = \"{{region}}\" }, { key = \"ENTER\" } ]",
+        "actions = [ { text = \"{{region}}\" } ]
+verify_typed = \"region\"
+submit = [ { key = \"ENTER\" } ]",
+    );
+    let w = Workflow::parse(&src).unwrap();
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()));
+    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::TypedNotChecked { state, key, why } if state == "REGION" && key == "region" && why == "no recogniser")));
+}
+
+#[test]
+fn verify_typed_needs_its_actions_and_submit() {
+    let base = SIGN_IN.replace(
+        "actions = [ { secret_text = \"{{username}}\" }, { key = \"ENTER\" } ]",
+        "actions = [ { secret_text = \"{{username}}\" } ]
+verify_typed = \"username\"
+submit = [ { key = \"ENTER\" } ]",
+    );
+    assert!(Workflow::parse(&base).is_ok());
+    for (from, to, why) in [
+        ("verify_typed = \"username\"", "verify_typed = \"nobody\"", "must name a secret or a config value"),
+        ("submit = [ { key = \"ENTER\" } ]", "", "needs `actions`"),
+        ("verify_typed = \"username\"
+", "", "`submit` is sent after verify_typed"),
+    ] {
+        let e = Workflow::parse(&base.replacen(from, to, 1)).unwrap_err();
+        assert!(e.contains(why), "{e}");
+    }
 }

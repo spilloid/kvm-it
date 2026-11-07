@@ -84,6 +84,12 @@ pub struct StateDef {
     /// Before acting, the screen must show the configured tenant's branding (and not another allowed tenant's).
     pub verify_tenant: bool,
     pub actions: Vec<Step>,
+    /// After `actions`, read the screen back: the value of this secret (or config value) must show as typed, exactly,
+    /// before `submit` is sent. Letters with their case swapped mean Caps Lock is on at the target; anything else, a
+    /// different keyboard layout there or a field that did not take the text. Either stops the run before `submit`.
+    pub verify_typed: Option<String>,
+    /// Sent once `verify_typed` has seen the text (only with it): pressing Enter on what was checked.
+    pub submit: Vec<Step>,
     /// How long to wait, after acting, for the screen to move on.
     pub timeout: Duration,
     /// Re-run the actions this many times if the screen did not move on. Only honoured with `retry_safe`.
@@ -249,6 +255,10 @@ struct RawState {
     verify_tenant: bool,
     #[serde(default)]
     actions: Vec<RawStep>,
+    #[serde(default)]
+    verify_typed: Option<String>,
+    #[serde(default)]
+    submit: Vec<RawStep>,
     #[serde(default)]
     timeout: Option<String>,
     #[serde(default)]
@@ -419,6 +429,8 @@ pub fn valid_domain(d: &str) -> bool {
 pub const DEFAULT_TEXT_THRESHOLD: f64 = 0.9;
 /// How closely the password page must show the sign-in typed: one misread character in twenty.
 const ACCOUNT_MATCH: f64 = 0.95;
+/// How long a typed value has to appear on screen before `submit` (it is drawn as typed, so this is generous).
+const TYPED_WAIT: Duration = Duration::from_secs(3);
 const MIN_TIMEOUT: Duration = Duration::from_millis(500);
 
 fn valid_name(s: &str) -> bool {
@@ -637,7 +649,24 @@ impl Workflow {
             }
             let actions: Vec<Step> = r.actions.into_iter().map(step_from_raw).collect::<Result<_, _>>()?;
             check_actions(&r.name, &actions, &raw.secrets)?;
-            if total_pause(&actions) > MAX_ACTION_PAUSE {
+            let submit: Vec<Step> = r.submit.into_iter().map(step_from_raw).collect::<Result<_, _>>()?;
+            check_actions(&r.name, &submit, &raw.secrets)?;
+            match &r.verify_typed {
+                Some(v) if !raw.secrets.contains_key(v) && !raw.config.contains_key(v) => {
+                    return Err(format!("state {:?}: verify_typed {v:?} must name a secret or a config value", r.name))
+                }
+                Some(_) if actions.is_empty() || submit.is_empty() => {
+                    return Err(format!(
+                        "state {:?}: verify_typed needs `actions` (that type it) and `submit` (sent once it shows)",
+                        r.name
+                    ))
+                }
+                None if !submit.is_empty() => {
+                    return Err(format!("state {:?}: `submit` is sent after verify_typed, which the state lacks", r.name))
+                }
+                _ => {}
+            }
+            if total_pause(&actions) + total_pause(&submit) > MAX_ACTION_PAUSE {
                 return Err(format!(
                     "state {:?}: its actions pause for more than 2s in total; wait in a state instead, so the engine looks again",
                     r.name
@@ -646,6 +675,8 @@ impl Workflow {
             states.push(StateDef {
                 timeout,
                 actions,
+                verify_typed: r.verify_typed,
+                submit,
                 name: r.name,
                 description: r.description,
                 detect: Detect { screens, threshold, region: r.detect.region, text, text_threshold },
@@ -856,6 +887,10 @@ pub enum WorkflowEvent {
     StateEntered { state: String, from: Option<String>, reason: String },
     GuardChecked { state: String, ok: bool, detail: String },
     TenantVerified { state: String, tenant: String, confidence: f64 },
+    /// What was typed for `key` shows on screen as typed (the value itself is never recorded).
+    TypedVerified { state: String, key: String },
+    /// What was typed for `key` could not be read back: this computer cannot read text (`why`).
+    TypedNotChecked { state: String, key: String, why: String },
     HumanGateRequested { state: String, message: String, approved: bool },
     /// A `manual` state: the operator was asked to do this by hand; the engine now waits for the screen to move on.
     ManualStepRequested { state: String, message: String, timeout_ms: u64 },
@@ -1018,6 +1053,8 @@ pub enum WorkflowError {
     TenantMismatch { state: String, expected: String },
     /// The page does not show the sign-in typed, as an account in the profile's domain.
     AccountNotShown { state: String, domain: String },
+    /// What was typed does not show as typed: `caps_lock` when it showed with its letters' case swapped.
+    TypedNotShown { state: String, caps_lock: bool },
     GateDeclined { state: String },
     TimedOut { state: String, attempts: u32 },
     ResumeMismatch { checkpoint: String },
@@ -1056,6 +1093,14 @@ impl std::fmt::Display for WorkflowError {
             WorkflowError::AccountNotShown { state, domain } => write!(
                 f,
                 "state {state}: the page does not show the sign-in entered (an account in {domain}); stopped before the password"
+            ),
+            WorkflowError::TypedNotShown { state, caps_lock: true } => write!(
+                f,
+                "state {state}: what was typed shows with upper and lower case swapped: Caps Lock looks on at the target. Turn it off, clear the field, and run again; nothing more was sent"
+            ),
+            WorkflowError::TypedNotShown { state, caps_lock: false } => write!(
+                f,
+                "state {state}: what was typed does not show on screen as typed (the target may use another keyboard layout than US, or the field did not take it); nothing more was sent"
             ),
             WorkflowError::GateDeclined { state } => write!(f, "state {state}: the operator stopped the run"),
             WorkflowError::TimedOut { state, attempts } => {
@@ -1141,6 +1186,11 @@ impl WorkflowReport {
     }
 }
 
+/// Where a state's compiled `submit` steps are kept beside its actions (state names cannot contain `/`).
+pub fn submit_key(state: &str) -> String {
+    format!("{state}/submit")
+}
+
 /// Compile every state's actions before anything runs: a missing secret or an untypable character stops the run
 /// before the first key, as for scripts.
 pub fn compile_workflow(
@@ -1159,9 +1209,11 @@ pub fn compile_workflow(
     }
     let mut out = BTreeMap::new();
     for s in &wf.states {
-        let script = Script { name: s.name.clone(), description: String::new(), vars: defs.clone(), steps: s.actions.clone() };
-        let ops = compile(&script, &vars, layout).map_err(|error| WorkflowError::Compile { state: s.name.clone(), error })?;
-        out.insert(s.name.clone(), ops);
+        for (key, steps) in [(s.name.clone(), &s.actions), (submit_key(&s.name), &s.submit)] {
+            let script = Script { name: s.name.clone(), description: String::new(), vars: defs.clone(), steps: steps.clone() };
+            let ops = compile(&script, &vars, layout).map_err(|error| WorkflowError::Compile { state: s.name.clone(), error })?;
+            out.insert(key, ops);
+        }
     }
     for v in vars.values_mut() {
         zeroize::Zeroize::zeroize(v);
@@ -1190,6 +1242,8 @@ struct Engine<'a> {
     text_unreadable: Option<String>,
     /// The sign-in typed (the `account` secret), for the tenant check; empty when there is none. Wiped on drop.
     account: Secrets,
+    /// The values states read back after typing (`verify_typed`), by name. Wiped on drop.
+    typed: BTreeMap<String, Secrets>,
     /// The frame behind the latest settled classification: later checks use the same evidence.
     last_frame: Option<Frame>,
     /// The newest capture number seen. Frames at or below a boundary taken after acting were captured before the
@@ -1246,7 +1300,7 @@ impl Engine<'_> {
     /// only with `allow_missing_pictures`; a dry run, which sends nothing, always does.
     fn note_missing_pictures(&mut self) -> Result<(), WorkflowError> {
         let wf = self.wf;
-        if wf.states.iter().any(|s| !s.detect.text.is_empty()) {
+        if wf.states.iter().any(|s| !s.detect.text.is_empty() || s.verify_typed.is_some()) {
             // A blank frame tells whether this computer reads text at all, before any screen depends on it.
             let blank = Frame::new(64, 36, vec![255; 64 * 36]).expect("valid size");
             self.text_unreadable = self.host.read_text(&blank).err();
@@ -1619,6 +1673,10 @@ impl Engine<'_> {
             steps: ops.len(),
             dry_run: self.opts.run.dry_run,
         });
+        self.send(s, ops)
+    }
+
+    fn send(&mut self, s: &StateDef, ops: &[(usize, Op)]) -> Result<(), WorkflowError> {
         if ops.is_empty() {
             return Ok(());
         }
@@ -1627,6 +1685,48 @@ impl Engine<'_> {
             RunError::Cancelled => WorkflowError::Cancelled,
             error => WorkflowError::Action { state: s.name.clone(), error },
         })
+    }
+
+    /// Right after typing `key`'s value: a frame captured after the typing must show it as typed. The field may take a
+    /// moment to draw, so fresh frames are read for up to [`TYPED_WAIT`]. A dry run typed nothing and checks nothing.
+    fn verify_typed(&mut self, s: &StateDef, key: &str) -> Result<(), WorkflowError> {
+        if self.opts.run.dry_run {
+            return Ok(());
+        }
+        if let Some(why) = self.text_unreadable.clone() {
+            // As before text could be read: nothing to check with, and the trace says so.
+            self.emit(WorkflowEvent::TypedNotChecked { state: s.name.clone(), key: key.to_string(), why });
+            return Ok(());
+        }
+        let value = self.typed.get(key).and_then(|v| v.0.first()).cloned().unwrap_or_default();
+        let after = self.host.screen().and_then(|f| f.seq).or(self.seen_seq);
+        let started = Instant::now();
+        let mut swapped = false;
+        loop {
+            self.check()?;
+            if let Some(frame) = self.host.screen() {
+                let fresh = match (frame.seq, after) {
+                    (Some(sq), Some(a)) => sq > a,
+                    (Some(_), None) => true,
+                    (None, _) => return Err(WorkflowError::NoFrameNumbers),
+                };
+                if fresh {
+                    let lines = self.host.read_text(&frame).map_err(|e| WorkflowError::Reference(format!("reading the screen's text failed: {e}")))?;
+                    match crate::text::typed_shown(&lines, &value) {
+                        crate::text::Typed::Shown => {
+                            self.emit(WorkflowEvent::TypedVerified { state: s.name.clone(), key: key.to_string() });
+                            return Ok(());
+                        }
+                        crate::text::Typed::CaseSwapped => swapped = true,
+                        crate::text::Typed::Absent => {}
+                    }
+                }
+            }
+            if started.elapsed() >= TYPED_WAIT {
+                return Err(WorkflowError::TypedNotShown { state: s.name.clone(), caps_lock: swapped });
+            }
+            self.host.sleep(self.opts.run.poll.max(Duration::from_millis(50)));
+        }
     }
 
     /// Record a verified transition out of `from`: history, its derived facts, and entering `to`.
@@ -1751,7 +1851,15 @@ impl Engine<'_> {
                         message: message.clone(),
                         timeout_ms: s.timeout.as_millis() as u64,
                     }),
-                    None => self.act(&s, ops, attempt)?,
+                    None => {
+                        self.act(&s, ops, attempt)?;
+                        if let Some(key) = &s.verify_typed {
+                            self.verify_typed(&s, key)?;
+                            // The screen must still be this state's before anything more is sent.
+                            self.still_on(&s)?;
+                            self.send(&s, &compiled[&submit_key(&name)])?;
+                        }
+                    }
                 }
                 // Everything captured up to now predates the action's effect.
                 let sent = Instant::now();
@@ -1941,6 +2049,15 @@ pub fn run_workflow(
         missing: BTreeSet::new(),
         text_unreadable: None,
         account: Secrets(wf.account.as_ref().and_then(|a| secrets.get(a).cloned()).into_iter().collect()),
+        typed: wf
+            .states
+            .iter()
+            .filter_map(|s| s.verify_typed.clone())
+            .map(|k| {
+                let v = secrets.get(&k).or_else(|| wf.config.get(&k)).cloned();
+                (k, Secrets(v.into_iter().collect()))
+            })
+            .collect(),
         last_frame: None,
         seen_seq: None,
         secrets: secret_values,
@@ -1971,7 +2088,7 @@ pub fn run_workflow(
         }
         e.note_missing_pictures()?;
         for (i, st) in wf.states.iter().enumerate() {
-            if action_time(&compiled[&st.name], &opts.run, true) > MAX_ACTION_TIME {
+            if action_time(&compiled[&st.name], &opts.run, true) + action_time(&compiled[&submit_key(&st.name)], &opts.run, true) > MAX_ACTION_TIME {
                 return Err(WorkflowError::Options(format!(
                     "state {} (in file order): its actions would take more than 5s to send, during which nothing is                      watched; split them across states",
                     i + 1

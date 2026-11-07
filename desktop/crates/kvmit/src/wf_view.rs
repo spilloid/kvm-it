@@ -84,6 +84,10 @@ pub fn timeline(trace: &[TraceEntry]) -> Vec<Row> {
                 WorkflowEvent::TenantVerified { tenant, confidence, .. } => {
                     (format!("Tenant {tenant} confirmed ({:.0}% match)", confidence * 100.0), Health::Good)
                 }
+                WorkflowEvent::TypedVerified { state, key } => (format!("{state}: {key} shows as typed"), Health::Good),
+                WorkflowEvent::TypedNotChecked { state, key, why } => {
+                    (format!("{state}: {key} sent without reading it back ({why})"), Health::Working)
+                }
                 WorkflowEvent::GuardChecked { state, ok: false, detail } => {
                     (format!("Check failed in {state}: {detail}"), Health::Bad)
                 }

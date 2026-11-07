@@ -100,6 +100,72 @@ pub fn phrase_score(text: &str, phrase: &str) -> f64 {
     (1.0 - best as f64 / p.len() as f64).max(0.0)
 }
 
+/// Whether a typed value shows on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Typed {
+    Shown,
+    /// Shown with every letter's case swapped: Caps Lock is on at the target.
+    CaseSwapped,
+    Absent,
+}
+
+/// Whether `value` (just typed) shows on one of `lines`, case and all. Spaces are ignored (readers split and join
+/// words differently) and one misread letter or digit in ten is allowed ("m" read as "rn"); every other character
+/// must be exactly there, since a different keyboard layout shows itself in symbols (`"` typed for `@`). A value
+/// without letters cannot show Caps Lock.
+pub fn typed_shown(lines: &[TextLine], value: &str) -> Typed {
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<Vec<char>>();
+    let want = squash(value);
+    if want.is_empty() {
+        return Typed::Absent;
+    }
+    let swapped: Vec<char> = want
+        .iter()
+        .flat_map(|c| if c.is_lowercase() { c.to_uppercase().collect::<Vec<_>>() } else { c.to_lowercase().collect() })
+        .collect();
+    let has_letters = want.iter().any(|c| c.is_alphabetic());
+    let (mut best, mut best_swapped) = (0.0f64, 0.0f64);
+    for l in lines {
+        let t = squash(&l.text);
+        best = best.max(approx_in(&t, &want));
+        if has_letters {
+            best_swapped = best_swapped.max(approx_in(&t, &swapped));
+        }
+    }
+    const MATCH: f64 = 0.9;
+    if best >= MATCH && best >= best_swapped {
+        Typed::Shown
+    } else if best_swapped >= MATCH && has_letters {
+        Typed::CaseSwapped
+    } else {
+        Typed::Absent
+    }
+}
+
+/// One minus the fewest edits turning some stretch of `t` into `p`, over `p`'s length (case-sensitive, anywhere).
+/// Only letters and digits may be edited: a symbol that differs, is missing or is extra rules the stretch out.
+fn approx_in(t: &[char], p: &[char]) -> f64 {
+    let far = t.len() + p.len() + 1;
+    let cost = |c: char| if c.is_alphanumeric() { 1 } else { far };
+    let mut prev: Vec<usize> = vec![0; p.len() + 1];
+    for j in 1..=p.len() {
+        prev[j] = (prev[j - 1] + cost(p[j - 1])).min(far);
+    }
+    let mut best = prev[p.len()];
+    let mut cur = vec![0usize; p.len() + 1];
+    for tc in t {
+        cur[0] = 0;
+        for j in 1..=p.len() {
+            let pc = p[j - 1];
+            let sub = if pc == *tc { 0 } else if pc.is_alphanumeric() && tc.is_alphanumeric() { 1 } else { far };
+            cur[j] = (prev[j - 1] + sub).min(prev[j] + cost(*tc)).min(cur[j - 1] + cost(pc)).min(far);
+        }
+        best = best.min(cur[p.len()]);
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    (1.0 - best as f64 / p.len() as f64).max(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +197,22 @@ mod tests {
         assert!(phrase_score("unsigned in", "sign in") < 0.9);
         assert_eq!(phrase_score("please sign in now", "sign in"), 1.0);
         assert_eq!(phrase_score("sign in", "sign in"), 1.0);
+    }
+
+    #[test]
+    fn a_typed_value_is_shown_shown_with_caps_lock_or_absent() {
+        let lines = |t: &str| vec![line("Sign in", 0.5, 0.4), line(t, 0.5, 0.47)];
+        assert_eq!(typed_shown(&lines("jane.doe@contoso.com"), "jane.doe@contoso.com"), Typed::Shown);
+        assert_eq!(typed_shown(&lines("jane. doe@contoso.com"), "jane.doe@contoso.com"), Typed::Shown, "spaces ignored");
+        assert_eq!(typed_shown(&lines("jane.doe@contoso.corn"), "jane.doe@contoso.com"), Typed::Shown, "one misread");
+        assert_eq!(typed_shown(&lines("JANE.DOE@CONTOSO.COM"), "jane.doe@contoso.com"), Typed::CaseSwapped);
+        assert_eq!(typed_shown(&lines("jANE@cONTOSO.COM"), "Jane@Contoso.com"), Typed::CaseSwapped);
+        // A UK layout types " for @: the value is not there.
+        assert_eq!(typed_shown(&lines("jane.doe\"contoso.com"), "jane.doe@contoso.com"), Typed::Absent, "a symbol must be exact");
+        assert_eq!(typed_shown(&lines("jane.doecontoso.com"), "jane.doe@contoso.com"), Typed::Absent, "or there");
+        assert_eq!(typed_shown(&lines("someone@example.com"), "jane.doe@contoso.com"), Typed::Absent);
+        assert_eq!(typed_shown(&lines("12345"), "12345"), Typed::Shown);
+        assert_eq!(typed_shown(&lines(""), ""), Typed::Absent);
     }
 
     #[test]

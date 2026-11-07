@@ -141,7 +141,10 @@ description = "Welcome to your organisation: sign in (Windows Autopilot)"
 detect = { screen = "oobe-win11/autopilot-signin.png", region = [0.52, 0.12, 0.40, 0.75], text = ["Welcome to", "Sign in"] }
 require = { deployment_mode = "autopilot" }
 next = ["PASSWORD"]
-actions = [ { secret_text = "{{username}}" }, { key = "ENTER" } ]
+# Enter is pressed only once the sign-in shows as typed: Caps Lock or a non-US keyboard layout at the target stops here.
+actions = [ { secret_text = "{{username}}" } ]
+verify_typed = "username"
+submit = [ { key = "ENTER" } ]
 timeout = "60s"
 derive = { enrolment = "Windows Autopilot" }
 
@@ -151,7 +154,10 @@ description = "Let's set things up for your work or school: sign in"
 detect = { screen = "oobe-win11/work-signin.png", region = [0.52, 0.12, 0.40, 0.75], text = ["Let's set things up for your work or school"] }
 require = { deployment_mode = "work_account" }
 next = ["PASSWORD"]
-actions = [ { secret_text = "{{username}}" }, { key = "ENTER" } ]
+# Enter is pressed only once the sign-in shows as typed: Caps Lock or a non-US keyboard layout at the target stops here.
+actions = [ { secret_text = "{{username}}" } ]
+verify_typed = "username"
+submit = [ { key = "ENTER" } ]
 timeout = "60s"
 derive = { enrolment = "Microsoft Entra join" }
 
