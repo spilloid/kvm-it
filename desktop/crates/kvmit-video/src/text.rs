@@ -139,9 +139,68 @@ mod imp {
 #[cfg(target_os = "macos")]
 mod imp {
     use super::{Frame, TextLine};
+    use objc2::AllocAnyThread;
+    use objc2_core_foundation::CFRetained;
+    use objc2_core_video::{
+        kCVPixelFormatType_OneComponent8, CVPixelBuffer, CVPixelBufferCreate, CVPixelBufferGetBaseAddress,
+        CVPixelBufferGetBytesPerRow, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
+    };
+    use objc2_foundation::{NSArray, NSDictionary, NSString};
+    use objc2_vision::{VNImageRequestHandler, VNRecognizeTextRequest, VNRequest, VNRequestTextRecognitionLevel};
+    use std::ptr::NonNull;
 
-    pub fn read_text(_frame: &Frame) -> Result<Vec<TextLine>, String> {
-        Err("reading text on macOS (Apple Vision) is not built yet".into())
+    /// The frame copied into a one-channel 8-bit pixel buffer, row by row (the buffer's rows may be padded).
+    fn pixel_buffer(frame: &Frame) -> Result<CFRetained<CVPixelBuffer>, String> {
+        let mut out: *mut CVPixelBuffer = std::ptr::null_mut();
+        // SAFETY: `out` is a valid place for the created buffer; no allocator or attributes are passed.
+        let r = unsafe {
+            CVPixelBufferCreate(None, frame.width, frame.height, kCVPixelFormatType_OneComponent8, None, NonNull::from(&mut out))
+        };
+        let buf = NonNull::new(out).filter(|_| r == 0).ok_or(format!("could not make a picture for Vision (CoreVideo {r})"))?;
+        // SAFETY: created above with a +1 retain count, which `CFRetained` takes over.
+        let buf = unsafe { CFRetained::from_raw(buf) };
+        // SAFETY: locked for writing, written within its rows and row length, then unlocked.
+        unsafe {
+            if CVPixelBufferLockBaseAddress(&buf, CVPixelBufferLockFlags(0)) != 0 {
+                return Err("could not write the picture for Vision".into());
+            }
+            let base = CVPixelBufferGetBaseAddress(&buf) as *mut u8;
+            let stride = CVPixelBufferGetBytesPerRow(&buf);
+            if !base.is_null() && stride >= frame.width {
+                for y in 0..frame.height {
+                    std::ptr::copy_nonoverlapping(frame.gray.as_ptr().add(y * frame.width), base.add(y * stride), frame.width);
+                }
+            }
+            CVPixelBufferUnlockBaseAddress(&buf, CVPixelBufferLockFlags(0));
+            if base.is_null() || stride < frame.width {
+                return Err("the picture for Vision has no memory".into());
+            }
+        }
+        Ok(buf)
+    }
+
+    pub fn read_text(frame: &Frame) -> Result<Vec<TextLine>, String> {
+        let buf = pixel_buffer(frame)?;
+        let request = VNRecognizeTextRequest::new();
+        request.setRecognitionLevel(VNRequestTextRecognitionLevel::Accurate);
+        request.setRecognitionLanguages(&NSArray::from_retained_slice(&[NSString::from_str("en-US")]));
+        // Setup screens are interface text, not prose: correcting words towards a dictionary would change names.
+        request.setUsesLanguageCorrection(false);
+        // SAFETY: an empty options dictionary is valid for any image request handler.
+        let handler = unsafe { VNImageRequestHandler::initWithCVPixelBuffer_options(VNImageRequestHandler::alloc(), &buf, &NSDictionary::new()) };
+        let requests: objc2::rc::Retained<NSArray<VNRequest>> = NSArray::from_slice(&[&**request]);
+        handler.performRequests_error(&requests).map_err(|e| format!("Vision could not read the screen: {}", e.localizedDescription()))?;
+        let mut lines = Vec::new();
+        for obs in request.results().unwrap_or_default().iter() {
+            let Some(top) = obs.topCandidates(1).firstObject() else { continue };
+            // SAFETY: a recognised text observation always has a bounding box.
+            let b = unsafe { obs.boundingBox() };
+            // Vision's box is normalised with its origin at the bottom left; frames are top-left.
+            let (x, w, h) = (b.origin.x, b.size.width, b.size.height);
+            let y = 1.0 - b.origin.y - h;
+            lines.push(TextLine { text: top.string().to_string(), rect: [x, y, w, h] });
+        }
+        Ok(lines)
     }
 }
 
