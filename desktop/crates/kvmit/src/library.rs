@@ -215,11 +215,16 @@ mod tests {
             pub typed: Vec<&'static str>,
             /// What a sign-in field shows once typed into (the test's sign-in, or how the target mangled it).
             pub echo: &'static str,
+            /// The text cursor is at the start of the field (Home after typing): until then it sits on the last letter,
+            /// which the reader drops, as Windows OCR does.
+            home: bool,
+            /// The screen each navigation key (Home, End, arrows, Page Up/Down, Delete) landed on.
+            pub nav: Vec<&'static str>,
         }
 
         impl Target {
             pub fn new(screens: Vec<(&'static str, Next)>) -> Target {
-                Target { screens, pos: 0, looks_here: 0, seq: 0, typed: Vec::new(), echo: "ada@contoso.com" }
+                Target { screens, pos: 0, looks_here: 0, seq: 0, typed: Vec::new(), echo: "ada@contoso.com", home: false, nav: Vec::new() }
             }
             fn here(&self) -> &'static str {
                 self.screens[self.pos].0
@@ -239,9 +244,14 @@ mod tests {
                         self.pos += 1;
                         self.looks_here = 0;
                     }
-                } else if !(0xe0..=0xe7).contains(&k.0) && !(0x4a..=0x52).contains(&k.0) {
+                } else if (0x4a..=0x52).contains(&k.0) {
+                    let here = self.here();
+                    self.nav.push(here);
+                    self.home = k.0 == 0x4a;
+                } else if !(0xe0..=0xe7).contains(&k.0) {
                     let here = self.here();
                     self.typed.push(here);
+                    self.home = false;
                 }
                 Ok(())
             }
@@ -290,7 +300,8 @@ mod tests {
                     _ => "",
                 };
                 let echo = match (self.here(), self.typed_on(self.here())) {
-                    ("autopilot-signin" | "work-signin", n) if n > 0 => self.echo,
+                    ("autopilot-signin" | "work-signin", n) if n > 0 && self.home => self.echo,
+                    ("autopilot-signin" | "work-signin", n) if n > 0 => &self.echo[..self.echo.len() - 1],
                     _ => "",
                 };
                 Ok(text
@@ -358,6 +369,7 @@ mod tests {
         assert_eq!(t.typed_on("autopilot-signin"), "ada@contoso.com".len());
         assert_eq!(t.typed_on("tenant-contoso"), "pw-123".len(), "the password only on the verified password page");
         assert_eq!(t.typed.len(), "ada@contoso.com".len() + "pw-123".len(), "nothing typed anywhere else");
+        assert_eq!(t.nav, ["autopilot-signin"], "Home only on the sign-in page, after typing");
         assert_eq!(r.context.derived["enrolment"].0, "Windows Autopilot");
 
         // Work or school account: licence, device name by hand, "work or school", sign-in, privacy by hand.

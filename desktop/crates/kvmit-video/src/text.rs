@@ -124,6 +124,13 @@ mod imp {
             let mut out = Vec::new();
             std::io::Read::read_to_end(&mut stdout, &mut out).map(|_| out)
         });
+        // Drained as it is written: warnings filling the pipe would otherwise stall tesseract until it is killed.
+        let mut stderr = child.stderr.take().expect("piped");
+        let errors = std::thread::spawn(move || {
+            let mut err = String::new();
+            let _ = std::io::Read::read_to_string(&mut stderr, &mut err);
+            err
+        });
         // Killed if it outlives the reading's time limit, so a hung tesseract does not linger.
         let deadline = std::time::Instant::now() + super::READ_TIMEOUT;
         let status = loop {
@@ -140,11 +147,8 @@ mod imp {
         };
         let _ = writer.join();
         let out = reader.join().map_err(|_| "tesseract: reading its output failed".to_string())?.map_err(|e| format!("tesseract: {e}"))?;
+        let err = errors.join().unwrap_or_default();
         if !status.success() {
-            let mut err = String::new();
-            if let Some(mut e) = child.stderr.take() {
-                let _ = std::io::Read::read_to_string(&mut e, &mut err);
-            }
             return Err(format!("tesseract failed: {}", err.trim()));
         }
         Ok(parse_tsv(&String::from_utf8_lossy(&out), frame.width as f64, frame.height as f64))

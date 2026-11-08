@@ -434,6 +434,10 @@ pub fn valid_domain(d: &str) -> bool {
 }
 /// How closely each detect phrase must be found: one misread character in ten still matches.
 pub const DEFAULT_TEXT_THRESHOLD: f64 = 0.9;
+/// The largest side of a picture handed to a text reader once enlarged.
+const MAX_READ_SIDE: usize = 2600;
+/// The most `WorkflowOptions::evidence_age` may be: beyond it a check on a picture says little about the screen now.
+const MAX_EVIDENCE_AGE: Duration = Duration::from_secs(30);
 /// How long a typed value has to appear on screen before `submit` (it is drawn as typed, so this is generous).
 const TYPED_WAIT: Duration = Duration::from_secs(5);
 
@@ -1318,7 +1322,8 @@ impl Engine<'_> {
     /// only with `allow_missing_pictures`; a dry run, which sends nothing, always does.
     fn note_missing_pictures(&mut self) -> Result<(), WorkflowError> {
         let wf = self.wf;
-        if wf.states.iter().any(|s| !s.detect.text.is_empty() || s.verify_typed.is_some()) {
+        let reads_account = wf.config.contains_key(TENANT_DOMAIN) && wf.states.iter().any(|s| s.verify_tenant);
+        if reads_account || wf.states.iter().any(|s| !s.detect.text.is_empty() || s.verify_typed.is_some()) {
             // A blank frame tells whether this computer reads text at all, before any screen depends on it.
             let blank = Frame::new(64, 36, vec![255; 64 * 36]).expect("valid size");
             self.text_unreadable = self.host.read_text(&blank).err();
@@ -1610,6 +1615,13 @@ impl Engine<'_> {
             Some(st) => return Err(WorkflowError::Unexpected { expected: vec![here], saw: st }),
             None => return Err(Self::unknown(look.obs)),
         }
+        // Keys follow at once: the frame that settled the look must still be recent (classifying it, reading its text
+        // included), or the screen may have moved on under them.
+        if let Some(age) = self.last_frame.as_ref().and_then(|f| f.captured_at).map(|t| t.elapsed()) {
+            if age > self.opts.evidence_age {
+                return Err(self.too_old(age));
+            }
+        }
         if s.verify_tenant {
             self.verify_tenant(s)?;
         }
@@ -1672,9 +1684,10 @@ impl Engine<'_> {
     fn verify_account_shown(&mut self, s: &StateDef) -> Result<(), WorkflowError> {
         let domain = self.wf.config[TENANT_DOMAIN].to_lowercase();
         let not_shown = || WorkflowError::AccountNotShown { state: s.name.clone(), domain: domain.clone() };
-        // The frame that just settled this state (`still_on` looks right before each burst of keys), read enlarged.
+        // The frame that just settled this state (`still_on` looks right before each burst of keys), its region read
+        // enlarged.
         let frame = self.last_frame.clone().ok_or_else(not_shown)?;
-        let lines = self.read_fresh(&frame)?;
+        let lines = self.read_fresh(&frame, s.detect.region)?;
         // Whole addresses only, compared exactly (case aside): a near miss is another account, and so another
         // organisation's page.
         let accounts = crate::text::accounts_shown(&lines);
@@ -1720,8 +1733,9 @@ impl Engine<'_> {
 
     /// Right after typing `key`'s value, and right before `submit`: a fresh, settled look must still be this state
     /// ([`Self::still_on`]: only frames captured after this moment, past the capture latency) and that very frame must
-    /// show the value whole, as typed. A field drawn with its text cursor over a letter reads wrong, so looks repeat
-    /// for up to [`TYPED_WAIT`]; a late success does not count. A dry run typed nothing and checks nothing.
+    /// show the value whole, as typed, in the state's region. A field drawn with its text cursor over a letter reads
+    /// wrong, so looks repeat for up to [`TYPED_WAIT`] (each look's frame is fresh: [`Self::read_fresh`] bounds its
+    /// age). A dry run typed nothing and checks nothing.
     fn verify_typed(&mut self, s: &StateDef, key: &str) -> Result<(), WorkflowError> {
         if self.opts.run.dry_run {
             return Ok(());
@@ -1733,7 +1747,7 @@ impl Engine<'_> {
             self.check()?;
             self.still_on(s)?;
             let frame = self.last_frame.clone().ok_or(WorkflowError::UnknownScreen { best: None })?;
-            let lines = self.read_fresh(&frame)?;
+            let lines = self.read_fresh(&frame, s.detect.region)?;
             // The frame is fresh (`read_fresh` refuses old evidence); the deadline bounds looking again.
             match crate::text::typed_shown(&lines, &value) {
                 crate::text::Typed::Shown => {
@@ -1752,18 +1766,33 @@ impl Engine<'_> {
     /// Read `frame` (just settled, so fresh) enlarged, for small text: a sign-in in a field, an account above a
     /// password box. The answer must come back while the frame is still recent evidence
     /// ([`WorkflowOptions::evidence_age`]); a slow read is refused rather than trusted.
-    fn read_fresh(&mut self, frame: &Frame) -> Result<Vec<crate::text::TextLine>, WorkflowError> {
-        let big = if frame.width < 2000 { frame.doubled() } else { frame.clone() };
-        let asked = Instant::now();
+    fn read_fresh(&mut self, frame: &Frame, region: Option<[f64; 4]>) -> Result<Vec<crate::text::TextLine>, WorkflowError> {
+        // A live check needs the frame's capture time: without it, its age cannot be told.
+        let Some(captured) = frame.captured_at.or(if self.opts.run.dry_run { Some(Instant::now()) } else { None }) else {
+            return Err(WorkflowError::Text(
+                "this video source does not say when its pictures were taken, which checking the sign-in needs".into(),
+            ));
+        };
+        // Only the state's region (no text elsewhere on screen can stand in for the field), enlarged while it stays
+        // within what every recogniser reads (Windows OCR's limit was 2600 pixels on older builds).
+        let part = match region {
+            Some([x, y, w, h]) => frame.crop(x, y, w, h),
+            None => frame.clone(),
+        };
+        let big = if part.width.max(part.height) * 2 <= MAX_READ_SIDE { part.doubled() } else { part };
         let lines = self.host.read_text(&big).map_err(|e| WorkflowError::Text(format!("reading the screen's text failed: {e}")))?;
-        let age = frame.captured_at.map_or(asked.elapsed(), |t| t.elapsed());
+        let age = captured.elapsed();
         if age > self.opts.evidence_age {
-            return Err(WorkflowError::Text(format!(
-                "reading the screen took too long ({} ms): the screen may have changed since; nothing more was sent",
-                age.as_millis()
-            )));
+            return Err(self.too_old(age));
         }
         Ok(lines)
+    }
+
+    fn too_old(&self, age: Duration) -> WorkflowError {
+        WorkflowError::Text(format!(
+            "the screen's picture was {} ms old by the time it was read: the screen may have changed since; nothing more was sent",
+            age.as_millis()
+        ))
     }
 
     /// Record a verified transition out of `from`: history, its derived facts, and entering `to`.
@@ -1961,6 +1990,9 @@ fn precheck(wf: &Workflow, secrets: &Secrets, opts: &WorkflowOptions, resume: Op
     if opts.run.key_hold > MAX_KEY_TIMING || opts.run.key_gap > MAX_KEY_TIMING {
         return Err(WorkflowError::Options("key hold and key gap must be at most 100 ms in a workflow".into()));
     }
+    if opts.evidence_age.is_zero() || opts.evidence_age > MAX_EVIDENCE_AGE {
+        return Err(WorkflowError::Options("evidence age must be more than 0 and at most 30 s".into()));
+    }
     Ok(())
 }
 
@@ -2117,6 +2149,15 @@ pub fn run_workflow(
             }
         }
         let compiled = compile_workflow(wf, secrets, layout)?;
+        // A value read back after typing is compared as one line: a line break or tab in it would be typed as Enter
+        // or Tab before any check.
+        if !opts.run.dry_run {
+            if let Some(key) = e.typed.iter().find(|(_, v)| v.0.first().is_some_and(|v| v.chars().any(char::is_control))).map(|(k, _)| k.clone()) {
+                return Err(WorkflowError::Options(format!(
+                    "the value for {key} contains a line break, tab or other control character: enter it again"
+                )));
+            }
+        }
         if let (Some(domain), false) = (wf.config.get(TENANT_DOMAIN), opts.run.dry_run) {
             let inside = e.account.0.first().is_some_and(|a| account_in(a, domain));
             if !inside {

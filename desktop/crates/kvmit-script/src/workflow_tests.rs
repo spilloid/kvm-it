@@ -69,6 +69,8 @@ struct Sim {
     texts: Option<Vec<(u8, &'static str)>>,
     /// Once anything is typed, the current screen also shows this line (what the field displays).
     echo: Option<&'static str>,
+    /// Each reading of the screen's text really takes this long (a slow recogniser).
+    read_delay: Duration,
 }
 
 impl Host for Sim {
@@ -172,6 +174,9 @@ impl Host for Sim {
         self.missing.contains(&name)
     }
     fn read_text(&mut self, frame: &Frame) -> Result<Vec<crate::text::TextLine>, String> {
+        if !self.read_delay.is_zero() {
+            std::thread::sleep(self.read_delay);
+        }
         let texts = self.texts.as_ref().ok_or("no recogniser")?;
         let shown = texts.iter().find(|(v, _)| *v == frame.gray[0]).map_or("", |(_, t)| *t);
         let echo = self.echo.filter(|_| self.typed > 0 && self.enters_seen == 0).unwrap_or("");
@@ -1565,5 +1570,55 @@ submit = [ { key = \"ENTER\" } ]",
     ] {
         let e = Workflow::parse(&base.replacen(from, to, 1)).unwrap_err();
         assert!(e.contains(why), "{e}");
+    }
+}
+
+// ---------- round 69: evidence age, the reader probe, control characters ----------
+
+#[test]
+fn keys_wait_for_recent_evidence_and_a_slow_reader_stops_the_run_before_typing() {
+    let w = Workflow::parse(SIGN_IN).unwrap();
+    let texts = vec![(20, "Let's set things up for your work or school|Sign in"), (70, "jane@contoso.com|Enter password")];
+    let mut sim = Sim { screens: [20, 70].into_iter().map(solid).collect(), texts: Some(texts), read_delay: Duration::from_millis(120), ..Default::default() };
+    let secrets: Vars = [("username".to_string(), "jane@contoso.com".to_string()), ("password".to_string(), "pw".to_string())].into();
+    let o = WorkflowOptions { evidence_age: Duration::from_millis(50), ..opts() };
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &o, None, &mut |_, _| {});
+    assert!(matches!(&r.result, Err(WorkflowError::Text(m)) if m.contains("ms old by the time it was read")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing typed on old evidence");
+    // The option is bounded: it cannot waive the check.
+    for age in [Duration::ZERO, Duration::from_secs(31)] {
+        let o = WorkflowOptions { evidence_age: age, ..opts() };
+        let mut sim = Sim { screens: screens(), ..Default::default() };
+        assert!(matches!(go(&wf(), &mut sim, &o, None).result, Err(WorkflowError::Options(_))));
+    }
+}
+
+#[test]
+fn a_picture_recognised_workflow_whose_tenant_check_reads_the_page_does_not_start_without_a_reader() {
+    // Screens by picture, but a sign-in domain: the account check reads the password page, so the reader is probed.
+    let src = OOBE
+        .replace("match = \"luma\"\n", "match = \"luma\"\naccount = \"wifi\"\n")
+        .replace("[config]\n", "[config]\ntenant_domain = \"contoso.com\"\n");
+    let w = Workflow::parse(&src).unwrap();
+    let secrets: Vars = [("wifi".to_string(), "a@contoso.com".to_string())].into();
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), ..Default::default() };
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+    assert!(matches!(&r.result, Err(WorkflowError::Text(m)) if m.contains("checks the sign-in")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing sent, the sign-in included");
+}
+
+#[test]
+fn a_read_back_value_with_a_line_break_is_refused_before_anything_is_sent() {
+    let src = OOBE.replace(
+        "actions = [ { secret_text = \"{{wifi}}\" }, { key = \"ENTER\" } ]",
+        "actions = [ { secret_text = \"{{wifi}}\" } ]\nverify_typed = \"wifi\"\nsubmit = [ { key = \"ENTER\" } ]",
+    );
+    let w = Workflow::parse(&src).unwrap();
+    for bad in ["hunter2\n", "hun\tter2"] {
+        let secrets: Vars = [("wifi".to_string(), bad.to_string())].into();
+        let mut sim = Sim { screens: screens(), texts: Some(vec![]), ..Default::default() };
+        let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+        assert!(matches!(&r.result, Err(WorkflowError::Options(m)) if m.contains("control character")), "{bad:?}: {:?}", r.result);
+        assert!(sim.keys.iter().all(|k| k == "release_all"));
     }
 }
