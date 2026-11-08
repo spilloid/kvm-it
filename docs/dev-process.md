@@ -1271,3 +1271,22 @@ confirmed, all fixed in `c9bcb56` and `1072f25`.
 
 Also found while VM-verifying the fixes: Windows OCR drops the letter under the text cursor, so the built-in workflow
 presses Home after typing the sign-in; text failures now have their own error (`WorkflowError::Text`).
+
+## 2026-11-07 - Round-68 fixes (`c9bcb56`, `1072f25`): review round 69 (Claude Opus 5.5, standing in for Codex)
+
+**STD-001 deviation:** Codex `gpt-6-astra` hit its usage limit mid-round (reset 1:44 PM); Opus stood in (operator
+standing permission, logged per the rule). A cross-model round over the 0.6 branch is owed when Codex is back.
+Read-only plus probe crates. All ten round-68 fixes verified (fix 5 with the gap in finding 1). **NO SIGN-OFF**:
+2 Medium, 7 Low; all confirmed, all fixed in the next commit.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Medium | A workflow recognising screens by picture with a sign-in domain never probed the reader: it typed the sign-in, then failed at the password page | **Confirmed** (probe). Probed whenever the tenant check reads the page. Test. |
+| 2 | Medium | `evidence_age` held only for the account and read-back checks: a 3.5 s classify read let the user name be typed after the screen moved on | **Confirmed** (probe). `still_on` refuses an old settling frame before every burst. Test. |
+| 3 | Low | The read-back searched the whole screen: a label elsewhere could stand in for the field | **Confirmed.** Checks read only the state's region. |
+| 4 | Low | The comment said a late success does not count; the code accepts it (freshness is bounded per frame) | **Confirmed.** Comment fixed. |
+| 5 | Low | Doubling frames up to 4000 px could exceed older Windows OCR's 2600 px limit and block every sign-in | **Confirmed.** The region is enlarged only within 2600 px. |
+| 6 | Low | The control-character guard covered only the account: another read-back value could type Enter or Tab first | **Confirmed.** Any read-back value with one is refused at start. Test. |
+| 7 | Low | `evidence_age` unbounded; a frame without a capture time was aged by the read alone | **Confirmed.** Bounded to 30 s; a live check needs the capture time. Test. |
+| 8 | Low | No test of the age refusal; the template sim passed with or without Home and ignored navigation keys | **Confirmed.** Tests; the sim hides the last letter until Home and records navigation keys. |
+| 9 | Low | Tesseract's stderr drained only after exit: a full pipe looked like "too slow" | **Confirmed.** Drained on its own thread. |
