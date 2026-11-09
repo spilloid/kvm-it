@@ -1361,3 +1361,8 @@ Read-only re-review. All three round-73 fixes hold; the tests exercise them (the
 old code passed after three; the slow-capture test reaches the post-comparison guard; the overlength phrase reaches
 the path that leaked). Not directly tested: a slow comparison itself, and the stability branch's timeout guard.
 **SIGN-OFF**, no findings. This closes the Codex rounds owed for the stand-ins of rounds 69 and 71.
+
+After the sign-off, Linux CI failed `concurrent_updates_lose_no_change_and_a_failed_write_is_reported`: under constant
+contention, polling `try_lock` every 10 ms lost to a writer that re-took the lock at once (starved past the 1 s bound).
+The wait is now a blocking lock (woken when it is released) on a helper thread, bounded by `recv_timeout`; a lock that
+thread takes after the caller gave up is dropped at once. A small change after round 74, to be covered by the next round.

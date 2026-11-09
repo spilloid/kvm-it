@@ -131,14 +131,22 @@ fn lock_config(p: &Path, wait: std::time::Duration) -> Result<std::fs::File, Str
         .truncate(false)
         .open(&lock)
         .map_err(|e| format!("{} could not be opened ({e})", lock.display()))?;
-    let start = std::time::Instant::now();
-    loop {
-        match f.try_lock() {
-            Ok(()) => return Ok(f),
-            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < wait => std::thread::sleep(std::time::Duration::from_millis(10)),
-            Err(std::fs::TryLockError::WouldBlock) => return Err("another kvm-it is saving them and did not finish".into()),
-            Err(std::fs::TryLockError::Error(e)) => return Err(format!("{} could not be locked ({e})", lock.display())),
-        }
+    let cannot = |e: std::io::Error| format!("{} could not be locked ({e})", lock.display());
+    match f.try_lock() {
+        Ok(()) => return Ok(f),
+        Err(std::fs::TryLockError::WouldBlock) => {}
+        Err(std::fs::TryLockError::Error(e)) => return Err(cannot(e)),
+    }
+    // Busy: wait in line (a blocking lock, woken when it is released, so a busy writer cannot starve this one), on a
+    // thread of its own so the wait stays bounded. If it gives up, a lock that thread takes later is dropped at once.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(f.lock().map(|_| f));
+    });
+    match rx.recv_timeout(wait) {
+        Ok(Ok(f)) => Ok(f),
+        Ok(Err(e)) => Err(cannot(e)),
+        Err(_) => Err("another kvm-it is saving them and did not finish".into()),
     }
 }
 
