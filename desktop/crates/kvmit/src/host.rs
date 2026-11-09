@@ -42,8 +42,15 @@ impl Host for ScriptHost {
     fn key_up(&mut self, key: Key) -> Result<(), String> {
         self.rt.block_on(self.dev.as_ref().ok_or(NO_ADAPTER)?.key_up(key)).map_err(e)
     }
+    /// Every run ends here. If even this fails, keys may stay held on the target (and the link's keepalives would keep
+    /// them held): the session is closed so the adapter's link-drop release takes over.
     fn release_all(&mut self) -> Result<(), String> {
-        self.rt.block_on(self.dev.as_ref().ok_or(NO_ADAPTER)?.release_all()).map_err(e)
+        let dev = self.dev.as_ref().ok_or(NO_ADAPTER)?;
+        let r = self.rt.block_on(dev.release_all()).map_err(e);
+        if r.is_err() {
+            self.rt.block_on(dev.shutdown());
+        }
+        r.map_err(|m| format!("{m} (disconnected so the adapter releases the keys)"))
     }
     fn mouse_move(&mut self, dx: i32, dy: i32) -> Result<(), String> {
         self.dev.as_ref().ok_or(NO_ADAPTER)?.mouse_move(dx, dy);

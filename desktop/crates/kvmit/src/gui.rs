@@ -544,6 +544,7 @@ impl App {
             let done = pending.clone();
             self.rt.spawn(async move {
                 while let Some(ev) = rx.recv().await {
+                    let is_release = matches!(ev, Input::Up(_) | Input::Button(_, false));
                     let r = match ev {
                         Input::Down(k) => dev.key_down(k).await,
                         Input::Up(k) => dev.key_up(k).await,
@@ -587,6 +588,21 @@ impl App {
                     if let Err(e) = r {
                         debug_log(&format!("input not delivered: {e}"));
                         *notice.lock().unwrap() = format!("input not delivered: {e}");
+                        // A release that may not have arrived leaves a key or button held on the target (and our
+                        // keepalives would keep it held): the same recovery as a chord's. Release everything; if even
+                        // that fails, close the session so the adapter's link-drop release takes over. Input queued
+                        // behind it is dropped, not sent onto a target whose state is unknown.
+                        if is_release {
+                            *notice.lock().unwrap() = if dev.release_all().await.is_ok() {
+                                format!("A release was not delivered ({e}); all keys released.")
+                            } else {
+                                dev.shutdown().await;
+                                format!("A release was not delivered ({e}) and keys could not be released: disconnected so the adapter releases them.")
+                            };
+                            while rx.try_recv().is_ok() {
+                                done.fetch_sub(1, Ordering::SeqCst);
+                            }
+                        }
                     }
                     done.fetch_sub(1, Ordering::SeqCst);
                 }

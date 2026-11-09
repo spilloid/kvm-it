@@ -36,6 +36,10 @@
 - **Scripts no longer act on a frozen picture** (general review #14): a `wait_for` passes only on what the capture
   shows now. A picture older than 3 s never matches, the same captured frame seen again (a stalled capture) restarts
   "stable for", and the timeout counts real time. Host-tested.
+- **A key release that fails is recovered like a chord's** (general review #16, desktop half): if a key-up or button-up
+  may not have arrived, every key is released, and if that fails too the link is closed so the adapter releases
+  them; input queued behind it is dropped. A script or workflow whose final release fails closes the link the same
+  way. Host-tested (builds and clippy); not yet forced on hardware. The firmware half (#17) is still open.
 - `kvmit run --check` and the app's Reference screens say which screens are recognised by text on this computer and
   which pictures are not needed.
 
