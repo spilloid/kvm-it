@@ -531,25 +531,28 @@ impl Runner<'_> {
         let mut saw_frames = false;
         let mut best = 0.0f64;
         let mut prev: Option<Frame> = None;
+        // The last frame number looked at, kept apart from the comparison baseline `prev` (which a gap clears).
+        let mut last_seq: Option<u64> = None;
         let mut stable_for = Duration::ZERO;
         let timed_out = |saw_frames: bool, best: f64| {
             if cont { Ok(()) } else { Err(RunError::WaitTimeout { step: idx, saw_frames, best_similarity: best }) }
         };
         loop {
             self.check()?;
-            // The timeout holds before a look is asked for and again before what it shows is accepted: a slow capture
-            // cannot deliver a match after the wait has run out.
+            // The timeout holds before a look is asked for, and again once the picture is compared: a slow capture or
+            // comparison cannot deliver a match after the wait has run out.
             if polled.max(started.elapsed()) >= timeout {
                 self.host.event(RunEvent::WaitPolling { index: idx, elapsed: polled.max(started.elapsed()), best_similarity: best });
                 return timed_out(saw_frames, best);
             }
+            // What it shows is accepted only if the wait has not run out by the end of comparing it (below).
             let frame = self.host.screen();
-            if polled.max(started.elapsed()) >= timeout {
-                continue;
-            }
             let stale = frame.as_ref().is_some_and(|f| f.captured_at.is_some_and(|t| t.elapsed() > WAIT_FRAME_MAX_AGE));
             // A frame number seen before: the capture delivered nothing new since the last look.
-            let repeated = matches!((&frame, &prev), (Some(f), Some(p)) if f.seq.is_some() && f.seq == p.seq);
+            let repeated = frame.as_ref().is_some_and(|f| f.seq.is_some() && f.seq == last_seq);
+            if let Some(f) = &frame {
+                last_seq = f.seq;
+            }
             match frame {
                 // No picture, an old one or the same one again: the screen went unobserved, so "stable" starts over
                 // from the next new picture.
@@ -561,7 +564,9 @@ impl Runner<'_> {
                     prev = None;
                     stable_for = Duration::ZERO;
                 }
+                // A stalled capture: the screen went unobserved too. The next new picture starts "stable" afresh.
                 Some(_) if repeated => {
+                    prev = None;
                     stable_for = Duration::ZERO;
                 }
                 Some(frame) => {
@@ -570,7 +575,8 @@ impl Runner<'_> {
                         WaitSpec::Screen { threshold, .. } => {
                             let sim = frame.similarity(reference.as_ref().expect("screen wait has reference"));
                             best = best.max(sim);
-                            if sim >= *threshold {
+                            // Comparing takes time too: a match is accepted only within the wait.
+                            if sim >= *threshold && polled.max(started.elapsed()) < timeout {
                                 return Ok(());
                             }
                             prev = Some(frame);
@@ -584,7 +590,7 @@ impl Runner<'_> {
                                 } else {
                                     stable_for = Duration::ZERO;
                                 }
-                                if stable_for >= *need {
+                                if stable_for >= *need && polled.max(started.elapsed()) < timeout {
                                     return Ok(());
                                 }
                             }
@@ -696,6 +702,16 @@ mod tests {
         let r = run(&compiled(&s, &Vars::new()), &mut m, &fast());
         assert!(matches!(r, Err(RunError::WaitTimeout { .. })), "{r:?}");
         assert!(!m.log.iter().any(|l| l == "dn 04"));
+    }
+
+    #[test]
+    fn a_capture_that_stalls_and_recovers_starts_stable_afresh() {
+        // Frames 1, 1 (stalled), 2: the stall is a gap, so 2 is a new baseline, not the end of a 250 ms "stable".
+        let s = script("[[steps]]\nwait_for = { stable_for = \"250ms\", timeout = \"5s\" }\n[[steps]]\nkey = \"A\"\n");
+        let frames = [1, 1, 2, 3, 4].into_iter().map(|n| solid(9).with_seq(Some(n))).collect();
+        let mut m = Mock { frames, ..Default::default() };
+        run(&compiled(&s, &Vars::new()), &mut m, &fast()).unwrap();
+        assert_eq!(m.looks, 4, "passes on frame 3 (baseline 2), not on frame 2");
     }
 
     #[test]

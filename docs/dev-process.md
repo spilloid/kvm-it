@@ -1343,3 +1343,14 @@ licence listing check out. **NO SIGN-OFF**: 1 High, 6 Medium; all confirmed, all
 | 5 | Medium | A match arriving after the wait's timeout (a slow capture) still counted | **Confirmed.** The timeout is checked before each look and before its result is accepted. Test. |
 | 6 | Medium | The settings lock could block the GUI thread indefinitely | **Confirmed.** Bounded to 1 s, then "not saved" with the change kept in memory. Test with a held lock. |
 | 7 | Medium | A lock file that could not be opened fell back to an unlocked write | **Confirmed.** Refused instead; the change is kept in memory. Test. |
+
+## 2026-11-09 - Round-72 fixes (`9f5ddfe`): review round 73 (Codex `gpt-6-astra`)
+
+Read-only re-review. Round 72's fixes 1, 6 and 7 held; 2, 4 and 5 in part. **NO SIGN-OFF**: 2 Medium, 1 Low; all
+confirmed, all fixed in the next commit.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Medium | A repeated frame reset the count but kept the baseline: frames 1, 1, 2 passed a 250 ms "stable" at once | **Confirmed.** The last frame number is tracked apart from the baseline, and a repeat clears the baseline too. Test (fails without the fix). |
+| 2 | Medium | The timeout was checked after the capture but not after comparing: a slow comparison could still match late | **Confirmed.** A match or a stable result is accepted only if the wait has not run out once compared; the separate post-capture check went, so the slow-capture test now exercises this guard (it fails without it). |
+| 3 | Low | An invalid phrase holding an entered secret was refused by the parser, whose error quotes it | **Confirmed.** Entered secrets are checked before anything else; the editor's rows-to-wordings conversion is a tested function (`wording_sets`). Test. |

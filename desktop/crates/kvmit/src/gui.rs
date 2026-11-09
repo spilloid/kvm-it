@@ -1260,11 +1260,7 @@ impl App {
             if rows.is_empty() {
                 ui.small("No phrases: this screen is recognised by its picture.");
             }
-            let sets: Vec<Vec<String>> = rows
-                .iter()
-                .map(|r| r.iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect::<Vec<_>>())
-                .filter(|s| !s.is_empty())
-                .collect();
+            let sets = crate::wf_view::wording_sets(rows);
             let changed = sets != state.detect.text;
             ui.horizontal(|ui| {
                 if editable && ui.button("Add a wording").clicked() {

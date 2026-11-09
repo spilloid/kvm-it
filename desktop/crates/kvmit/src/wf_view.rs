@@ -439,6 +439,11 @@ pub fn save_wording(
     sets: &[Vec<String>],
     entered: &BTreeMap<String, String>,
 ) -> Result<(), String> {
+    // First, before anything can repeat a phrase (a parse error quotes it): none may hold an entered secret.
+    let holds_secret = sets.iter().flatten().any(|p| entered.values().any(|v| !v.is_empty() && p.contains(v.as_str())));
+    if holds_secret {
+        return Err("a phrase holds the value of a secret entered above (the sign-in or password)".into());
+    }
     let text = kvmit_script::setup::set_phrases(was, state, sets)?;
     let new = kvmit_script::Workflow::parse(&text)?;
     let entered: kvmit_script::Vars = entered.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
@@ -446,6 +451,15 @@ pub fn save_wording(
         return Err("a phrase holds the value of a secret entered above (the sign-in or password)".into());
     }
     rewrite_workflow(path, was, &text)
+}
+
+/// The editor's wordings as the file will hold them: each phrase trimmed, empty phrases and wordings dropped, and
+/// nothing split or joined (a phrase may itself hold `+`).
+pub fn wording_sets(rows: &[Vec<String>]) -> Vec<Vec<String>> {
+    rows.iter()
+        .map(|r| r.iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect::<Vec<_>>())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 pub fn rewrite_workflow(path: &std::path::Path, was: &str, text: &str) -> Result<(), String> {
@@ -1639,6 +1653,13 @@ terminal = true
         let err = save_wording(&p, text, "A", &with_account, &entered).unwrap_err();
         assert!(err.contains("secret") && !err.contains("jane"), "{err}");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), text);
+        // A phrase too long to be valid that holds the sign-in: refused as a secret, never quoted by the parse error.
+        let long = vec![vec![format!("{} jane@contoso.com", "x".repeat(220))]];
+        let err = save_wording(&p, text, "A", &long, &entered).unwrap_err();
+        assert!(!err.contains("jane"), "{err}");
+        // The editor's rows, unchanged, give back the file's wordings: a literal + stays inside its phrase.
+        let rows = vec![vec!["  Terms + conditions ".to_string(), String::new()], vec![String::new()]];
+        assert_eq!(wording_sets(&rows), vec![vec!["Terms + conditions".to_string()]]);
         // A literal + stays inside its phrase.
         let two = vec![vec!["Terms + conditions".to_string()], vec!["Licence terms".to_string()]];
         save_wording(&p, text, "A", &two, &entered).unwrap();
