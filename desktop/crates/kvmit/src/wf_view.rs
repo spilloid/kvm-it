@@ -429,6 +429,25 @@ pub fn write_new_workflow(dir: &std::path::Path, name: &str, text: &str) -> Resu
 /// Replace a workflow file's text, only if it still holds `was` (what the caller read and changed): a change made
 /// elsewhere in between is never overwritten. Written to a temporary file and renamed, so a reader sees one whole
 /// version or the other.
+/// Screen wording's save: `state`'s phrases set to `sets` in the workflow file at `path` (whose text was `was`), only
+/// if the file still holds that text, and never with a phrase holding the value of a secret entered for this
+/// workflow (a line read off the screen can be the sign-in typed): that is refused without repeating it.
+pub fn save_wording(
+    path: &std::path::Path,
+    was: &str,
+    state: &str,
+    sets: &[Vec<String>],
+    entered: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    let text = kvmit_script::setup::set_phrases(was, state, sets)?;
+    let new = kvmit_script::Workflow::parse(&text)?;
+    let entered: kvmit_script::Vars = entered.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
+    if kvmit_script::workflow::check_secrets(&new, &entered, None, "").is_err() {
+        return Err("a phrase holds the value of a secret entered above (the sign-in or password)".into());
+    }
+    rewrite_workflow(path, was, &text)
+}
+
 pub fn rewrite_workflow(path: &std::path::Path, was: &str, text: &str) -> Result<(), String> {
     // One save at a time (the app and `kvmit workflow set`): the lock covers the comparison and the replacement. An
     // editor saving in that instant is not covered.
@@ -1593,6 +1612,38 @@ mod tests {
             assert!(!p.to_string_lossy().contains("hunter2"), "{}", p.display());
             assert!(!std::fs::read_to_string(&p).unwrap().contains("hunter2"), "{}", p.display());
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_a_wording_keeps_plus_signs_and_never_writes_a_secret() {
+        let dir = std::env::temp_dir().join(format!("kvmit-wording-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("w.toml");
+        let text = "workflow_format = 1
+name = \"w\"
+start = [\"A\"]
+account = \"username\"
+[secrets]
+username = { prompt = \"Sign-in\" }
+[[states]]
+name = \"A\"
+detect = { text = [\"Terms + conditions\"] }
+terminal = true
+";
+        std::fs::write(&p, text).unwrap();
+        let entered: BTreeMap<String, String> = [("username".to_string(), "jane@contoso.com".to_string())].into();
+        // The sign-in, read off the screen and clicked as a wording: refused, the file unchanged, the value not repeated.
+        let with_account = vec![vec!["Terms + conditions".to_string()], vec!["jane@contoso.com".to_string()]];
+        let err = save_wording(&p, text, "A", &with_account, &entered).unwrap_err();
+        assert!(err.contains("secret") && !err.contains("jane"), "{err}");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), text);
+        // A literal + stays inside its phrase.
+        let two = vec![vec!["Terms + conditions".to_string()], vec!["Licence terms".to_string()]];
+        save_wording(&p, text, "A", &two, &entered).unwrap();
+        let saved = kvmit_script::Workflow::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(saved.states[0].detect.text, two);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

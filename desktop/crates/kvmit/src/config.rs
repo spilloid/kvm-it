@@ -41,8 +41,14 @@ impl Config {
         self.update_at(&config_path(), f)
     }
     fn update_at(&mut self, p: &Path, f: impl Fn(&mut Config)) -> Result<(), String> {
-        let _held = lock_config(p);
-        self.update_with(read_config(p), p, f)
+        match lock_config(p, std::time::Duration::from_secs(1)) {
+            Ok(_held) => self.update_with(read_config(p), p, f),
+            // Never written unlocked: another process's change could be lost. This run keeps the change.
+            Err(e) => {
+                f(self);
+                Err(format!("Settings not saved: {e}. The change lasts until kvm-it closes."))
+            }
+        }
     }
     fn update_with(&mut self, read: std::io::Result<String>, p: &Path, f: impl Fn(&mut Config)) -> Result<(), String> {
         f(self);
@@ -110,15 +116,30 @@ fn retry_while_replaced<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::i
 }
 
 /// Serialises settings updates across processes: the lock file beside the config, locked until the returned file is
-/// dropped (the operating system releases it if the process dies). Best effort: if the lock cannot be taken (a
-/// read-only folder), the update goes ahead unlocked, as before, and its write reports any failure.
-fn lock_config(p: &Path) -> Option<std::fs::File> {
+/// dropped (the operating system releases it if the process dies). Waits at most `wait` for another process's update
+/// (each holds it for one read and one write), so a stuck process cannot freeze the app; then, or if the lock file
+/// cannot be opened, says why.
+fn lock_config(p: &Path, wait: std::time::Duration) -> Result<std::fs::File, String> {
+    let lock = p.with_extension("json.lock");
     if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir).map_err(|e| format!("{} could not be made ({e})", dir.display()))?;
     }
-    let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(p.with_extension("json.lock")).ok()?;
-    f.lock().ok()?;
-    Some(f)
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock)
+        .map_err(|e| format!("{} could not be opened ({e})", lock.display()))?;
+    let start = std::time::Instant::now();
+    loop {
+        match f.try_lock() {
+            Ok(()) => return Ok(f),
+            Err(std::fs::TryLockError::WouldBlock) if start.elapsed() < wait => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(std::fs::TryLockError::WouldBlock) => return Err("another kvm-it is saving them and did not finish".into()),
+            Err(std::fs::TryLockError::Error(e)) => return Err(format!("{} could not be locked ({e})", lock.display())),
+        }
+    }
 }
 
 fn read_config(p: &Path) -> std::io::Result<String> {
@@ -245,6 +266,31 @@ mod tests {
         std::fs::write(&blocked, "").unwrap();
         let err = Config::default().update_at(&blocked.join("config.json"), |c| c.theme = crate::theme::ThemeChoice::Dark).unwrap_err();
         assert!(err.contains("not saved"), "{err}");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
+    fn a_held_or_unusable_lock_never_freezes_or_writes_unlocked() {
+        let p = temp_config("held");
+        Config { last_device: Some("AA:BB".into()), ..Default::default() }.save_to(&p).unwrap();
+        // Another process holds the lock (stuck): the update gives up within its wait, keeps the change in memory and
+        // leaves the file alone.
+        let held = lock_config(&p, std::time::Duration::ZERO).unwrap();
+        let started = std::time::Instant::now();
+        let mut c = Config::default();
+        let err = c.update_at(&p, |c| c.theme = crate::theme::ThemeChoice::Dark).unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        assert!(err.contains("not saved") && err.contains("did not finish"), "{err}");
+        assert_eq!(c.theme, crate::theme::ThemeChoice::Dark);
+        assert_eq!(Config::load_from(&p).theme, crate::theme::ThemeChoice::default());
+        drop(held);
+        // A lock file that cannot be opened (a folder in its place): refused, not written unlocked.
+        let lock = p.with_extension("json.lock");
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::create_dir_all(&lock).unwrap();
+        let err = Config::default().update_at(&p, |c| c.last_device = Some("CC:DD".into())).unwrap_err();
+        assert!(err.contains("not saved"), "{err}");
+        assert_eq!(Config::load_from(&p).last_device.as_deref(), Some("AA:BB"));
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
     }
 

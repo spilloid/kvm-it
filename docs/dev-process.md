@@ -1328,3 +1328,18 @@ clean `git archive` of `48302a7`. Eight of round 70's nine fixes held (#8 only i
 | 3 | Low | `ActionAttempted` ("Sent N steps") was emitted before the last look, so a look that refused (another tenant's page) left a trace saying the Enter went there | **Confirmed** (probe). The progress record stays before the look; the trace event follows the keys (also when a burst is cut short). Test. |
 | 4 | Low | A crash after the final checkpoint was saved but before the run's marker went made Recover say "recorded nothing"; the test built a state no real crash produces | **Confirmed.** Its own message ("had saved its checkpoint, which is kept"); tested by a real `keep_checkpoint` then the marker put back. |
 | 5 | Low | The lock file was created empty and written after locking: losing that race left an empty file, read ever after as 0.5's crash | **Confirmed** (probe). The lock file is written whole under a private name and hard-linked into place, so it never exists empty. Test. |
+
+## 2026-11-09 - Round-71 fixes, Screen wording, general-review #14-#24 (`48302a7..8b29dcd`): review round 72 (Codex `gpt-6-astra`)
+
+The Codex round owed after round 71's stand-in. Read-only. Round 71's five fixes held; firmware 0.2.1's bundle and the
+licence listing check out. **NO SIGN-OFF**: 1 High, 6 Medium; all confirmed, all fixed in the next commit.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | The action deadline was checked only between characters: a slow Shift could be followed by its character, a chord's later keys still went, and a final press that overran returned success | **Confirmed.** Every key-down and button-down checks the deadline first (releases never wait), and an operation that pressed something checks again after it. Tests: expiry after Shift, between chord keys, on a last key. |
+| 2 | Medium | Screen wording could save the sign-in (read off the screen and clicked) into the file as a phrase | **Confirmed.** `wf_view::save_wording` refuses a phrase holding any secret entered for the workflow, without repeating it. Test. |
+| 3 | Medium | The editor joined and split phrases on `+`, so an unchanged `"Terms + conditions"` was saved as two phrases | **Confirmed.** Wordings are edited as lists of phrases (a field each, "and" between); nothing is split. Test. |
+| 4 | Medium | Missing frames did not reset `stable_for`: one frame after a gap could complete it | **Confirmed.** A missing, stale or repeated frame clears the baseline and the count. Test with a gap (passes at look 11, not 8). |
+| 5 | Medium | A match arriving after the wait's timeout (a slow capture) still counted | **Confirmed.** The timeout is checked before each look and before its result is accepted. Test. |
+| 6 | Medium | The settings lock could block the GUI thread indefinitely | **Confirmed.** Bounded to 1 s, then "not saved" with the change kept in memory. Test with a held lock. |
+| 7 | Medium | A lock file that could not be opened fell back to an unlocked write | **Confirmed.** Refused instead; the change is kept in memory. Test. |

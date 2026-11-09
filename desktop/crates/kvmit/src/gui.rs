@@ -202,10 +202,10 @@ pub struct App {
     wf_saved_slot: Option<crate::wf_view::Slot>,
     /// The reference image "Save this screen as" writes (an index into the workflow's references).
     wf_snap: usize,
-    /// Screen wording: the state whose phrases are shown, its wordings as edited (one per line, `+` between phrases
-    /// that must all show), and the last reading of the screen (its lines, or why it could not be read).
+    /// Screen wording: the state whose phrases are shown, its wordings as edited (each a list of phrases that must all
+    /// show), and the last reading of the screen (its lines, or why it could not be read).
     wf_phr_state: usize,
-    wf_phr_rows: Option<(String, Vec<String>)>,
+    wf_phr_rows: Option<(String, Vec<Vec<String>>)>,
     wf_phr_read: Option<Result<Vec<kvmit_script::text::TextLine>, String>>,
     /// The setup form of the selected workflow: its setup values as chosen so far (seeded from its profile).
     wf_setup: BTreeMap<String, String>,
@@ -1214,7 +1214,8 @@ impl App {
         let path = self.library[sel].path.clone();
         egui::CollapsingHeader::new("Screen wording").id_salt(("wf_phrases", sel)).show(ui, |ui| {
             ui.small(
-                "Each screen is recognised by phrases it shows. If a laptop words one differently (another Windows build), add                  that wording here: one per line; + between phrases that must all show.",
+                "Each screen is recognised by phrases it shows. If a laptop words one differently (another Windows build), \
+                 add that wording here. A wording with several phrases needs every one of them on screen.",
             );
             self.wf_phr_state = self.wf_phr_state.min(wf.states.len() - 1);
             let before = self.wf_phr_state;
@@ -1225,36 +1226,49 @@ impl App {
             });
             let state = &wf.states[self.wf_phr_state];
             // The rows follow the file: a different state, or the file changed under them, starts again from it.
-            let from_file: Vec<String> = state.detect.text.iter().map(|set| set.join(" + ")).collect();
+            // Kept as the file holds them (wordings, each a list of phrases): nothing is split or joined on a character
+            // a phrase may itself contain.
+            let from_file: Vec<Vec<String>> = state.detect.text.clone();
             if before != self.wf_phr_state || self.wf_phr_rows.as_ref().is_none_or(|(n, _)| *n != state.name) {
                 self.wf_phr_rows = Some((state.name.clone(), from_file.clone()));
             }
             let editable = path.is_some() && !running;
             let rows = &mut self.wf_phr_rows.as_mut().expect("set above").1;
-            let mut remove = None;
+            let mut remove: Option<(usize, usize)> = None;
             for (i, row) in rows.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
-                    ui.add_enabled(editable, egui::TextEdit::singleline(row).desired_width(340.0));
-                    if editable && ui.small_button("Remove").clicked() {
-                        remove = Some(i);
+                ui.horizontal_wrapped(|ui| {
+                    for (j, phrase) in row.iter_mut().enumerate() {
+                        if j > 0 {
+                            ui.label("and");
+                        }
+                        ui.add_enabled(editable, egui::TextEdit::singleline(phrase).desired_width(240.0));
+                        if editable && ui.small_button("x").on_hover_text("Remove this phrase").clicked() {
+                            remove = Some((i, j));
+                        }
+                    }
+                    if editable && ui.small_button("+ phrase").on_hover_text("Another phrase this wording needs on screen").clicked() {
+                        row.push(String::new());
                     }
                 });
             }
-            if let Some(i) = remove {
-                rows.remove(i);
+            if let Some((i, j)) = remove {
+                rows[i].remove(j);
+                if rows[i].is_empty() {
+                    rows.remove(i);
+                }
             }
             if rows.is_empty() {
                 ui.small("No phrases: this screen is recognised by its picture.");
             }
             let sets: Vec<Vec<String>> = rows
                 .iter()
-                .map(|r| r.split('+').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect::<Vec<_>>())
+                .map(|r| r.iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect::<Vec<_>>())
                 .filter(|s| !s.is_empty())
                 .collect();
             let changed = sets != state.detect.text;
             ui.horizontal(|ui| {
                 if editable && ui.button("Add a wording").clicked() {
-                    rows.push(String::new());
+                    rows.push(vec![String::new()]);
                 }
                 let frame = self.capture.lock().unwrap().as_ref().and_then(|c| c.latest());
                 let b = ui.add_enabled(frame.is_some(), egui::Button::new("Read the screen now"));
@@ -1290,7 +1304,7 @@ impl App {
                         }
                     }
                     if let (Some(t), Some((_, rows))) = (add, self.wf_phr_rows.as_mut()) {
-                        rows.push(t);
+                        rows.push(vec![t]);
                     }
                 }
                 Some(Err(e)) => {
@@ -1322,8 +1336,7 @@ impl App {
                         };
                         if b.clicked() {
                             let source = self.library[sel].source.clone();
-                            let saved = kvmit_script::setup::set_phrases(&source, &state.name, &sets)
-                                .and_then(|t| crate::wf_view::rewrite_workflow(path, &source, &t));
+                            let saved = crate::wf_view::save_wording(path, &source, &state.name, &sets, &self.wf_secrets);
                             match saved {
                                 Ok(()) => {
                                     self.wf_reload = Some(path.clone());

@@ -52,6 +52,10 @@
 - **A run stops as soon as the adapter's link drops** (general review #18): it no longer watches on (a manual step,
   updates) and fails at its next key. It says so and keeps its checkpoint; after reconnecting, Resume looks at the
   screen first and asks before sending again. Host-tested.
+- Review round 72 (Codex): the key deadline holds between a modifier and its key and between a chord's keys; a gap
+  in the capture restarts "stable for", and a match after a wait's timeout does not count; Screen wording never saves
+  an entered secret and keeps a `+` inside its phrase; a settings save waits at most 1 s for another and never writes
+  without the lock.
 - `kvmit run --check` and the app's Reference screens say which screens are recognised by text on this computer and
   which pictures are not needed.
 
