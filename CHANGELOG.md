@@ -33,6 +33,9 @@
   wording** (pick the screen, read the current video's text and click a line, **Save wording**): only that screen's
   phrases change in your copy, comments kept. It also says whether the screen on the video shows a screen's wording.
   Host-tested; not yet looked at on screen.
+- **Scripts no longer act on a frozen picture** (general review #14): a `wait_for` passes only on what the capture
+  shows now. A picture older than 3 s never matches, the same captured frame seen again (a stalled capture) restarts
+  "stable for", and the timeout counts real time. Host-tested.
 - `kvmit run --check` and the app's Reference screens say which screens are recognised by text on this computer and
   which pictures are not needed.
 

@@ -470,6 +470,9 @@ impl Runner<'_> {
         Ok(())
     }
 
+    /// A `wait_for` passes only on evidence from the capture as it is now: a picture older than [`WAIT_FRAME_MAX_AGE`]
+    /// never matches, the same captured frame seen again (a stalled capture) adds nothing to "stable" and starts it
+    /// over, and the timeout counts real time as well as the polls (a slow host or capture cannot stretch it).
     fn wait(&mut self, idx: usize, w: &WaitSpec) -> Result<(), RunError> {
         let (timeout, cont) = match w {
             WaitSpec::Screen { timeout, on_timeout_continue, .. } | WaitSpec::Stable { timeout, on_timeout_continue, .. } => {
@@ -481,14 +484,22 @@ impl Runner<'_> {
             _ => None,
         };
         let poll = self.opts.poll;
-        let mut elapsed = Duration::ZERO;
+        let started = std::time::Instant::now();
+        let mut polled = Duration::ZERO;
         let mut saw_frames = false;
         let mut best = 0.0f64;
         let mut prev: Option<Frame> = None;
         let mut stable_for = Duration::ZERO;
         loop {
             self.check()?;
-            if let Some(frame) = self.host.screen() {
+            let frame = self.host.screen();
+            let stale = frame.as_ref().is_some_and(|f| f.captured_at.is_some_and(|t| t.elapsed() > WAIT_FRAME_MAX_AGE));
+            // A frame number seen before: the capture delivered nothing new since the last look.
+            let repeated = matches!((&frame, &prev), (Some(f), Some(p)) if f.seq.is_some() && f.seq == p.seq);
+            if stale || repeated {
+                stable_for = Duration::ZERO;
+            }
+            if let Some(frame) = frame.filter(|_| !stale && !repeated) {
                 saw_frames = true;
                 match w {
                     WaitSpec::Screen { threshold, .. } => {
@@ -497,6 +508,7 @@ impl Runner<'_> {
                         if sim >= *threshold {
                             return Ok(());
                         }
+                        prev = Some(frame);
                     }
                     WaitSpec::Stable { stable_for: need, .. } => {
                         if let Some(p) = &prev {
@@ -515,15 +527,19 @@ impl Runner<'_> {
                     }
                 }
             }
+            let elapsed = polled.max(started.elapsed());
             self.host.event(RunEvent::WaitPolling { index: idx, elapsed, best_similarity: best });
             if elapsed >= timeout {
                 return if cont { Ok(()) } else { Err(RunError::WaitTimeout { step: idx, saw_frames, best_similarity: best }) };
             }
             self.host.sleep(poll);
-            elapsed += poll;
+            polled += poll;
         }
     }
 }
+
+/// The oldest a captured picture may be and still satisfy a script's `wait_for`: older, the screen may have changed.
+pub const WAIT_FRAME_MAX_AGE: Duration = Duration::from_secs(3);
 
 /// Run a compiled script. Always ends with `release_all` (success, error or abort) unless dry-running.
 pub fn run(ops: &[(usize, Op)], host: &mut dyn Host, opts: &RunOptions) -> Result<(), RunError> {
@@ -589,6 +605,28 @@ mod tests {
     }
 
     fn solid(v: u8) -> Frame { Frame::new(64, 36, vec![v; 64 * 36]).unwrap() }
+
+    #[test]
+    fn a_frozen_or_old_picture_never_satisfies_a_wait() {
+        // A stalled capture: the same numbered frame over and over never becomes "stable".
+        let s = script("[[steps]]\nwait_for = { stable_for = \"1s\", timeout = \"3s\" }\n[[steps]]\nkey = \"A\"\n");
+        let mut m = Mock { frames: vec![solid(9).with_seq(Some(7))], ..Default::default() };
+        let r = run(&compiled(&s, &Vars::new()), &mut m, &fast());
+        assert!(matches!(r, Err(RunError::WaitTimeout { .. })), "{r:?}");
+        assert!(!m.log.iter().any(|l| l == "dn 04"), "nothing typed after a frozen capture");
+        // New frames of the same screen do.
+        let mut m = Mock { frames: (1..40).map(|n| solid(9).with_seq(Some(n))).collect(), ..Default::default() };
+        run(&compiled(&s, &Vars::new()), &mut m, &fast()).unwrap();
+        assert!(m.log.iter().any(|l| l == "dn 04"));
+        // A matching picture captured long ago is not the screen now.
+        let s = script("[[steps]]\nwait_for = { screen = \"ref.png\", timeout = \"1s\" }\n[[steps]]\nkey = \"A\"\n");
+        let old = std::time::Instant::now().checked_sub(Duration::from_secs(10));
+        let mut m = Mock { frames: vec![solid(200).with_seq(Some(1)).with_captured_at(old)], ..Default::default() };
+        let r = run(&compiled(&s, &Vars::new()), &mut m, &fast());
+        assert!(matches!(r, Err(RunError::WaitTimeout { saw_frames: false, .. })), "{r:?}");
+        let mut m = Mock { frames: vec![solid(200).with_seq(Some(1)).with_captured_at(Some(std::time::Instant::now()))], ..Default::default() };
+        run(&compiled(&s, &Vars::new()), &mut m, &fast()).unwrap();
+    }
     fn script(toml: &str) -> Script { Script::parse(&format!("format = 1\n{toml}")).unwrap() }
     fn compiled(s: &Script, vars: &Vars) -> Vec<(usize, Op)> { compile(s, vars, &UsAnsi).unwrap() }
     fn fast() -> RunOptions { RunOptions { key_hold: Duration::ZERO, key_gap: Duration::ZERO, ..Default::default() } }
