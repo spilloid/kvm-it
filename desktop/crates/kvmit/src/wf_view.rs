@@ -139,6 +139,10 @@ pub fn reference_path(base: &std::path::Path, name: &str) -> Result<std::path::P
     if name.is_empty() || p.is_absolute() || p.components().any(|c| !matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir)) {
         return Err(format!("reference image {name:?} must be a relative path inside the file's folder"));
     }
+    // Windows drops a trailing dot or space from each name (`pics.` is `pics`): two spellings of one file.
+    if name.split(['/', '\\']).any(|c| !c.is_empty() && c != "." && (c.ends_with('.') || c.ends_with(' '))) {
+        return Err(format!("reference image {name:?}: a folder or file name may not end with a dot or a space"));
+    }
     Ok(base.join(p))
 }
 
@@ -455,13 +459,19 @@ fn replace_if_unchanged(path: &std::path::Path, was: &str, text: &str) -> Result
         return Err(format!("{} changed since it was opened: reload it and set it up again", path.display()));
     }
     use std::io::Write;
+    // The new file gets the old one's permissions before it takes its place (a private file stays private), and is
+    // created owner-only meanwhile.
+    let perms = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.permissions();
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let tmp = path.with_extension(format!("toml.{}-{nanos}.tmp", std::process::id()));
-    let written = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    let written = open
         .open(&tmp)
         .and_then(|mut f| f.write_all(text.as_bytes()).and_then(|_| f.sync_all()))
+        .and_then(|_| std::fs::set_permissions(&tmp, perms))
         .and_then(|_| std::fs::rename(&tmp, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -1011,6 +1021,33 @@ mod tests {
         assert!(resume_from_claim(&dir, &a, text, claim, &shown).unwrap_err().contains("changed"));
         assert_eq!(load_checkpoint(&dir, &a, text).unwrap().map(|c| c.state), Some("B".into()));
         assert!(claim_checkpoint(&dir, &a).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_picture_name_windows_would_read_as_another_is_refused() {
+        let base = std::path::Path::new("base");
+        for bad in ["pics./a.png", "pics /a.png", "a.png.", "a.png ", "pics\\x./a.png"] {
+            assert!(reference_path(base, bad).unwrap_err().contains("may not end with a dot or a space"), "{bad}");
+        }
+        for ok in ["pics/a.png", "./pics/a.png", "a.b.png", "pics/.hidden.png"] {
+            assert!(reference_path(base, ok).is_ok(), "{ok}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_a_profile_keeps_the_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("kvmit-perm-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.toml");
+        std::fs::write(&path, "a = 1\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        replace_if_unchanged(&path, "a = 1\n", "a = 2\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a = 2\n");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600, "still private");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

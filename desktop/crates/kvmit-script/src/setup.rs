@@ -34,7 +34,13 @@ pub fn apply(text: &str, values: &BTreeMap<String, String>) -> Result<String, St
             // check tie (and refuse) and saving one would change the other. Compared as Windows does: any case, either
             // slash.
             // Compared by their parts: `./`, doubled and back slashes, and case do not make another file.
-            let parts = |p: &str| p.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".").map(str::to_ascii_lowercase).collect::<Vec<_>>();
+            // Windows also drops a trailing dot or space from each name: `pics.` is `pics`.
+            let parts = |p: &str| {
+                p.split(['/', '\\'])
+                    .filter(|c| !c.is_empty() && *c != ".")
+                    .map(|c| if c == ".." { c.to_string() } else { c.trim_end_matches(['.', ' ']).to_ascii_lowercase() })
+                    .collect::<Vec<_>>()
+            };
             // A path with `..` cannot be compared by its parts: refused, as it never loads anyway.
             let same = |a: &str| parts(a).iter().any(|c| c == "..") || parts(a) == parts(&picture);
             let taken = wf.tenants.iter().filter(|(t, _)| *t != old).map(|(_, p)| p).chain(wf.states.iter().flat_map(|s| &s.detect.screens));
@@ -164,7 +170,8 @@ terminal = true
         assert!(e.contains("already used"), "{e}");
         let screen = WF.replace("screen = \"a.png\"", "screen = \"pics\\\\tenant-fabrikam.png\"");
         assert!(apply(&screen, &[("tenant".to_string(), "fabrikam".to_string())].into()).unwrap_err().contains("already used"));
-        for alias in ["./pics/tenant-fabrikam.png", "pics//tenant-fabrikam.png", "pics/./TENANT-fabrikam.png"] {
+        // Windows drops a trailing dot or space from a name: `pics.` and `pics ` are `pics` (review round 67).
+        for alias in ["./pics/tenant-fabrikam.png", "pics//tenant-fabrikam.png", "pics/./TENANT-fabrikam.png", "pics./tenant-fabrikam.png", "pics /tenant-fabrikam.png.", "pics/tenant-fabrikam.png. "] {
             let w = WF.replace("other = \"pics/other.png\"", &format!("other = \"{alias}\""));
             assert!(apply(&w, &[("tenant".to_string(), "fabrikam".to_string())].into()).unwrap_err().contains("already used"), "{alias}");
         }

@@ -1176,6 +1176,10 @@ pub struct WorkflowOptions {
     /// Run although some states have no saved picture (they cannot be recognised). Off by default: such a screen is
     /// usually unknown, but may be taken for a similar state. A dry run never needs it.
     pub allow_missing_pictures: bool,
+    /// With `allow_missing_pictures`: exactly which states were accepted as unrecognisable (the app names them when
+    /// you tick the box). A run that finds any other state without a picture is refused. `None`: any (the terminal's
+    /// `--allow-missing-pictures`, which lists them first).
+    pub allow_missing_only: Option<BTreeSet<String>>,
     /// The oldest a frame may be (from capture to the end of reading it) when a check on it decides that keys are
     /// sent: the account shown before a password, a value typed before Enter. 3 s by default; a slow capture
     /// (a VM's screendump over SSH) needs more.
@@ -1192,6 +1196,7 @@ impl Default for WorkflowOptions {
             capture_latency: Duration::from_millis(300),
             evidence_age: Duration::from_secs(3),
             allow_missing_pictures: false,
+            allow_missing_only: None,
         }
     }
 }
@@ -1380,6 +1385,16 @@ impl Engine<'_> {
         }
         if !blind.is_empty() {
             let stops: Vec<String> = wf.stop_states(&blind).into_iter().map(str::to_string).collect();
+            let beyond: Vec<&String> = match &self.opts.allow_missing_only {
+                Some(ok) => blind.iter().filter(|b| !ok.contains(*b)).collect(),
+                None => Vec::new(),
+            };
+            if !self.opts.run.dry_run && self.opts.allow_missing_pictures && !beyond.is_empty() {
+                return Err(WorkflowError::Reference(format!(
+                    "{} also cannot be recognised now (its picture is gone), and running without it was not accepted",
+                    beyond.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+                )));
+            }
             if !self.opts.run.dry_run && !self.opts.allow_missing_pictures {
                 let lost = match stops.is_empty() {
                     true => String::new(),

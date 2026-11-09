@@ -1622,3 +1622,22 @@ fn a_read_back_value_with_a_line_break_is_refused_before_anything_is_sent() {
         assert!(sim.keys.iter().all(|k| k == "release_all"));
     }
 }
+
+#[test]
+fn accepting_missing_pictures_covers_only_the_states_named_when_it_was_accepted() {
+    // Review round 67: the app names KEYBOARD when the box is ticked; by the time the run starts AUTOPILOT's picture is
+    // gone too. That one was never accepted (and the profile's stop there would be lost): refused.
+    let allow = WorkflowOptions {
+        allow_missing_pictures: true,
+        allow_missing_only: Some(["KEYBOARD".to_string()].into()),
+        ..opts()
+    };
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png", "autopilot.png"], ..Default::default() };
+    let r = go(&wf(), &mut sim, &allow, None);
+    assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("AUTOPILOT also cannot be recognised")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing sent");
+    // Exactly what was accepted still runs (to the unknown keyboard screen).
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png"], ..Default::default() };
+    let r = go(&wf(), &mut sim, &allow, None);
+    assert!(matches!(r.result, Err(WorkflowError::UnknownScreen { .. })), "{:?}", r.result);
+}

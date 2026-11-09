@@ -1005,6 +1005,8 @@ impl App {
             (handle.cancel.clone(), handle.done.clone(), handle.log.clone(), handle.confirm.clone(), handle.outcome.clone());
         let (rt, capture, shared2) = (self.rt.handle().clone(), self.capture.clone(), shared.clone());
         let allow_missing = self.wf_allow_missing;
+        // The states named when the box was ticked: a run that finds any other missing is refused.
+        let allow_only: std::collections::BTreeSet<String> = self.wf_allow_for.iter().cloned().collect();
         std::thread::spawn(move || {
             let ctx3 = ctx.clone();
             let cancel2 = cancel.clone();
@@ -1018,7 +1020,11 @@ impl App {
                 // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
                 on_event: Box::new(|_| {}),
             };
-            let mut opts = kvmit_script::WorkflowOptions { allow_missing_pictures: allow_missing, ..Default::default() };
+            let mut opts = kvmit_script::WorkflowOptions {
+                allow_missing_pictures: allow_missing,
+                allow_missing_only: allow_missing.then_some(allow_only),
+                ..Default::default()
+            };
             opts.run.dry_run = dry;
             let (log2, ctx4, sh) = (log.clone(), ctx.clone(), shared2.clone());
             let report = kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume.as_ref().map(|(_, cp)| cp), &mut |t, c| {
