@@ -1354,3 +1354,10 @@ confirmed, all fixed in the next commit.
 | 1 | Medium | A repeated frame reset the count but kept the baseline: frames 1, 1, 2 passed a 250 ms "stable" at once | **Confirmed.** The last frame number is tracked apart from the baseline, and a repeat clears the baseline too. Test (fails without the fix). |
 | 2 | Medium | The timeout was checked after the capture but not after comparing: a slow comparison could still match late | **Confirmed.** A match or a stable result is accepted only if the wait has not run out once compared; the separate post-capture check went, so the slow-capture test now exercises this guard (it fails without it). |
 | 3 | Low | An invalid phrase holding an entered secret was refused by the parser, whose error quotes it | **Confirmed.** Entered secrets are checked before anything else; the editor's rows-to-wordings conversion is a tested function (`wording_sets`). Test. |
+
+## 2026-11-09 - Round-73 fixes (`328fcfd`): review round 74 (Codex `gpt-6-astra`)
+
+Read-only re-review. All three round-73 fixes hold; the tests exercise them (the stall test needs four looks where the
+old code passed after three; the slow-capture test reaches the post-comparison guard; the overlength phrase reaches
+the path that leaked). Not directly tested: a slow comparison itself, and the stability branch's timeout guard.
+**SIGN-OFF**, no findings. This closes the Codex rounds owed for the stand-ins of rounds 69 and 71.
