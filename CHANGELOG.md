@@ -29,6 +29,10 @@
   first and asks before sending again what may have been sent. Recover is refused while the run is still going (the
   run holds an operating-system lock that ends with it), and a crash while a run finishes recovers what it ended
   with. No more deleting `.lock` files by hand; one left by 0.5 is recovered the same way, with a warning.
+- **Screen wording in the app:** a screen your laptops word differently gets its wording added under **Screen
+  wording** (pick the screen, read the current video's text and click a line, **Save wording**): only that screen's
+  phrases change in your copy, comments kept. It also says whether the screen on the video shows a screen's wording.
+  Host-tested; not yet looked at on screen.
 - `kvmit run --check` and the app's Reference screens say which screens are recognised by text on this computer and
   which pictures are not needed.
 

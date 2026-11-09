@@ -91,8 +91,11 @@ Each screen is recognised by a phrase it shows, read in the part of the screen w
 | The end | *Windows Hello*, *Set up a PIN*, *Create a PIN* or the desktop's *Recycle Bin* | the user takes over |
 
 The first eight and the work sign-in were read off Windows 11 25H2; the rest are Microsoft's usual wording. If a laptop
-shows a screen in other words, the run stops there as an unknown screen, typing nothing: finish that screen by hand and
-Resume, and send the trace so the phrase can be added.
+shows a screen in other words, the run stops there as an unknown screen, typing nothing. Add its wording to your copy:
+open **Screen wording**, choose the screen, click **Read the screen now** (with that screen on the video) and click the
+line that names it, then **Save wording** (only that screen's phrases change). The panel says whether the screen on the
+video shows a screen's wording. Then Resume; a checkpoint saved before the change does not resume, so run that laptop
+again from where it is. Send the trace too, so the built-in workflow learns the wording.
 
 The sign-in is checked twice before the password is typed:
 

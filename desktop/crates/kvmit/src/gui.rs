@@ -202,6 +202,11 @@ pub struct App {
     wf_saved_slot: Option<crate::wf_view::Slot>,
     /// The reference image "Save this screen as" writes (an index into the workflow's references).
     wf_snap: usize,
+    /// Screen wording: the state whose phrases are shown, its wordings as edited (one per line, `+` between phrases
+    /// that must all show), and the last reading of the screen (its lines, or why it could not be read).
+    wf_phr_state: usize,
+    wf_phr_rows: Option<(String, Vec<String>)>,
+    wf_phr_read: Option<Result<Vec<kvmit_script::text::TextLine>, String>>,
     /// The setup form of the selected workflow: its setup values as chosen so far (seeded from its profile).
     wf_setup: BTreeMap<String, String>,
     /// The file name "Save my copy" writes, and whether the user typed it (else it follows the organisation's name).
@@ -343,6 +348,9 @@ impl App {
             wf_saved_read: None,
             wf_saved_slot: None,
             wf_snap: 0,
+            wf_phr_state: 0,
+            wf_phr_rows: None,
+            wf_phr_read: None,
             cfg,
         };
         // Zero-step reconnect: the last adapter and capture device come back on their own.
@@ -809,6 +817,9 @@ impl App {
         self.var_values.clear();
         self.wf_setup.clear();
         self.wf_setup_name_edited = false;
+        self.wf_phr_state = 0;
+        self.wf_phr_rows = None;
+        self.wf_phr_read = None;
         self.wf_allow_missing = false;
         self.wf_allow_for.clear();
         if self.library[i].workflow {
@@ -1177,6 +1188,144 @@ impl App {
         });
     }
 
+    /// Screen wording: the phrases each screen is recognised by, edited and saved in the workflow file (only that
+    /// state's phrases change), with the current screen's text read to check a wording or copy one. A built-in is
+    /// shown, not changed: set up a copy first.
+    fn phrases_ui(&mut self, ui: &mut egui::Ui, wf: &kvmit_script::Workflow, sel: usize, running: bool) {
+        if wf.states.is_empty() {
+            return;
+        }
+        let path = self.library[sel].path.clone();
+        egui::CollapsingHeader::new("Screen wording").id_salt(("wf_phrases", sel)).show(ui, |ui| {
+            ui.small(
+                "Each screen is recognised by phrases it shows. If a laptop words one differently (another Windows build), add                  that wording here: one per line; + between phrases that must all show.",
+            );
+            self.wf_phr_state = self.wf_phr_state.min(wf.states.len() - 1);
+            let before = self.wf_phr_state;
+            egui::ComboBox::from_id_salt(("wf_phr_state", sel)).selected_text(&wf.states[self.wf_phr_state].name).show_ui(ui, |ui| {
+                for (i, s) in wf.states.iter().enumerate() {
+                    ui.selectable_value(&mut self.wf_phr_state, i, &s.name);
+                }
+            });
+            let state = &wf.states[self.wf_phr_state];
+            // The rows follow the file: a different state, or the file changed under them, starts again from it.
+            let from_file: Vec<String> = state.detect.text.iter().map(|set| set.join(" + ")).collect();
+            if before != self.wf_phr_state || self.wf_phr_rows.as_ref().is_none_or(|(n, _)| *n != state.name) {
+                self.wf_phr_rows = Some((state.name.clone(), from_file.clone()));
+            }
+            let editable = path.is_some() && !running;
+            let rows = &mut self.wf_phr_rows.as_mut().expect("set above").1;
+            let mut remove = None;
+            for (i, row) in rows.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.add_enabled(editable, egui::TextEdit::singleline(row).desired_width(340.0));
+                    if editable && ui.small_button("Remove").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = remove {
+                rows.remove(i);
+            }
+            if rows.is_empty() {
+                ui.small("No phrases: this screen is recognised by its picture.");
+            }
+            let sets: Vec<Vec<String>> = rows
+                .iter()
+                .map(|r| r.split('+').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect::<Vec<_>>())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let changed = sets != state.detect.text;
+            ui.horizontal(|ui| {
+                if editable && ui.button("Add a wording").clicked() {
+                    rows.push(String::new());
+                }
+                let frame = self.capture.lock().unwrap().as_ref().and_then(|c| c.latest());
+                let b = ui.add_enabled(frame.is_some(), egui::Button::new("Read the screen now"));
+                let b = if frame.is_none() { b.on_disabled_hover_text("Open a video source first.") } else { b.on_hover_text("Reads the text on the current video, to check this screen's wording or copy a line.") };
+                if b.clicked() {
+                    let f = frame.expect("enabled only with a frame").to_gray();
+                    self.wf_phr_read = Some(kvmit_video::text::read_text(&f));
+                }
+            });
+            match &self.wf_phr_read {
+                Some(Ok(lines)) => {
+                    // Would this screen, as read now, count as the state (with the wording as edited)?
+                    let mut probe = state.detect.clone();
+                    probe.text = sets.clone();
+                    match probe.text_score(lines) {
+                        Some((score, _)) if score >= probe.text_threshold => {
+                            ui.colored_label(health_color(Health::Good, ui), format!("The screen shows this wording ({:.0}%).", score * 100.0));
+                        }
+                        Some((score, _)) => {
+                            ui.colored_label(health_color(Health::Bad, ui), format!("The screen does not show this wording (closest {:.0}%).", score * 100.0));
+                        }
+                        None => {}
+                    }
+                    ui.small(if editable { "On screen now (click a line to add it as a wording):" } else { "On screen now:" });
+                    let mut add = None;
+                    for l in lines.iter().filter(|l| !l.text.trim().is_empty()) {
+                        if editable {
+                            if ui.small_button(&l.text).clicked() {
+                                add = Some(l.text.trim().to_string());
+                            }
+                        } else {
+                            ui.small(&l.text);
+                        }
+                    }
+                    if let (Some(t), Some((_, rows))) = (add, self.wf_phr_rows.as_mut()) {
+                        rows.push(t);
+                    }
+                }
+                Some(Err(e)) => {
+                    ui.colored_label(health_color(Health::Working, ui), format!("Text cannot be read: {e}"));
+                }
+                None => {}
+            }
+            match &path {
+                None => {
+                    ui.small("A built-in workflow is not changed here: set up your copy first, then change its wording.");
+                }
+                Some(path) => {
+                    let why = if running {
+                        Some("A script is running.")
+                    } else if !changed {
+                        Some("Nothing changed.")
+                    } else {
+                        None
+                    };
+                    ui.horizontal(|ui| {
+                        let b = ui.add_enabled(why.is_none(), egui::Button::new("Save wording"));
+                        let b = match why {
+                            Some(w) => b.on_disabled_hover_text(w),
+                            None => b.on_hover_text(format!(
+                                "Changes only {}'s phrases in {}. A checkpoint saved before the change will not resume.",
+                                state.name,
+                                path.display()
+                            )),
+                        };
+                        if b.clicked() {
+                            let source = self.library[sel].source.clone();
+                            let saved = kvmit_script::setup::set_phrases(&source, &state.name, &sets)
+                                .and_then(|t| crate::wf_view::rewrite_workflow(path, &source, &t));
+                            match saved {
+                                Ok(()) => {
+                                    self.wf_reload = Some(path.clone());
+                                    self.wf_phr_rows = None;
+                                    self.set_notice(format!("Saved {}'s wording: try it with a dry run.", state.name));
+                                }
+                                Err(e) => self.set_notice(format!("Not saved: {e}")),
+                            }
+                        }
+                        if changed && ui.button("Undo changes").clicked() {
+                            self.wf_phr_rows = Some((state.name.clone(), from_file.clone()));
+                        }
+                    });
+                }
+            }
+        });
+    }
+
     /// A workflow's setup form: its setup values as choices or text, and either "Save my copy" (a built-in: writes a
     /// new file into the scripts folder) or "Save profile" (a file: rewrites only those values in it). Everything else
     /// in the workflow is shown, not changed.
@@ -1348,6 +1497,8 @@ impl App {
             self.wf_allow_missing = false;
         }
         self.references_ui(ui, &wf, &base);
+        let running = self.run_handle.as_ref().is_some_and(|r| r.running());
+        self.phrases_ui(ui, &wf, sel, running);
         let external = self.library[sel].path.is_some();
         let source = entry_source(&self.library[sel]);
         if external {
