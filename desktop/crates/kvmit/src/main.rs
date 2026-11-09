@@ -100,9 +100,14 @@ enum Cmd {
         /// only if it shows that state or one that may follow it, and actions already sent are not sent again unasked.
         #[arg(long)]
         resume: bool,
-        /// Workflows: when the run ends, save its trace (JSONL) and notes (Markdown) in the scripts folder. No secrets.
+        /// Workflows: also save a dry run's trace and notes. A live run always saves its record (trace and notes, no
+        /// secrets) in `runs/` in the scripts folder.
         #[arg(long)]
         save_trace: bool,
+        /// Workflows: the laptop this run is on (asset tag or serial). It names the run record and the checkpoint; a
+        /// checkpoint resumes only with the name it was saved with.
+        #[arg(long, default_value = "")]
+        laptop: String,
         /// Workflows: check the file and list its reference images (present or missing), without connecting to anything.
         /// Make a missing one with `kvmit video snap <path>` while the target shows that screen.
         #[arg(long)]
@@ -333,7 +338,7 @@ fn real_main(cli: Cli) -> R<()> {
             script.steps.push(if keys.len() == 1 { Step::Key(keys[0].clone()) } else { Step::Chord(keys) });
             execute(cli.device, None, cfg, script, PathBuf::from("."), Vars::new(), false, true)
         }
-        Cmd::Run { file, vars, dry_run, yes, video, resume, save_trace, check, allow_missing_pictures } => {
+        Cmd::Run { file, vars, dry_run, yes, video, resume, save_trace, check, allow_missing_pictures, laptop } => {
             let src = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             if kvmit_script::workflow::is_workflow_source(&src) {
                 if !vars.is_empty() {
@@ -342,10 +347,11 @@ fn real_main(cli: Cli) -> R<()> {
                 if check {
                     return check_workflow(&file, &src);
                 }
-                let run = WfRun { file, dry: dry_run, yes, resume, save_trace, allow_missing_pictures };
+                let laptop = kvmit::wf_view::laptop_name(&laptop)?;
+                let run = WfRun { file, dry: dry_run, yes, resume, save_trace, allow_missing_pictures, laptop };
                 return run_workflow_cmd(cli.device, video, cfg, &src, run);
             }
-            if resume || save_trace || check || allow_missing_pictures {
+            if resume || save_trace || check || allow_missing_pictures || !laptop.is_empty() {
                 return Err("--resume, --save-trace, --check and --allow-missing-pictures are for workflows (files with `workflow_format = 1`)".into());
             }
             let script = Script::parse(&src)?;
@@ -678,6 +684,7 @@ struct WfRun {
     resume: bool,
     save_trace: bool,
     allow_missing_pictures: bool,
+    laptop: String,
 }
 
 /// `kvmit run` for a workflow: what the app's workflow panel does, in a terminal. Secrets are prompted without echo,
@@ -724,7 +731,11 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     }
     let shown = if a.resume {
         let (raw, cp) = saved.ok_or("no saved checkpoint for this workflow on this adapter (none was saved, the run completed, or the file changed since)")?;
-        println!("resuming from {} (the screen is looked at first)", cp.state);
+        if let Some(why) = wf_view::resume_refusal(&raw, &a.laptop) {
+            return Err(format!("{why} (--laptop)").into());
+        }
+        let (on, at) = wf_view::checkpoint_laptop(&raw);
+        println!("resuming {}from {} ({}; the screen is looked at first)", if on.is_empty() { String::new() } else { format!("{on} ") }, cp.state, wf_view::ago(at));
         Some(raw)
     } else {
         None
@@ -759,7 +770,7 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     };
     // Kept as soon as the run ends, inside the connection: tearing the link down afterwards can be slow.
     let keep = |report: &kvmit_script::WorkflowReport, claim: Option<&wf_view::Claim>| {
-        wf_view::keep_checkpoint(&dir, &slot, src, a.dry, &wf, report, claim)
+        wf_view::keep_checkpoint(&dir, &slot, src, a.dry, &wf, report, claim, &a.laptop)
     };
     let (report, kept) = if a.dry {
         // A dry run sends nothing and takes no lock: it may follow the checkpoint as read.
@@ -773,7 +784,7 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
         let k = keep(&r, None);
         (r, k)
     } else {
-        with_device(Some(adapter), cfg.clone(), |rt, dev| {
+        with_device(Some(adapter.clone()), cfg.clone(), |rt, dev| {
             // Connected; before any key: the slot is locked and its saved checkpoint set aside, so none older than this
             // run can be resumed, and no second run of this workflow on this adapter starts meanwhile.
             let mut claim = wf_view::claim_checkpoint(&dir, &slot)?;
@@ -802,7 +813,12 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
         let hint = if msg.starts_with("Saved") { " (`kvmit run <file> --resume`, or Resume in the app)" } else { "" };
         println!("{msg}{hint}");
     }
-    if a.save_trace {
+    if !a.dry {
+        match wf_view::save_run_record(&dir, &a.laptop, &adapter, &wf, &report) {
+            Ok(m) => println!("{m}"),
+            Err(e) => eprintln!("warning: {e}"),
+        }
+    } else if a.save_trace {
         let jsonl = kvmit_script::workflow::trace_jsonl(&report);
         let md = kvmit_script::workflow::trace_markdown(&wf, &report);
         match wf_view::save_exports(&dir, &kvmit_record::naming::stamp_now(), &jsonl, &md) {

@@ -118,20 +118,24 @@ for the ticket.
 
 1. Plug the adapter into the laptop's USB port and its HDMI output into the capture card. Turn it on and wait for the
    region screen.
-2. In kvm-it, select your copy. Enter the user's **sign-in** and **password**, tick that you reviewed the workflow, and
-   click **Run** (or `kvmit run <your copy>.toml`).
+2. In kvm-it, select your copy. Type the laptop's asset tag or serial under **This laptop** (optional, but it is what
+   Resume and the run record go by), enter the user's **sign-in** and **password**, tick that you reviewed the
+   workflow, and click **Run** (or `kvmit run <your copy>.toml --laptop <name>`).
 3. Watch the timeline. At **Your turn** steps, do the step at the laptop: connect the network, have the user approve MFA,
    choose the privacy settings. The run sees the screen move on and continues by itself.
 4. It ends at Windows Hello or the desktop: hand the laptop to the user.
 
-Add `--save-trace` (or click **Save trace and notes** after the run) to keep a record for the ticket. Traces never contain
-the password or anything typed.
+Every live run, completed or stopped, saves its record in `runs\` in the scripts folder: the trace and notes, named by
+the time and the laptop, with the laptop, the adapter and the result at the top. Records never contain the password or
+anything typed. **Copy notes** puts the notes on the clipboard for a ticket.
 
 ### Several laptops at once
 
 Each laptop needs its own adapter and capture card. In the terminal, run one `kvmit run` per laptop, each with its own
 `--device <adapter>` and `--video <card>` (`kvmit scan` and `kvmit video list` show them). Each adapter keeps its own
 checkpoint, so a stopped laptop resumes from its own last step, and the same workflow can run on many adapters at once.
+Name each laptop (`--laptop`): a checkpoint resumes only on the laptop it names, so moving an adapter to the next
+laptop never resumes the last one's run there.
 
 ## When it stops
 
@@ -152,6 +156,7 @@ first and carries on only from the step it stopped at or the next one.
 | *entry check failed: deployment_mode* | the laptop showed the other method's screen (Autopilot vs work account) | the laptop is (or is not) registered for Autopilot: use the other copy, or fix the registration |
 | *entry check failed: accept_license* | the licence screen appeared and your copy says stop there | accept it by hand, then Resume |
 | *the screen did not move on* | the step was done but the next screen never came (slow network, a dialog) | finish by hand, then Resume |
+| *The saved run was on laptop X* (Resume is off) | the adapter's saved run belongs to another laptop | run this laptop from the start; the other one resumes with its own name |
 | *does not match the checkpoint; not resuming* | the laptop is no longer where the run stopped | run again from the start (it recognises the screen it is on) |
 | *another run of this workflow on this adapter is in progress* | a run of this copy is already using this adapter, or one crashed | if none is running, check the laptop, delete the `.lock` file named in the message, then run again |
 
@@ -166,6 +171,6 @@ Everything lives in your scripts folder (`Documents\kvm-it\scripts` on Windows; 
 | `windows-11-oobe-provisioning-<name>.toml` | your copy |
 | `oobe-win11\*.png` | saved screen pictures, only where text cannot be read (shared by every copy in the folder) |
 | `checkpoints\` | where a stopped run is kept for Resume (no secrets, no pictures) |
-| `workflow-run-*.trace.jsonl`, `*.notes.md` | saved traces and notes |
+| `runs\workflow-run-<time>-<laptop>.trace.jsonl`, `.notes.md` | each live run's record |
 
 How workflows work in general (states, checks, writing your own) is in [the UX notes](ux.md#stateful-workflows-issue-46).

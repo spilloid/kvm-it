@@ -214,6 +214,9 @@ pub struct App {
     wf_allow_missing: bool,
     /// The states that acceptance named: a longer list needs it again.
     wf_allow_for: Vec<String>,
+    /// The laptop this run is on, as named by the operator (asset tag, serial; optional): it goes into the checkpoint
+    /// and the run record, and a checkpoint resumes only on the laptop it names.
+    wf_laptop: String,
 }
 
 /// The id of a workflow secret's password field: explicit, so its state can be found and removed, and tied to the
@@ -329,6 +332,7 @@ impl App {
             wf_reload: None,
             wf_allow_missing: false,
             wf_allow_for: Vec::new(),
+            wf_laptop: String::new(),
             purge_ids: Vec::new(),
             wf_generation: 0,
             wf_saved: None,
@@ -1005,6 +1009,7 @@ impl App {
             (handle.cancel.clone(), handle.done.clone(), handle.log.clone(), handle.confirm.clone(), handle.outcome.clone());
         let (rt, capture, shared2) = (self.rt.handle().clone(), self.capture.clone(), shared.clone());
         let allow_missing = self.wf_allow_missing;
+        let laptop = crate::wf_view::laptop_name(&self.wf_laptop).unwrap_or_default();
         // The states named when the box was ticked: a run that finds any other missing is refused.
         let allow_only: std::collections::BTreeSet<String> = self.wf_allow_for.iter().cloned().collect();
         std::thread::spawn(move || {
@@ -1037,8 +1042,15 @@ impl App {
                 ctx4.request_repaint();
             });
             *outcome.lock().unwrap() = Some(crate::wf_view::outcome(&report.result));
-            let kept = slot.as_ref().and_then(|s| crate::wf_view::keep_checkpoint(&files.script_dir, s, &files.text, dry, &wf, &report, claim.as_ref()));
+            let kept = slot
+                .as_ref()
+                .and_then(|s| crate::wf_view::keep_checkpoint(&files.script_dir, s, &files.text, dry, &wf, &report, claim.as_ref(), &laptop));
             if let Some(msg) = kept {
+                log.lock().unwrap().push(msg);
+            }
+            // Every live run leaves its record, completed or stopped.
+            if let (false, Some(s)) = (dry, slot.as_ref()) {
+                let msg = crate::wf_view::save_run_record(&files.script_dir, &laptop, &s.adapter, &wf, &report).unwrap_or_else(|e| e);
                 log.lock().unwrap().push(msg);
             }
             {
@@ -1346,7 +1358,12 @@ impl App {
             missing.map(|k| format!("Enter {} first.", wf.secrets.get(&k).cloned().unwrap_or(k)))
         });
         let busy = running.then(|| "A script is already running.".to_string());
-        let why_run = why_ready.clone().or(busy.clone()).or(uistate::send_block_reason(self.device().is_some(), self.input_idle()).map(str::to_string));
+        let why_laptop = crate::wf_view::laptop_name(&self.wf_laptop).err();
+        let why_run = why_ready
+            .clone()
+            .or(busy.clone())
+            .or(why_laptop)
+            .or(uistate::send_block_reason(self.device().is_some(), self.input_idle()).map(str::to_string));
         let why_dry = why_unsaved.or(busy.clone()).or(if self.capture.lock().unwrap().is_none() {
             Some("Open a video source first: a dry run still watches the screen.".to_string())
         } else {
@@ -1394,6 +1411,14 @@ impl App {
         // What is resumable is the saved checkpoint (written by a stopped live run here or by `kvmit run`).
         let checkpoint = if running { None } else { self.wf_saved.clone() };
         ui.horizontal(|ui| {
+            ui.label("This laptop");
+            ui.add_enabled(
+                !running,
+                egui::TextEdit::singleline(&mut self.wf_laptop).hint_text("asset tag or serial (optional)").desired_width(220.0),
+            )
+            .on_hover_text("Names this laptop's run record, and its checkpoint: Resume continues only on the laptop it names.");
+        });
+        ui.horizontal(|ui| {
             let r = ui.add_enabled(why_run.is_none(), egui::Button::new("▶ Run"));
             if let Some(w) = &why_run {
                 r.clone().on_disabled_hover_text(w);
@@ -1411,9 +1436,15 @@ impl App {
                 self.start_workflow((wf.clone(), source.clone()), files.clone(), dry, true, None, ctx.clone());
             }
             if let Some((shown, cp)) = &checkpoint {
-                let r = ui.add_enabled(why_run.is_none(), egui::Button::new(format!("Resume from {}", cp.state)));
+                let (on, at) = crate::wf_view::checkpoint_laptop(shown);
+                let label = match on.is_empty() {
+                    true => format!("Resume from {} ({})", cp.state, crate::wf_view::ago(at)),
+                    false => format!("Resume {on} from {} ({})", cp.state, crate::wf_view::ago(at)),
+                };
+                let why_resume = why_run.clone().or(crate::wf_view::resume_refusal(shown, &self.wf_laptop));
+                let r = ui.add_enabled(why_resume.is_none(), egui::Button::new(label));
                 r.clone().on_hover_text("Looks at the screen first; continues only if it shows that state or one that may follow it.");
-                if let Some(w) = &why_run {
+                if let Some(w) = &why_resume {
                     r.clone().on_disabled_hover_text(w);
                 }
                 if r.clicked() {

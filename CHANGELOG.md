@@ -16,6 +16,11 @@
   is set.
 - **The sign-in is read back before Enter** (`verify_typed`, `submit`): with Caps Lock on at the laptop the run stops
   naming it; with another keyboard layout (a `"` for the `@`) it stops before Enter. VM-verified both ways.
+- **Each laptop has its own run** (general review #8): name it under **This laptop** (`kvmit run --laptop`). The
+  checkpoint records the name and when it was saved; Resume says both, and is refused on a laptop with another name
+  (moving the adapter to the next laptop no longer offers the last one's checkpoint). **Every live run saves its
+  record** (trace and notes, no secrets) in `runs/`, named by the time and the laptop, headed by the laptop, the
+  adapter and the result.
 - `kvmit run --check` and the app's Reference screens say which screens are recognised by text on this computer and
   which pictures are not needed.
 
