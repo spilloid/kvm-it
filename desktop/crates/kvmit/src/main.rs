@@ -646,12 +646,15 @@ fn workflow_cmd(cmd: WorkflowCmd, cfg: &Config) -> R<()> {
                     }
                 }
             }
+            if let Some(f) = wf.unchosen().into_iter().find(|f| !values.contains_key(&f.key)) {
+                return Err(format!("{}: choose it with --set {}=<{}>", f.label, f.key, f.choices.iter().map(|c| c.value.as_str()).collect::<Vec<_>>().join("|")).into());
+            }
             let text = kvmit_script::setup::apply(b.source, &values)?;
             let name = name.unwrap_or_else(|| kvmit::wf_view::copy_file_name(b.file, &values));
             let path = kvmit::wf_view::write_new_workflow(&dir, &name, &text)?;
             println!("wrote {}", path.display());
             print_setup(&kvmit_script::Workflow::parse(&text)?);
-            println!("next: save its reference screens (`kvmit run {} --check` lists them), then a dry run", path.display());
+            println!("next: `kvmit run {} --check`, then a dry run", path.display());
             Ok(())
         }
         WorkflowCmd::Set { file, set } => {

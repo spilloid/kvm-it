@@ -14,14 +14,16 @@ account = "username"
 # "work_account": it is not; setup is told "Set up for work or school" and joins Microsoft Entra with the user's account.
 # A device that shows the other path's screen stops the run before anything is typed there (when that screen's picture
 # is saved: without it, the screen may be taken for a similar one).
-deployment_mode = "autopilot"
+# Not chosen in the built-in workflow (empty): "Set up your copy" asks, and no run starts until it is chosen.
+deployment_mode = ""
 # The organisation's short name (names its branding picture under [tenants], used only where text cannot be read).
 tenant = "contoso"
 # The organisation's sign-in domain, the part after @. The sign-in entered must be an account in it, and the password is
 # typed only once the password page shows that very account.
 tenant_domain = "contoso.com"
 # The Microsoft Software License Terms screen is accepted only when the approved profile says so.
-accept_license = "yes"
+# Not chosen in the built-in workflow (empty), like deployment_mode.
+accept_license = ""
 
 # Prompted when the run starts, never saved, logged or exported.
 [secrets]

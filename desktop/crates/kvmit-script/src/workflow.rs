@@ -150,6 +150,9 @@ impl SetupField {
     /// Whether `value` may be set: one of the choices, or (free text) 1-64 printable characters; an organisation name
     /// is letters, digits, `-` and `_` only, since it names a file.
     pub fn check(&self, value: &str) -> Result<(), String> {
+        if !self.choices.is_empty() && value.is_empty() {
+            return Err(format!("{}: choose one", self.label));
+        }
         if !self.choices.is_empty() {
             return match self.choices.iter().any(|c| c.value == value) {
                 true => Ok(()),
@@ -406,7 +409,10 @@ fn setup_fields(
             choices.push(c);
         }
         let field = SetupField { key: r.key, label: r.label, help: r.help, choices };
-        field.check(current).map_err(|e| format!("[config] does not fit its setup: {e}"))?;
+        // An empty value of a choice is "not chosen yet": the file is valid, but no run starts until it is chosen.
+        if !(current.is_empty() && !field.choices.is_empty()) {
+            field.check(current).map_err(|e| format!("[config] does not fit its setup: {e}"))?;
+        }
         out.push(field);
     }
     Ok(out)
@@ -732,6 +738,12 @@ impl Workflow {
             },
             states,
         })
+    }
+
+    /// The setup choices not made yet (an empty value): a built-in workflow leaves the consequential ones for its
+    /// user to choose, and no run starts until they are.
+    pub fn unchosen(&self) -> Vec<&SetupField> {
+        self.setup.iter().filter(|f| !f.choices.is_empty() && self.config.get(&f.key).is_some_and(|v| v.is_empty())).collect()
     }
 
     pub fn state(&self, name: &str) -> Option<&StateDef> {
@@ -1986,6 +1998,13 @@ fn precheck(wf: &Workflow, secrets: &Secrets, opts: &WorkflowOptions, resume: Op
     // Privacy first: no other check may report anything from the file before this one has passed.
     if let Some(place) = secret_place(wf, secrets, resume) {
         return Err(WorkflowError::SecretInFile { place });
+    }
+    let unchosen = wf.unchosen();
+    if !unchosen.is_empty() {
+        return Err(WorkflowError::Options(format!(
+            "set up this workflow first (Set up your copy, or `kvmit workflow new`): choose {}",
+            unchosen.iter().map(|f| format!("\"{}\"", f.label)).collect::<Vec<_>>().join(" and ")
+        )));
     }
     if opts.run.key_hold > MAX_KEY_TIMING || opts.run.key_gap > MAX_KEY_TIMING {
         return Err(WorkflowError::Options("key hold and key gap must be at most 100 ms in a workflow".into()));

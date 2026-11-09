@@ -329,9 +329,23 @@ mod tests {
 
     fn provisioning(mode: &str) -> Workflow {
         let b = BUILTINS.iter().find(|b| b.file == "windows-11-oobe-provisioning.toml").unwrap();
-        // Only the profile's line: the guards say `deployment_mode = "..."` too.
-        let src = b.source.replacen("\ndeployment_mode = \"autopilot\"", &format!("\ndeployment_mode = \"{mode}\""), 1);
-        Workflow::parse(&src).unwrap()
+        // The built-in leaves both choices open: a copy makes them (as Set up your copy does).
+        let values = [("deployment_mode".to_string(), mode.to_string()), ("accept_license".to_string(), "yes".to_string())].into();
+        Workflow::parse(&kvmit_script::setup::apply(b.source, &values).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_built_in_provisioning_workflow_runs_only_once_its_choices_are_made() {
+        let b = BUILTINS.iter().find(|b| b.file == "windows-11-oobe-provisioning.toml").unwrap();
+        let wf = Workflow::parse(b.source).unwrap();
+        let open: Vec<&str> = wf.unchosen().iter().map(|f| f.key.as_str()).collect();
+        assert_eq!(open, ["deployment_mode", "accept_license"], "method and licence are the user's to choose");
+        let mut t = sim::Target::new(vec![("region", sim::Next::Enter)]);
+        let r = provision(&wf, &mut t);
+        assert!(matches!(&r.result, Err(kvmit_script::WorkflowError::Options(m)) if m.contains("set up this workflow first")), "{:?}", r.result);
+        assert!(t.typed.is_empty() && t.pos == 0, "nothing sent");
+        // Choosing them in a copy is all it takes.
+        assert!(provisioning("work_account").unchosen().is_empty());
     }
 
     fn provision(wf: &Workflow, target: &mut sim::Target) -> kvmit_script::WorkflowReport {

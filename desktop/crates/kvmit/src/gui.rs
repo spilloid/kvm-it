@@ -1159,8 +1159,8 @@ impl App {
         egui::CollapsingHeader::new(title).id_salt(("wf_setup", sel)).default_open(builtin.is_some()).show(ui, |ui| {
             if builtin.is_some() {
                 ui.label(
-                    "A built-in workflow holds an example organisation. Choose yours: Save my copy writes your own copy into \
-                     the scripts folder, selected next for its reference screens and a run.",
+                    "A built-in workflow holds an example organisation and leaves the choices that matter to you. Choose \
+                     yours: Save my copy writes your own copy into the scripts folder and selects it.",
                 );
             }
             let mut problem: Option<String> = None;
@@ -1220,7 +1220,7 @@ impl App {
                         match saved {
                             Ok(p) => {
                                 self.wf_reload = Some(p.clone());
-                                self.set_notice(format!("Saved {}: next, save its reference screens, then a dry run.", p.display()));
+                                self.set_notice(format!("Saved {}: next, a dry run.", p.display()));
                             }
                             Err(e) => self.set_notice(format!("Not saved: {e}")),
                         }

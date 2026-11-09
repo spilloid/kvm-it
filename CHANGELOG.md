@@ -20,6 +20,9 @@
   which pictures are not needed.
 
 ### Changed
+- **The built-in provisioning workflow no longer assumes Windows Autopilot and an accepted licence**: both are left
+  for you to choose (Set up your copy, `kvmit workflow new`), and no run starts until they are. A `[[setup]]` choice
+  whose `[config]` value is empty is "not chosen yet" (`Workflow::unchosen`).
 - A live run of a workflow that checks the sign-in by reading the screen does not start on a computer that cannot read
   text (it never sends the sign-in unchecked). A dry run still runs.
 - **Firmware: a paired adapter no longer opens a pairing window when it powers on.** Before, every power-on accepted a

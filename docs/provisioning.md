@@ -45,7 +45,8 @@ The built-in workflow names an example organisation. Make your own copy:
 | Your organisation's sign-in domain | the part after `@` in your users' sign-ins, such as `fabrikam.com` |
 | If setup shows the Windows licence terms | **Accept them**, or **Stop there** for a person to accept |
 
-Click **Save my copy**. It writes `windows-11-oobe-provisioning-<name>.toml` into your scripts folder (shown under the
+The method and the licence have no default: choose both (**Save my copy** stays off until you do, and the built-in
+workflow itself does not run). Click **Save my copy**. It writes `windows-11-oobe-provisioning-<name>.toml` into your scripts folder (shown under the
 list) and selects it.
 
 **From a terminal:**
@@ -54,7 +55,8 @@ list) and selects it.
 kvmit workflow new windows-11-oobe-provisioning
 ```
 
-It asks for each setting (Enter keeps the value shown). To answer up front instead:
+It asks for each setting (Enter keeps the value shown; the method and the licence must be chosen). To answer up front
+instead:
 
 ```
 kvmit workflow new windows-11-oobe-provisioning --set deployment_mode=work_account --set tenant=fabrikam --set tenant_domain=fabrikam.com --set accept_license=yes
