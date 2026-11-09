@@ -46,6 +46,9 @@
 - **Secrets typed by hand are handled like a workflow's** (general review #22, in part): `kvmit type --secret` refuses
   text given on the command line (it would stay in the shell's history) and always asks for it hidden; the app's Type
   box is wiped, with its undo history, once the text is sent. Secrets still pass through ordinary strings inside a run.
+- **A burst of keys has a real deadline** (general review #15): once a workflow starts sending after its last look,
+  the keys stop part-way if they run past 5 s by the clock (a slow or retrying link), every key is released, and the
+  run stops saying so; a resume asks before sending them again. Host-tested.
 - `kvmit run --check` and the app's Reference screens say which screens are recognised by text on this computer and
   which pictures are not needed.
 

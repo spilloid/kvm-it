@@ -25,6 +25,8 @@ pub enum RunError {
     Reference(String),
     Host(String),
     Cancelled,
+    /// The keys took longer than the deadline allows: stopped part-way (what was sent stays sent; every key is released).
+    Overran,
 }
 
 impl std::fmt::Display for RunError {
@@ -55,6 +57,10 @@ impl std::fmt::Display for RunError {
             RunError::Reference(s) => write!(f, "cannot load reference image: {s}"),
             RunError::Host(s) => write!(f, "device error: {s}"),
             RunError::Cancelled => write!(f, "aborted"),
+            RunError::Overran => write!(
+                f,
+                "the keys took longer than allowed after the last look at the screen; stopped part-way (what was sent stays sent, every key released)"
+            ),
         }
     }
 }
@@ -149,6 +155,9 @@ pub struct RunOptions {
     pub poll: Duration,
     /// Walk the script and emit events without sending anything or sleeping.
     pub dry_run: bool,
+    /// Stop before any further key or button once this moment has passed (a workflow's bound on how long keys may
+    /// go on after its last look at the screen, whatever the link's latency). `None`: no bound.
+    pub deadline: Option<std::time::Instant>,
 }
 
 impl Default for RunOptions {
@@ -159,6 +168,7 @@ impl Default for RunOptions {
             default_delay: Duration::ZERO,
             poll: Duration::from_millis(250),
             dry_run: false,
+            deadline: None,
         }
     }
 }
@@ -362,7 +372,13 @@ impl Runner<'_> {
         }
     }
     fn check(&self) -> Result<(), RunError> {
-        if self.host.cancelled() { Err(RunError::Cancelled) } else { Ok(()) }
+        if self.host.cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        if self.opts.deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return Err(RunError::Overran);
+        }
+        Ok(())
     }
     fn h<T>(r: Result<T, String>) -> Result<T, RunError> {
         r.map_err(RunError::Host)

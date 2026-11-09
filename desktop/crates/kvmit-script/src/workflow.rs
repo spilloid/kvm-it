@@ -1215,6 +1215,9 @@ pub struct WorkflowOptions {
     /// The laptop this run is on, as the operator named it (empty: not named). It is saved with the journal, the
     /// checkpoint and the run record, so it must not contain a prompted secret's value.
     pub laptop: String,
+    /// How long a burst of keys may go on, by the clock, once it starts after the last look (5 s by default): a slow
+    /// link stops it part-way rather than typing on into whatever the screen became.
+    pub action_deadline: Duration,
 }
 
 impl Default for WorkflowOptions {
@@ -1229,6 +1232,7 @@ impl Default for WorkflowOptions {
             allow_missing_pictures: false,
             allow_missing_only: None,
             laptop: String::new(),
+            action_deadline: Duration::from_secs(5),
         }
     }
 }
@@ -1802,7 +1806,8 @@ impl Engine<'_> {
             return Ok(());
         }
         let mut host = Scrubbed { inner: &mut *self.host, secrets: &self.secrets };
-        run(ops, &mut host, &self.opts.run).map_err(|e| match e {
+        let opts = RunOptions { deadline: Some(Instant::now() + self.opts.action_deadline), ..self.opts.run.clone() };
+        run(ops, &mut host, &opts).map_err(|e| match e {
             RunError::Cancelled => WorkflowError::Cancelled,
             error => WorkflowError::Action { state: s.name.clone(), error },
         })

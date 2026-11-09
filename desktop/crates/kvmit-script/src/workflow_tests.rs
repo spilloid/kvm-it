@@ -75,10 +75,15 @@ struct Sim {
     persisted: Vec<(Checkpoint, usize)>,
     /// Recording progress fails from the Nth record on (1-based): a full disk.
     fail_persist_at: Option<usize>,
+    /// Each key press really takes this long (a slow link: acknowledgements and retries).
+    key_cost: Duration,
 }
 
 impl Host for Sim {
     fn key_down(&mut self, k: Key) -> Result<(), String> {
+        if !self.key_cost.is_zero() {
+            std::thread::sleep(self.key_cost);
+        }
         self.keys.push(format!("dn {:02x}", k.0));
         Ok(())
     }
@@ -1768,4 +1773,25 @@ fn a_laptop_name_holding_a_secret_is_refused_before_anything() {
     assert!(!trace_jsonl(&r).contains("hunter2"));
     assert_eq!(check_secrets(&w, &secrets(), None, "hunter2-wifi"), Err(WorkflowError::SecretInName));
     assert_eq!(check_secrets(&w, &secrets(), None, "LT-0042"), Ok(()));
+}
+
+#[test]
+fn keys_stop_part_way_once_they_run_past_the_deadline() {
+    // A slow link: REGION's text ("United States", then Enter) cannot finish within the bound after the last look.
+    let w = wf();
+    let mut sim = Sim { screens: screens(), key_cost: Duration::from_millis(20), ..Default::default() };
+    let o = WorkflowOptions { action_deadline: Duration::from_millis(100), ..opts() };
+    let r = go(&w, &mut sim, &o, None);
+    assert!(
+        matches!(&r.result, Err(WorkflowError::Action { state, error: RunError::Overran }) if state == "REGION"),
+        "{:?}",
+        r.result
+    );
+    let downs = sim.keys.iter().filter(|k| k.starts_with("dn")).count();
+    assert!(downs > 0 && downs < 14, "stopped part-way: {downs} key presses");
+    assert_eq!(enters(&sim), 0, "Enter never went");
+    assert_eq!(sim.keys.last().map(String::as_str), Some("release_all"));
+    // Part-way still counts as sent: a resume asks before sending again.
+    assert_eq!(r.checkpoint(&w).unwrap().attempted, Some(1));
+    assert!(r.result.unwrap_err().to_string().contains("stopped part-way"));
 }
