@@ -108,6 +108,11 @@ enum Cmd {
         /// checkpoint resumes only with the name it was saved with.
         #[arg(long, default_value = "")]
         laptop: String,
+        /// Workflows: a run of this file on this adapter did not end cleanly (the app or the computer stopped) and left
+        /// its lock: make its last recorded step the checkpoint and remove the lock, then exit. Only when no run is
+        /// going on. Then check the laptop and `--resume`.
+        #[arg(long)]
+        recover: bool,
         /// Workflows: check the file and list its reference images (present or missing), without connecting to anything.
         /// Make a missing one with `kvmit video snap <path>` while the target shows that screen.
         #[arg(long)]
@@ -338,7 +343,7 @@ fn real_main(cli: Cli) -> R<()> {
             script.steps.push(if keys.len() == 1 { Step::Key(keys[0].clone()) } else { Step::Chord(keys) });
             execute(cli.device, None, cfg, script, PathBuf::from("."), Vars::new(), false, true)
         }
-        Cmd::Run { file, vars, dry_run, yes, video, resume, save_trace, check, allow_missing_pictures, laptop } => {
+        Cmd::Run { file, vars, dry_run, yes, video, resume, save_trace, check, allow_missing_pictures, laptop, recover } => {
             let src = std::fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
             if kvmit_script::workflow::is_workflow_source(&src) {
                 if !vars.is_empty() {
@@ -348,11 +353,21 @@ fn real_main(cli: Cli) -> R<()> {
                     return check_workflow(&file, &src);
                 }
                 let laptop = kvmit::wf_view::laptop_name(&laptop)?;
+                if recover {
+                    let adapter = rt().block_on(session::resolve(cli.device.clone(), cfg.last_device.clone()))?;
+                    let slot = kvmit::wf_view::Slot::new(kvmit::wf_view::file_source(&file), &adapter);
+                    let dir = cfg.script_dir();
+                    if kvmit::wf_view::interrupted(&dir, &slot, &src).is_none() {
+                        return Err("no interrupted run of this workflow on this adapter (no lock is left)".into());
+                    }
+                    println!("{}", kvmit::wf_view::recover(&dir, &slot)?);
+                    return Ok(());
+                }
                 let run = WfRun { file, dry: dry_run, yes, resume, save_trace, allow_missing_pictures, laptop };
                 return run_workflow_cmd(cli.device, video, cfg, &src, run);
             }
-            if resume || save_trace || check || allow_missing_pictures || !laptop.is_empty() {
-                return Err("--resume, --save-trace, --check and --allow-missing-pictures are for workflows (files with `workflow_format = 1`)".into());
+            if resume || save_trace || check || allow_missing_pictures || !laptop.is_empty() || recover {
+                return Err("--resume, --save-trace, --check, --allow-missing-pictures, --laptop and --recover are for workflows (files with `workflow_format = 1`)".into());
             }
             let script = Script::parse(&src)?;
             let mut v: Vars = vars.into_iter().collect();
@@ -762,7 +777,11 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
         };
         let mut opts = kvmit_script::WorkflowOptions { allow_missing_pictures: a.allow_missing_pictures, ..Default::default() };
         opts.run.dry_run = a.dry;
-        kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume, &mut |t, _| {
+        kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume, &mut |t, c| {
+            // A live run journals where it is, in case it never ends cleanly.
+            if !a.dry {
+                wf_view::journal(&dir, &slot, src, &wf, t, c, &a.laptop);
+            }
             for line in wf_view::cli_lines(t) {
                 println!("{line}");
             }

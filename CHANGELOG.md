@@ -21,6 +21,11 @@
   (moving the adapter to the next laptop no longer offers the last one's checkpoint). **Every live run saves its
   record** (trace and notes, no secrets) in `runs/`, named by the time and the laptop, headed by the laptop, the
   adapter and the result.
+- **A run that never ends cleanly can be recovered** (general review #10): a live run journals its checkpoint as it
+  goes (after keys are sent, a screen is confirmed or a state entered). If the app or the computer stops mid-run, the
+  panel says which step it reached and offers **Recover the interrupted run** (`kvmit run --recover`): the journal
+  becomes the checkpoint and the lock is removed. Resume then looks at the screen first and asks before sending again
+  what may have been sent. No more deleting `.lock` files by hand.
 - `kvmit run --check` and the app's Reference screens say which screens are recognised by text on this computer and
   which pictures are not needed.
 

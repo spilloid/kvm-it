@@ -158,7 +158,7 @@ first and carries on only from the step it stopped at or the next one.
 | *the screen did not move on* | the step was done but the next screen never came (slow network, a dialog) | finish by hand, then Resume |
 | *The saved run was on laptop X* (Resume is off) | the adapter's saved run belongs to another laptop | run this laptop from the start; the other one resumes with its own name |
 | *does not match the checkpoint; not resuming* | the laptop is no longer where the run stopped | run again from the start (it recognises the screen it is on) |
-| *another run of this workflow on this adapter is in progress* | a run of this copy is already using this adapter, or one crashed | if none is running, check the laptop, delete the `.lock` file named in the message, then run again |
+| *another run of this workflow on this adapter is in progress, or one did not end cleanly* | a run of this copy is already using this adapter, or the app or computer stopped mid-run | if none is running: **Recover the interrupted run** (the panel offers it, saying which step it reached; or `kvmit run <your copy>.toml --recover`), check the laptop, then Resume. Resume looks at the screen first and asks before sending anything again |
 
 If something stops that this table does not explain, save the trace and notes and send them with the ticket.
 

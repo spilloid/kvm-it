@@ -603,6 +603,19 @@ pub fn save_checkpoint(
 ) -> std::io::Result<std::path::PathBuf> {
     let unnamed = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "the workflow's file name is not Unicode");
     let path = checkpoint_path(dir, slot).ok_or_else(unnamed)?;
+    write_saved(&path, slot, text, checkpoint, laptop)
+}
+
+/// Write a saved checkpoint (or a run's journal) to `path`: a temporary file renamed over it.
+fn write_saved(
+    path: &std::path::Path,
+    slot: &Slot,
+    text: &str,
+    checkpoint: &kvmit_script::Checkpoint,
+    laptop: &str,
+) -> std::io::Result<std::path::PathBuf> {
+    let unnamed = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "the workflow's file name is not Unicode");
+    let path = path.to_path_buf();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).ok();
     let saved = SavedCheckpoint {
         slot: slot.clone(),
@@ -628,6 +641,76 @@ pub fn save_checkpoint(
         let _ = std::fs::remove_file(&tmp);
     }
     written.map(|_| path)
+}
+
+/// Where a live run journals its checkpoint as it goes, beside its lock: if the run never ends cleanly (the app or
+/// the computer stopped), this says where it got to.
+pub fn journal_path(dir: &std::path::Path, slot: &Slot) -> Option<std::path::PathBuf> {
+    checkpoint_path(dir, slot).map(|p| p.with_extension("json.journal"))
+}
+
+/// During a live run, from its trace sink: after keys are sent, a screen is confirmed or a state is entered, the
+/// checkpoint so far is written to the journal. Best effort (a failed write only weakens recovery).
+#[allow(clippy::too_many_arguments)]
+pub fn journal(
+    dir: &std::path::Path,
+    slot: &Slot,
+    text: &str,
+    wf: &kvmit_script::Workflow,
+    entry: &kvmit_script::workflow::TraceEntry,
+    ctx: &kvmit_script::workflow::Context,
+    laptop: &str,
+) {
+    use kvmit_script::WorkflowEvent as E;
+    if !matches!(entry.event, E::ActionAttempted { .. } | E::TransitionVerified { .. } | E::StateEntered { .. } | E::TypedVerified { .. }) {
+        return;
+    }
+    if let (Some(path), Some(cp)) = (journal_path(dir, slot), ctx.checkpoint(wf)) {
+        let _ = write_saved(&path, slot, text, &cp, laptop);
+    }
+}
+
+/// A run of this workflow on this adapter that did not end cleanly: its lock is still there. With its journal, the
+/// state it reached and when; `Some((None, _))` without one (it stopped before recording anything).
+pub fn interrupted(dir: &std::path::Path, slot: &Slot, text: &str) -> Option<(Option<String>, Option<u64>)> {
+    let path = checkpoint_path(dir, slot)?;
+    if !path.with_extension("json.lock").exists() {
+        return None;
+    }
+    let journal = journal_path(dir, slot).and_then(|j| std::fs::read_to_string(j).ok());
+    Some(match journal {
+        Some(raw) if read_journal(&raw, slot, text).is_some() => {
+            let state = read_journal(&raw, slot, text);
+            (state, checkpoint_laptop(&raw).1)
+        }
+        _ => (None, None),
+    })
+}
+
+fn read_journal(raw: &str, slot: &Slot, text: &str) -> Option<String> {
+    let saved: SavedCheckpoint = serde_json::from_str(raw).ok()?;
+    (saved.slot == *slot && saved.definition == fnv(text.as_bytes())).then_some(saved.checkpoint.state)
+}
+
+/// Recover a run that did not end cleanly (only when none is going on: the operator says so). Its journal becomes
+/// the saved checkpoint (Resume then looks at the screen first, and asks before sending again what may have been
+/// sent); without a journal, the checkpoint it had set aside is put back. Then the lock is removed.
+pub fn recover(dir: &std::path::Path, slot: &Slot) -> Result<String, String> {
+    let path = checkpoint_path(dir, slot).ok_or("no checkpoint name")?;
+    let (lock, held) = (path.with_extension("json.lock"), path.with_extension("json.claimed"));
+    let journal = journal_path(dir, slot).ok_or("no journal name")?;
+    let msg = if journal.exists() {
+        std::fs::rename(&journal, &path).map_err(|e| format!("{}: {e}", journal.display()))?;
+        let _ = std::fs::remove_file(&held);
+        "Recovered: the interrupted run's last step is now its checkpoint. Check the laptop, then Resume (it looks at the screen first, and asks before sending anything again)."
+    } else if held.exists() {
+        std::fs::rename(&held, &path).map_err(|e| format!("{}: {e}", held.display()))?;
+        "Recovered: the interrupted run recorded nothing, so the checkpoint from before it is back."
+    } else {
+        "Recovered: the interrupted run recorded nothing, and there was no earlier checkpoint."
+    };
+    std::fs::remove_file(&lock).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).map_err(|e| format!("{}: {e}", lock.display()))?;
+    Ok(msg.into())
 }
 
 /// The saved checkpoint for exactly this slot and text, if there is one. A checkpoint of an earlier version of the
@@ -680,7 +763,8 @@ pub fn claim_checkpoint(dir: &std::path::Path, slot: &Slot) -> Result<Option<Cla
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             return Err(format!(
-                "another run of this workflow on this adapter is in progress (or one crashed: then delete {} and check the target before running)",
+                "another run of this workflow on this adapter is in progress, or one did not end cleanly: if none is \
+                 running, Recover it (in the app, or `kvmit run <file> --recover`), then check the laptop ({})",
                 lock.display()
             ))
         }
@@ -777,6 +861,10 @@ pub fn keep_checkpoint(
 ) -> Option<String> {
     if dry {
         return None;
+    }
+    // Ended cleanly: what the journal recorded is now the checkpoint (or nothing, after a completed run).
+    if let Some(j) = journal_path(dir, slot) {
+        let _ = std::fs::remove_file(j);
     }
     let sent = sent_keys(report);
     let saved = if report.result.is_ok() { None } else { report.checkpoint(wf).map(|cp| (save_checkpoint(dir, slot, text, &cp, laptop), cp.state)) };
@@ -1155,6 +1243,43 @@ mod tests {
         let notes = std::fs::read_dir(dir.join("runs")).unwrap().map(|e| e.unwrap().path()).find(|p| p.to_string_lossy().ends_with(".notes.md")).unwrap();
         let md = std::fs::read_to_string(notes).unwrap();
         assert!(md.starts_with("Laptop: LT 0042  \nAdapter: AA:BB  \nWorkflow: w  \nResult: stopped:"), "{md}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_run_that_never_ends_cleanly_is_recovered_from_its_journal() {
+        let dir = std::env::temp_dir().join(format!("kvmit-journal-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let text = "workflow_format = 1\nname = \"w\"\nstart = [\"A\"]\n[[states]]\nname = \"A\"\ndetect = { text = [\"Name your device\"] }\nnext = [\"B\"]\nactions = [ { key = \"ENTER\" } ]\n[[states]]\nname = \"B\"\ndetect = { text = [\"Done here\"] }\nterminal = true\n";
+        let wf = kvmit_script::Workflow::parse(text).unwrap();
+        let slot = Slot::new(Source::Builtin("w.toml".into()), "aa:bb");
+        // A live run claims the slot, sends keys in A (journalled), then the app dies: no keep_checkpoint.
+        let claim = claim_checkpoint(&dir, &slot).unwrap().unwrap();
+        assert_eq!(interrupted(&dir, &slot, text), Some((None, None)), "locked, nothing recorded yet");
+        let ctx = kvmit_script::workflow::Context { current: Some("A".into()), visit_attempts: 1, ..Default::default() };
+        let entry = kvmit_script::workflow::TraceEntry {
+            at_ms: 5,
+            event: kvmit_script::WorkflowEvent::ActionAttempted { state: "A".into(), attempt: 1, steps: 1, dry_run: false },
+        };
+        journal(&dir, &slot, text, &wf, &entry, &ctx, "LT-7");
+        let (state, at) = interrupted(&dir, &slot, text).unwrap();
+        assert_eq!(state.as_deref(), Some("A"));
+        assert!(at.is_some());
+        assert!(claim_checkpoint(&dir, &slot).unwrap_err().contains("Recover it"));
+        // Recovered: the journal is the checkpoint (keys were sent: a resume asks before sending again), unlocked.
+        assert!(recover(&dir, &slot).unwrap().starts_with("Recovered: the interrupted run's last step"));
+        assert_eq!(interrupted(&dir, &slot, text), None);
+        let (raw, cp) = load_checkpoint_raw(&dir, &slot, text).unwrap().unwrap();
+        assert_eq!((cp.state.as_str(), cp.attempted), ("A", Some(1)));
+        assert_eq!(checkpoint_laptop(&raw).0, "LT-7");
+        drop(claim);
+        // A run that ends cleanly leaves no journal behind.
+        let claim = claim_checkpoint(&dir, &slot).unwrap();
+        journal(&dir, &slot, text, &wf, &entry, &ctx, "");
+        let report = kvmit_script::WorkflowReport { result: Ok(()), trace: Vec::new(), context: Default::default() };
+        keep_checkpoint(&dir, &slot, text, false, &wf, &report, claim.as_ref(), "");
+        assert!(!journal_path(&dir, &slot).unwrap().exists());
+        assert_eq!(interrupted(&dir, &slot, text), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

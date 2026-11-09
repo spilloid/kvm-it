@@ -809,6 +809,23 @@ pub struct Context {
     pub history: Vec<Transition>,
 }
 
+impl Context {
+    /// Where a run is, as a checkpoint: what a resume needs. Taken during a run (a journal, in case the run never
+    /// ends cleanly) as well as at its end.
+    pub fn checkpoint(&self, wf: &Workflow) -> Option<Checkpoint> {
+        let state = self.current.clone()?;
+        Some(Checkpoint {
+            workflow: wf.name.clone(),
+            state,
+            derived: self.derived.iter().map(|(k, (v, _))| (k.clone(), v.clone())).collect(),
+            attempts: self.attempts.clone(),
+            attempted: Some(self.visit_attempts),
+            waiting: self.visit_waiting,
+            history: self.history.clone(),
+        })
+    }
+}
+
 /// One row of the variable inspector.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VarView {
@@ -1212,16 +1229,7 @@ pub struct WorkflowReport {
 impl WorkflowReport {
     /// What a run can resume from, if it stopped in a known state.
     pub fn checkpoint(&self, wf: &Workflow) -> Option<Checkpoint> {
-        let state = self.context.current.clone()?;
-        Some(Checkpoint {
-            workflow: wf.name.clone(),
-            state,
-            derived: self.context.derived.iter().map(|(k, (v, _))| (k.clone(), v.clone())).collect(),
-            attempts: self.context.attempts.clone(),
-            attempted: Some(self.context.visit_attempts),
-            waiting: self.context.visit_waiting,
-            history: self.context.history.clone(),
-        })
+        self.context.checkpoint(wf)
     }
 }
 

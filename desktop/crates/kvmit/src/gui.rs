@@ -217,6 +217,9 @@ pub struct App {
     /// The laptop this run is on, as named by the operator (asset tag, serial; optional): it goes into the checkpoint
     /// and the run record, and a checkpoint resumes only on the laptop it names.
     wf_laptop: String,
+    /// A run of this workflow on this adapter that did not end cleanly (its lock is left): the state its journal
+    /// reached and when. Read with the saved checkpoint.
+    wf_interrupted: Option<(Option<String>, Option<u64>)>,
 }
 
 /// The id of a workflow secret's password field: explicit, so its state can be found and removed, and tied to the
@@ -333,6 +336,7 @@ impl App {
             wf_allow_missing: false,
             wf_allow_for: Vec::new(),
             wf_laptop: String::new(),
+            wf_interrupted: None,
             purge_ids: Vec::new(),
             wf_generation: 0,
             wf_saved: None,
@@ -1033,6 +1037,10 @@ impl App {
             opts.run.dry_run = dry;
             let (log2, ctx4, sh) = (log.clone(), ctx.clone(), shared2.clone());
             let report = kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume.as_ref().map(|(_, cp)| cp), &mut |t, c| {
+                // A live run journals where it is, in case it never ends cleanly.
+                if let (false, Some(sl)) = (dry, slot.as_ref()) {
+                    crate::wf_view::journal(&files.script_dir, sl, &files.text, &wf, t, c, &laptop);
+                }
                 let mut s = sh.lock().unwrap();
                 s.trace.push(t.clone());
                 s.inspect = c.inspect();
@@ -1395,6 +1403,7 @@ impl App {
         let due = ended || self.wf_saved_read.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1));
         if let (false, true, Some(slot)) = (running, due, &slot) {
             self.wf_saved_read = Some(std::time::Instant::now());
+            self.wf_interrupted = crate::wf_view::interrupted(&files.script_dir, slot, &files.text);
             match crate::wf_view::load_checkpoint_raw(&files.script_dir, slot, &files.text) {
                 Ok(cp) => self.wf_saved = cp,
                 Err(e) => {
@@ -1410,6 +1419,25 @@ impl App {
         // A stopped run with a known state can be resumed: the engine looks at the screen again first, never replays.
         // What is resumable is the saved checkpoint (written by a stopped live run here or by `kvmit run`).
         let checkpoint = if running { None } else { self.wf_saved.clone() };
+        if let (false, Some((state, at)), Some(sl)) = (running, self.wf_interrupted.clone(), slot.as_ref()) {
+            let red = theme::palette(ui.visuals().dark_mode).bad_text;
+            let reached = match state {
+                Some(s) => format!("It reached {s} ({}); keys may have been sent there.", crate::wf_view::ago(at)),
+                None => "It recorded nothing.".to_string(),
+            };
+            ui.colored_label(red, format!("A run of this workflow on this adapter did not end cleanly (the app or the computer stopped). {reached}"));
+            let b = ui.button("Recover the interrupted run").on_hover_text(
+                "Only if no run is going on (in another window or a terminal). Its last step becomes the checkpoint: check the \
+                 laptop, then Resume, which looks at the screen first and asks before sending anything again.",
+            );
+            if b.clicked() {
+                match crate::wf_view::recover(&files.script_dir, sl) {
+                    Ok(m) => self.set_notice(m),
+                    Err(e) => self.set_notice(format!("Could not recover: {e}")),
+                }
+                self.wf_saved_read = None;
+            }
+        }
         ui.horizontal(|ui| {
             ui.label("This laptop");
             ui.add_enabled(
