@@ -71,6 +71,10 @@ struct Sim {
     echo: Option<&'static str>,
     /// Each reading of the screen's text really takes this long (a slow recogniser).
     read_delay: Duration,
+    /// Every record the run made of its progress, with how many key presses had been sent by then.
+    persisted: Vec<(Checkpoint, usize)>,
+    /// Recording progress fails from the Nth record on (1-based): a full disk.
+    fail_persist_at: Option<usize>,
 }
 
 impl Host for Sim {
@@ -187,6 +191,13 @@ impl Host for Sim {
             .enumerate()
             .map(|(i, l)| crate::text::TextLine { text: l.into(), rect: [0.55, 0.15 + 0.05 * i as f64, 0.3, 0.03] })
             .collect())
+    }
+    fn persist(&mut self, cp: &Checkpoint) -> Result<(), String> {
+        if self.fail_persist_at.is_some_and(|n| self.persisted.len() + 1 >= n) {
+            return Err("disk full".into());
+        }
+        self.persisted.push((cp.clone(), self.typed));
+        Ok(())
     }
     fn confirm(&mut self, message: &str) -> bool {
         self.asked.push(message.to_string());
@@ -1149,9 +1160,9 @@ fn the_secret_check_reads_decoded_fields() {
     let w = Workflow::parse(&src).unwrap();
     let s: Vars = [("wifi".to_string(), "pass-word".to_string())].into();
     assert!(!src.contains("pass-word"));
-    assert!(matches!(check_secrets(&w, &s, None), Err(WorkflowError::SecretInFile { .. })));
+    assert!(matches!(check_secrets(&w, &s, None, ""), Err(WorkflowError::SecretInFile { .. })));
     let s: Vars = [("wifi".to_string(), "other".to_string())].into();
-    assert_eq!(check_secrets(&w, &s, None), Ok(()));
+    assert_eq!(check_secrets(&w, &s, None, ""), Ok(()));
 }
 
 #[test]
@@ -1640,4 +1651,114 @@ fn accepting_missing_pictures_covers_only_the_states_named_when_it_was_accepted(
     let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png"], ..Default::default() };
     let r = go(&wf(), &mut sim, &allow, None);
     assert!(matches!(r.result, Err(WorkflowError::UnknownScreen { .. })), "{:?}", r.result);
+}
+
+#[test]
+fn every_burst_of_keys_is_recorded_before_it_is_sent_and_a_failed_record_sends_nothing() {
+    let w = wf();
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()));
+    // Every state entered, then every attempt, recorded before its keys: REGION's attempt with nothing typed yet.
+    let region: Vec<_> = sim.persisted.iter().filter(|(cp, _)| cp.state == "REGION").collect();
+    assert_eq!(region.iter().map(|(cp, typed)| (cp.attempted, *typed)).collect::<Vec<_>>(), [(Some(0), 0), (Some(1), 0)]);
+    let typed_before_network = sim.persisted.iter().find(|(cp, _)| cp.state == "NETWORK" && cp.attempted == Some(1)).unwrap().1;
+    assert!(typed_before_network > 0 && typed_before_network < sim.typed, "recorded after REGION's keys, before NETWORK's");
+    // Recording the first attempt fails (the second record): nothing at all is sent.
+    let mut sim = Sim { screens: screens(), fail_persist_at: Some(2), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::Journal(m)) if m == "disk full"), "{:?}", r.result);
+    assert_eq!(sim.typed, 0);
+    assert!(r.result.unwrap_err().to_string().contains("stopped before sending anything more"));
+    // A dry run records nothing.
+    let mut sim = Sim { timeline: Some(screens().into_iter().flat_map(|f| std::iter::repeat_n(f, 12)).collect()), screens: screens(), ..Default::default() };
+    let o = WorkflowOptions { run: RunOptions { dry_run: true, ..opts().run }, ..opts() };
+    let _ = go(&w, &mut sim, &o, None);
+    assert!(sim.persisted.is_empty());
+}
+
+#[test]
+fn a_resumed_visit_is_recorded_with_what_it_already_sent_before_anything_is_asked() {
+    let w = wf();
+    let cp = Checkpoint {
+        workflow: "test-oobe".into(),
+        state: "REGION".into(),
+        derived: BTreeMap::new(),
+        attempts: [("REGION".to_string(), 1)].into(),
+        attempted: Some(1),
+        waiting: false,
+        history: vec![],
+    };
+    // The run crashes while "Send them again?" is open: what it recorded must still say the keys were sent.
+    let mut sim = Sim { screens: screens(), pos: 0, confirms: [false].into(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), Some(&cp));
+    assert_eq!(r.result, Err(WorkflowError::ResumeDeclined { state: "REGION".into() }));
+    assert_eq!(sim.asked.len(), 1);
+    assert!(!sim.persisted.is_empty());
+    assert!(sim.persisted.iter().all(|(c, _)| c.state == "REGION" && c.attempted == Some(1)), "{:?}", sim.persisted);
+}
+
+#[test]
+fn a_manual_steps_wait_is_recorded_before_the_operator_does_it() {
+    let w = Workflow::parse(MANUAL).unwrap();
+    let timeline: Vec<Frame> = std::iter::repeat_n(solid(20), 8).chain(std::iter::repeat_n(solid(225), 20)).collect();
+    let mut sim = Sim { timeline: Some(timeline), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()));
+    let region: Vec<bool> = sim.persisted.iter().filter(|(c, _)| c.state == "REGION").map(|(c, _)| c.waiting).collect();
+    assert_eq!(region, [false, true], "entered, then waiting before the step is handed to the operator");
+    let at = |pred: &dyn Fn(&WorkflowEvent) -> bool| r.trace.iter().position(|t| pred(&t.event)).unwrap();
+    assert!(at(&|e| matches!(e, WorkflowEvent::ManualStepRequested { .. })) < at(&|e| matches!(e, WorkflowEvent::TransitionVerified { .. })));
+}
+
+#[test]
+fn a_stall_after_the_last_look_stops_before_the_keys() {
+    // The trace sink blocks (a slow terminal, a full pipe) right after the tenant check that ends the last look
+    // before AUTOPILOT's Enter: by the time the keys would go, the picture is older than the evidence allows.
+    let w = wf();
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), ..Default::default() };
+    let o = WorkflowOptions { evidence_age: Duration::from_millis(150), ..opts() };
+    let mut seen = 0;
+    let r = run_workflow(&w, &secrets(), &UsAnsi, &mut sim, &o, None, &mut |t, _| {
+        if matches!(t.event, WorkflowEvent::TenantVerified { .. }) {
+            seen += 1;
+            // The first check is before the gate; the second ends the last look.
+            if seen == 2 {
+                std::thread::sleep(Duration::from_millis(400));
+            }
+        }
+    });
+    assert!(matches!(&r.result, Err(WorkflowError::Text(m)) if m.contains("ms old")), "{:?}", r.result);
+    assert_eq!(enters(&sim), 3, "nothing sent on the enrolment screen");
+}
+
+#[test]
+fn an_address_inside_another_word_is_not_the_account_shown() {
+    for page in ["other!jane@contoso.com|Enter password", "-jane@contoso.com|Enter password", "x'jane@contoso.com|Enter password"] {
+        let (r, sim) = sign_in(page, "jane@contoso.com", false);
+        assert!(matches!(&r.result, Err(WorkflowError::AccountNotShown { .. })), "{page}: {:?}", r.result);
+        assert_eq!(enters(&sim), 1, "{page}: no password");
+    }
+    for page in ["(jane@contoso.com)|Enter password", "Signed in as jane@contoso.com.|Enter password"] {
+        let (r, _) = sign_in(page, "jane@contoso.com", false);
+        assert_eq!(r.result, Ok(()), "{page}");
+    }
+    // An entered sign-in that could never be read as one address is refused before anything is sent.
+    let (r, sim) = sign_in("jane@contoso.com|Enter password", "jane!x@contoso.com", false);
+    assert!(matches!(&r.result, Err(WorkflowError::Options(_))), "{:?}", r.result);
+    assert_eq!(sim.typed, 0);
+}
+
+#[test]
+fn a_laptop_name_holding_a_secret_is_refused_before_anything() {
+    let w = wf();
+    let mut sim = Sim { screens: screens(), ..Default::default() };
+    let o = WorkflowOptions { laptop: "rig hunter2-wifi".into(), ..opts() };
+    let r = go(&w, &mut sim, &o, None);
+    assert_eq!(r.result, Err(WorkflowError::SecretInName));
+    assert_eq!(sim.typed, 0);
+    assert!(sim.persisted.is_empty());
+    assert!(!trace_jsonl(&r).contains("hunter2"));
+    assert_eq!(check_secrets(&w, &secrets(), None, "hunter2-wifi"), Err(WorkflowError::SecretInName));
+    assert_eq!(check_secrets(&w, &secrets(), None, "LT-0042"), Ok(()));
 }

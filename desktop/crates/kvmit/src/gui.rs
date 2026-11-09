@@ -217,7 +217,7 @@ pub struct App {
     /// The laptop this run is on, as named by the operator (asset tag, serial; optional): it goes into the checkpoint
     /// and the run record, and a checkpoint resumes only on the laptop it names.
     wf_laptop: String,
-    /// A run of this workflow on this adapter that did not end cleanly (its lock is left): the state its journal
+    /// A run of this workflow on this adapter that did not end cleanly (none holds its lock, its marker is left): the state its journal
     /// reached and when. Read with the saved checkpoint.
     wf_interrupted: Option<(Option<String>, Option<u64>)>,
 }
@@ -918,6 +918,7 @@ impl App {
                     log2.lock().unwrap().push(line);
                     ctx2.request_repaint();
                 }),
+                journal: None,
             };
             let opts = RunOptions { dry_run: dry, ..Default::default() };
             let result = run(&ops, &mut host, &opts);
@@ -1028,19 +1029,20 @@ impl App {
                 confirm: Box::new(move |msg| ask(&confirm, &cancel2, msg, || ctx3.request_repaint())),
                 // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
                 on_event: Box::new(|_| {}),
+                // A live run journals its progress before what depends on it, in case it never ends cleanly.
+                journal: slot.clone().filter(|_| !dry).map(|sl| {
+                    crate::wf_view::journal_writer(files.script_dir.clone(), sl, files.text.clone(), laptop.clone())
+                }),
             };
             let mut opts = kvmit_script::WorkflowOptions {
                 allow_missing_pictures: allow_missing,
                 allow_missing_only: allow_missing.then_some(allow_only),
+                laptop: laptop.clone(),
                 ..Default::default()
             };
             opts.run.dry_run = dry;
             let (log2, ctx4, sh) = (log.clone(), ctx.clone(), shared2.clone());
             let report = kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume.as_ref().map(|(_, cp)| cp), &mut |t, c| {
-                // A live run journals where it is, in case it never ends cleanly.
-                if let (false, Some(sl)) = (dry, slot.as_ref()) {
-                    crate::wf_view::journal(&files.script_dir, sl, &files.text, &wf, t, c, &laptop);
-                }
                 let mut s = sh.lock().unwrap();
                 s.trace.push(t.clone());
                 s.inspect = c.inspect();

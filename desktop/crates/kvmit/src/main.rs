@@ -734,7 +734,7 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     // is still this one.
     let saved = if a.resume { wf_view::load_checkpoint_raw(&dir, &slot, src)? } else { None };
     // Field by field, decoded (an escape in the file cannot hide a value), as the engine checks before it publishes.
-    kvmit_script::workflow::check_secrets(&wf, &secrets, saved.as_ref().map(|(_, cp)| cp))?;
+    kvmit_script::workflow::check_secrets(&wf, &secrets, saved.as_ref().map(|(_, cp)| cp), &a.laptop)?;
     let name = if wf.name.is_empty() { "(unnamed)" } else { wf.name.as_str() };
     println!("workflow: {name}");
     if !wf.description.is_empty() {
@@ -774,14 +774,16 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
             confirm: Box::new(ask_stdin),
             // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
             on_event: Box::new(|_| {}),
+            // A live run journals its progress before what depends on it, in case it never ends cleanly.
+            journal: (!a.dry).then(|| wf_view::journal_writer(dir.clone(), slot.clone(), src.to_string(), a.laptop.clone())),
         };
-        let mut opts = kvmit_script::WorkflowOptions { allow_missing_pictures: a.allow_missing_pictures, ..Default::default() };
+        let mut opts = kvmit_script::WorkflowOptions {
+            allow_missing_pictures: a.allow_missing_pictures,
+            laptop: a.laptop.clone(),
+            ..Default::default()
+        };
         opts.run.dry_run = a.dry;
-        kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume, &mut |t, c| {
-            // A live run journals where it is, in case it never ends cleanly.
-            if !a.dry {
-                wf_view::journal(&dir, &slot, src, &wf, t, c, &a.laptop);
-            }
+        kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume, &mut |t, _| {
             for line in wf_view::cli_lines(t) {
                 println!("{line}");
             }
@@ -882,6 +884,7 @@ fn execute(id: Option<String>, video: Option<String>, cfg: Config, script: Scrip
                 RunEvent::Aborted { reason } => eprintln!("stopped: {reason}"),
                 _ => {}
             }),
+            journal: None,
         };
         run(&ops, &mut host, &RunOptions { dry_run: dry, ..Default::default() })?;
         Ok(())

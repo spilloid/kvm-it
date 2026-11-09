@@ -129,6 +129,12 @@ pub trait Host {
     fn read_text(&mut self, _frame: &Frame) -> Result<Vec<crate::text::TextLine>, String> {
         Err("this host cannot read text".into())
     }
+    /// A live workflow's progress, recorded durably before what depends on it: a state entered, a wait begun, keys
+    /// about to be sent (a journal a crash cannot lose). An error stops the run before those keys. Hosts that keep no
+    /// journal record nothing.
+    fn persist(&mut self, _checkpoint: &crate::workflow::Checkpoint) -> Result<(), String> {
+        Ok(())
+    }
     fn confirm(&mut self, message: &str) -> bool;
     fn cancelled(&self) -> bool;
     fn event(&mut self, ev: RunEvent);

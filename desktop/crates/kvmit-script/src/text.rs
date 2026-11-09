@@ -131,18 +131,30 @@ pub fn typed_shown(lines: &[TextLine], value: &str) -> Typed {
     }
 }
 
-/// Every whole e-mail address on the screen (`name@domain`, as one run of address characters with one `@`), as read.
-/// Punctuation inside an address (`contoso-it.com`, `first.last`) is kept: this is not the prose normalisation.
+/// The characters an address may hold, on screen and as entered (see [`is_address`]).
+pub fn address_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-' | '@' | '\'')
+}
+
+/// `name@domain`: address characters only, one `@`, something before it and a dot in the domain.
+pub fn is_address(s: &str) -> bool {
+    s.chars().all(address_char)
+        && s.split_once('@').is_some_and(|(name, domain)| !name.is_empty() && domain.contains('.') && !domain.contains('@'))
+}
+
+/// Every whole e-mail address on the screen, as read: a word (between spaces, or brackets, quotes, commas, colons
+/// and semicolons) that is an address in full ([`is_address`]), less only a full stop that ends a sentence. Nothing is
+/// trimmed off its name: `other!jane@contoso.com` or `-jane@contoso.com` is not `jane@contoso.com`, and a word with
+/// anything else in it is no address at all. Punctuation inside one (`contoso-it.com`, `first.last`) is kept: this
+/// is not the prose normalisation.
 pub fn accounts_shown(lines: &[TextLine]) -> Vec<String> {
-    let in_address = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '%' | '+' | '-' | '@' | '\'');
+    let between = |c: char| c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | '[' | ']' | '"' | ',' | ';' | ':');
     let mut out = Vec::new();
     for l in lines {
-        for token in l.text.split(|c: char| !in_address(c)) {
-            let token = token.trim_matches(|c: char| matches!(c, '.' | '-' | '\''));
-            if let Some((name, domain)) = token.split_once('@') {
-                if !name.is_empty() && domain.contains('.') && !domain.contains('@') {
-                    out.push(token.to_string());
-                }
+        for word in l.text.split(between) {
+            let word = word.strip_suffix('.').unwrap_or(word);
+            if is_address(word) {
+                out.push(word.to_string());
             }
         }
     }

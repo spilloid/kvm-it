@@ -1290,3 +1290,26 @@ Read-only plus probe crates. All ten round-68 fixes verified (fix 5 with the gap
 | 7 | Low | `evidence_age` unbounded; a frame without a capture time was aged by the read alone | **Confirmed.** Bounded to 30 s; a live check needs the capture time. Test. |
 | 8 | Low | No test of the age refusal; the template sim passed with or without Home and ignored navigation keys | **Confirmed.** Tests; the sim hides the last letter until Home and records navigation keys. |
 | 9 | Low | Tesseract's stderr drained only after exit: a full pipe looked like "too slow" | **Confirmed.** Drained on its own thread. |
+
+## 2026-11-09 - 0.6 branch since round 68 (`3226271..efa6545`): review round 70 (Codex `gpt-6-astra`)
+
+The Codex round owed after round 69's stand-in. Read-only, over everything since round 68: the round-68/69 fixes,
+first-use choices, round-67 fixes, laptop names and run records, the run journal and Recover, firmware 0.2.1 and its
+rebuilt bundle. **NO SIGN-OFF**: 7 High, 2 Medium; all confirmed, all fixed in the next commit. Round-68/69 fixes,
+first-use gates, the round-67 changes and laptop file naming held; the firmware gate distinguishes bonded and fresh
+adapters, and the rebuilt bundle's source hash and checksums match (pairing not exercised on hardware).
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | The account check trimmed and split words: `other!jane@contoso.com` or `-jane@contoso.com` passed as `jane@contoso.com` | **Confirmed.** An address must be a whole word made only of address characters (only a sentence's full stop is dropped); the entered sign-in must be one by the same rule. Tests through the password path. |
+| 2 | High | The journal was written (and synced) from the trace sink after the last look and before the keys, and after the read-back before Enter: a slow disk reopened the stale-screen window | **Confirmed.** The engine records send intent through `Host::persist` *before* the last look; the sink journals nothing. Right before any keys, the evidence age is checked again, so nothing after the check (sink, journal, reader) can let the screen move on unseen. Test that stalls the sink fails without it. |
+| 3 | High | Recover removed any lock without knowing its owner: it could pull the slot from under a live run, and two recoverers could race | **Confirmed.** A live run holds an OS lock on the (now permanent) lock file for its lifetime; run state is a `.running` marker made and removed only under that lock. Recover takes the same lock, so it is refused while a run is going and serialised with other recoverers and new runs. Tests. |
+| 4 | High | A same-state resume journalled `attempted = 0` before restoring the checkpoint's count: crash at "Send them again?", recover, and the next resume sent unasked | **Confirmed.** `enter` takes the visit's carried-over count and wait and records them before announcing the state. Test. |
+| 5 | High | Journal write failures were ignored, so keys could go out with an older record on disk | **Confirmed.** A failed record stops the run before the keys (`WorkflowError::Journal`). Without a journal, a run sent nothing, so Recover may put the set-aside checkpoint back. Test. |
+| 6 | High | Finishing deleted the journal before saving the final checkpoint or removing `.claimed`: a crash in between recovered an obsolete checkpoint | **Confirmed.** The final state goes into the journal first (a completed run's marked `ended`), the set-aside checkpoint is removed before the journal becomes the checkpoint, and the marker goes last; a failed step leaves the run to Recover. Recover goes by the journal, and never puts an older checkpoint over a newer one. Tests of each crash point. |
+| 7 | High | The run record's header repeated a workflow name the refusal said holds the password | **Confirmed.** The whole record withholds it. Test from a real engine refusal. |
+| 8 | Medium | The laptop's name was never checked against the secrets, though it is saved and names files | **Confirmed.** A name containing a secret's value is refused before anything (`SecretInName`, the value never echoed) and withheld from the record. Tests. |
+| 9 | Medium | A manual step's wait was never journalled: a crash while the operator did it resumed without its transition | **Confirmed.** The wait is recorded before the step is handed over. Test. |
+
+Also: a lock file left by 0.5 (empty, no journal) is recovered the same way, warning that keys it sent were not
+recorded.

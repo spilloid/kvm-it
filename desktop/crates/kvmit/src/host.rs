@@ -12,6 +12,8 @@ use tokio::runtime::Handle;
 
 pub type ConfirmFn = Box<dyn FnMut(&str) -> bool + Send>;
 pub type EventFn = Box<dyn FnMut(RunEvent) + Send>;
+/// Records a live workflow's progress durably (its journal); an error stops the run before what depends on it.
+pub type JournalFn = Box<dyn FnMut(&kvmit_script::Checkpoint) -> Result<(), String> + Send>;
 
 pub struct ScriptHost {
     pub rt: Handle,
@@ -23,6 +25,8 @@ pub struct ScriptHost {
     pub cancel: Arc<AtomicBool>,
     pub confirm: ConfirmFn,
     pub on_event: EventFn,
+    /// A live workflow run's journal (`None`: scripts, dry runs, or a run that cannot be saved for resuming).
+    pub journal: Option<JournalFn>,
 }
 
 fn e(err: kvmit_ble::LinkError) -> String {
@@ -65,6 +69,12 @@ impl Host for ScriptHost {
     }
     fn reference_missing(&mut self, name: &str) -> bool {
         crate::wf_view::reference_path(&self.base_dir, name).is_ok_and(|p| std::fs::symlink_metadata(&p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound))
+    }
+    fn persist(&mut self, checkpoint: &kvmit_script::Checkpoint) -> Result<(), String> {
+        match &mut self.journal {
+            Some(write) => write(checkpoint),
+            None => Ok(()),
+        }
     }
     fn confirm(&mut self, message: &str) -> bool {
         (self.confirm)(message)

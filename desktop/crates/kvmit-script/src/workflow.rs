@@ -426,7 +426,7 @@ pub const TENANT_DOMAIN: &str = "tenant_domain";
 /// after it equal to `domain` (case aside). A newline or tab would be typed as Enter or Tab before any check.
 pub fn account_in(account: &str, domain: &str) -> bool {
     let Some((local, dom)) = account.split_once('@') else { return false };
-    !local.is_empty() && !dom.contains('@') && account.chars().all(|c| c.is_ascii_graphic()) && dom.eq_ignore_ascii_case(domain)
+    !local.is_empty() && crate::text::is_address(account) && !local.ends_with('.') && dom.eq_ignore_ascii_case(domain)
 }
 
 /// `contoso.com`, `mail.contoso.co.uk`: letters, digits and hyphens in dot-separated labels, at least two labels.
@@ -1109,6 +1109,10 @@ pub enum WorkflowError {
     NoFrameNumbers,
     /// The workflow file itself contains the value of a prompted secret (where is named, never the value).
     SecretInFile { place: String },
+    /// The laptop's name contains the value of a prompted secret (it is saved with checkpoints and run records).
+    SecretInName,
+    /// A live run's progress could not be recorded (its journal), so nothing more was sent.
+    Journal(String),
     Options(String),
     Action { state: String, error: RunError },
     Cancelled,
@@ -1168,6 +1172,13 @@ impl std::fmt::Display for WorkflowError {
                 f,
                 "the workflow file contains the value of a prompted secret ({place}); remove it from the file"
             ),
+            WorkflowError::SecretInName => write!(
+                f,
+                "the laptop's name contains the value of a prompted secret; name the laptop differently"
+            ),
+            WorkflowError::Journal(m) => {
+                write!(f, "could not record the run's progress ({m}); stopped before sending anything more")
+            }
             WorkflowError::Options(m) => write!(f, "{m}"),
             WorkflowError::Action { state, error } => write!(f, "state {state}: {error}"),
             WorkflowError::Cancelled => write!(f, "aborted"),
@@ -1201,6 +1212,9 @@ pub struct WorkflowOptions {
     /// sent: the account shown before a password, a value typed before Enter. 3 s by default; a slow capture
     /// (a VM's screendump over SSH) needs more.
     pub evidence_age: Duration,
+    /// The laptop this run is on, as the operator named it (empty: not named). It is saved with the journal, the
+    /// checkpoint and the run record, so it must not contain a prompted secret's value.
+    pub laptop: String,
 }
 
 impl Default for WorkflowOptions {
@@ -1214,6 +1228,7 @@ impl Default for WorkflowOptions {
             evidence_age: Duration::from_secs(3),
             allow_missing_pictures: false,
             allow_missing_only: None,
+            laptop: String::new(),
         }
     }
 }
@@ -1652,25 +1667,63 @@ impl Engine<'_> {
         }
         // Keys follow at once: the frame that settled the look must still be recent (classifying it, reading its text
         // included), or the screen may have moved on under them.
-        if let Some(age) = self.last_frame.as_ref().and_then(|f| f.captured_at).map(|t| t.elapsed()) {
-            if age > self.opts.evidence_age {
-                return Err(self.too_old(age));
-            }
-        }
+        self.fresh()?;
         if s.verify_tenant {
             self.verify_tenant(s)?;
         }
         Ok(())
     }
 
-    fn enter(&mut self, to: &str, reason: &str) {
-        self.ctx.visit_attempts = 0;
-        self.ctx.visit_waiting = false;
+    /// Enter `to`, with what this visit already spent (`attempted`, `waiting`: a resume of the same visit carries them
+    /// over). The whole state is recorded before it is announced, so no record of it ever says less was sent.
+    fn enter(&mut self, to: &str, reason: &str, attempted: u32, waiting: bool) -> Result<(), WorkflowError> {
+        self.ctx.visit_attempts = attempted;
+        self.ctx.visit_waiting = waiting;
         let from = self.ctx.current.replace(to.to_string());
         if from.is_some() {
             self.ctx.previous = from.clone();
         }
+        self.persist()?;
         self.emit(WorkflowEvent::StateEntered { state: to.to_string(), from, reason: reason.to_string() });
+        Ok(())
+    }
+
+    /// A live run records where it is (the host's journal) before anything a crash must not lose. A failed record
+    /// stops the run before what depends on it.
+    fn persist(&mut self) -> Result<(), WorkflowError> {
+        if self.opts.run.dry_run {
+            return Ok(());
+        }
+        let Some(cp) = self.ctx.checkpoint(self.wf) else { return Ok(()) };
+        self.host.persist(&cp).map_err(WorkflowError::Journal)
+    }
+
+    /// Before an attempt's keys: count it and record that it is about to be sent (a crash from here on counts the
+    /// keys as sent, so a resume asks before sending them again), then announce it. Nothing slow may come between the
+    /// last look and the keys, so this goes first.
+    fn intend(&mut self, s: &StateDef, ops: &[(usize, Op)], attempt: u32) -> Result<(), WorkflowError> {
+        *self.ctx.attempts.entry(s.name.clone()).or_insert(0) += 1;
+        // Only keys sent count against a resume: waiting in a state that types nothing sends nothing to replay.
+        if !ops.is_empty() {
+            self.ctx.visit_attempts = attempt;
+        }
+        self.persist()?;
+        self.emit(WorkflowEvent::ActionAttempted {
+            state: s.name.clone(),
+            attempt,
+            steps: ops.len(),
+            dry_run: self.opts.run.dry_run,
+        });
+        Ok(())
+    }
+
+    /// Right before keys: the frame the last check rested on must still be within `evidence_age`. Whatever ran after
+    /// that check (a slow trace sink, the journal, the reader) cannot let the screen move on unseen.
+    fn fresh(&self) -> Result<(), WorkflowError> {
+        match self.last_frame.as_ref().and_then(|f| f.captured_at).map(|t| t.elapsed()) {
+            Some(age) if age > self.opts.evidence_age => Err(self.too_old(age)),
+            _ => Ok(()),
+        }
     }
 
     fn guard(&mut self, s: &StateDef) -> Result<(), WorkflowError> {
@@ -1738,21 +1791,6 @@ impl Engine<'_> {
         let tenant = self.wf.config.get("tenant").cloned().unwrap_or(domain);
         self.emit(WorkflowEvent::TenantVerified { state: s.name.clone(), tenant, confidence });
         Ok(())
-    }
-
-    fn act(&mut self, s: &StateDef, ops: &[(usize, Op)], attempt: u32) -> Result<(), WorkflowError> {
-        *self.ctx.attempts.entry(s.name.clone()).or_insert(0) += 1;
-        // Only keys sent count against a resume: waiting in a state that types nothing sends nothing to replay.
-        if !ops.is_empty() {
-            self.ctx.visit_attempts = attempt;
-        }
-        self.emit(WorkflowEvent::ActionAttempted {
-            state: s.name.clone(),
-            attempt,
-            steps: ops.len(),
-            dry_run: self.opts.run.dry_run,
-        });
-        self.send(s, ops)
     }
 
     fn send(&mut self, s: &StateDef, ops: &[(usize, Op)]) -> Result<(), WorkflowError> {
@@ -1831,7 +1869,15 @@ impl Engine<'_> {
     }
 
     /// Record a verified transition out of `from`: history, its derived facts, and entering `to`.
-    fn transition(&mut self, from: &StateDef, to: &str, confidence: f64, attempts: u32, entered_at: u64, reason: &str) {
+    fn transition(
+        &mut self,
+        from: &StateDef,
+        to: &str,
+        confidence: f64,
+        attempts: u32,
+        entered_at: u64,
+        reason: &str,
+    ) -> Result<(), WorkflowError> {
         let at = self.now();
         self.emit(WorkflowEvent::TransitionVerified {
             from: from.name.clone(),
@@ -1846,7 +1892,7 @@ impl Engine<'_> {
                 self.emit(WorkflowEvent::ContextChanged { key: format!("derived.{k}"), from: old, to: v.clone() });
             }
         }
-        self.enter(to, reason);
+        self.enter(to, reason, 0, false)
     }
 
     fn run_states(&mut self, compiled: &BTreeMap<String, Vec<(usize, Op)>>, resume: Option<&Checkpoint>) -> Result<(), WorkflowError> {
@@ -1871,20 +1917,18 @@ impl Engine<'_> {
         // Attempts already spent in the state the run (re)starts in.
         let mut spent = 0;
         match resume {
-            None => self.enter(&first, "observed at start"),
+            None => self.enter(&first, "observed at start", 0, false)?,
             Some(cp) if cp.state == first => {
-                self.enter(&first, "re-observed after resume");
                 // Unknown (an older checkpoint) counts as everything spent in that state: ask rather than replay.
                 spent = cp.attempted.unwrap_or_else(|| cp.attempts.get(&first).copied().unwrap_or(0));
-                self.ctx.visit_attempts = spent;
-                // Still the same visit: a pending wait stays pending until a verified transition, even if this resumed
-                // run stops again before it starts watching.
-                self.ctx.visit_waiting = cp.waiting;
+                // Still the same visit: what it spent, and a pending wait, carry over (until a verified transition),
+                // and are recorded as such before anything else, so a crash from here on still asks.
+                self.enter(&first, "re-observed after resume", spent, cp.waiting)?;
             }
             Some(cp) if cp.attempted.unwrap_or(0) == 0 && !cp.waiting => {
                 // Nothing was sent in that visit (it stopped at a guard, a gate or a look), so the screen moving on is
                 // not that state's transition: no facts are recorded for it. The new state's own checks decide.
-                self.enter(&first, "observed after resume; the checkpoint's state sent nothing");
+                self.enter(&first, "observed after resume; the checkpoint's state sent nothing", 0, false)?;
             }
             Some(cp) => {
                 // The screen moved on while the run was stopped: that is the checkpoint's pending transition, now
@@ -1893,7 +1937,7 @@ impl Engine<'_> {
                 let attempts = cp.attempted.unwrap_or(0);
                 self.ctx.current = Some(cp.state.clone());
                 let now = self.now();
-                self.transition(&from, &first, confidence, attempts, now, "verified after resume");
+                self.transition(&from, &first, confidence, attempts, now, "verified after resume")?;
             }
         }
 
@@ -1940,23 +1984,43 @@ impl Engine<'_> {
                 // Every burst of keys, first or retry, follows a fresh look taken now. A state that sends nothing (done by
                 // hand, or the target finishing by itself) needs no such look: the screen may already have moved on,
                 // and the verification below decides whether it moved somewhere permitted.
-                if s.manual.is_none() && !ops.is_empty() {
-                    self.still_on(&s)?;
+                let sends = s.manual.is_none() && !ops.is_empty();
+                if sends {
+                    // Recorded as about to be sent first; then the last look, and the keys straight after it. If the
+                    // look stops the run, nothing was sent: the count is taken back (a crash in between leaves the
+                    // journal saying sent, the safe side).
+                    let before = (self.ctx.attempts.get(&name).copied(), self.ctx.visit_attempts);
+                    self.intend(&s, ops, attempt)?;
+                    if let Err(e) = self.still_on(&s) {
+                        match before.0 {
+                            Some(n) => self.ctx.attempts.insert(name.clone(), n),
+                            None => self.ctx.attempts.remove(&name),
+                        };
+                        self.ctx.visit_attempts = before.1;
+                        return Err(e);
+                    }
                 }
                 // Sending nothing, this visit now waits for the screen to move on (see `Checkpoint::waiting`).
-                self.ctx.visit_waiting = s.manual.is_some() || ops.is_empty();
+                self.ctx.visit_waiting = !sends;
                 match &s.manual {
                     // Nothing is sent, so nothing is spent: a resume never asks to "send again" a step done by hand.
-                    Some(message) => self.emit(WorkflowEvent::ManualStepRequested {
-                        state: name.clone(),
-                        message: message.clone(),
-                        timeout_ms: s.timeout.as_millis() as u64,
-                    }),
+                    // The wait is recorded before the operator is asked, so a crash while it is done resumes past it.
+                    Some(message) => {
+                        self.persist()?;
+                        self.emit(WorkflowEvent::ManualStepRequested {
+                            state: name.clone(),
+                            message: message.clone(),
+                            timeout_ms: s.timeout.as_millis() as u64,
+                        })
+                    }
+                    None if !sends => self.intend(&s, ops, attempt)?,
                     None => {
-                        self.act(&s, ops, attempt)?;
+                        self.fresh()?;
+                        self.send(&s, ops)?;
                         if let Some(key) = &s.verify_typed {
                             // Settled on this state and showing the value, on one fresh frame; then straight on.
                             self.verify_typed(&s, key)?;
+                            self.fresh()?;
                             self.send(&s, &compiled[&submit_key(&name)])?;
                         }
                     }
@@ -1995,7 +2059,7 @@ impl Engine<'_> {
                 }
             };
             let (to, confidence) = next;
-            self.transition(&s, &to, confidence, attempt, entered_at, "transition verified");
+            self.transition(&s, &to, confidence, attempt, entered_at, "transition verified")?;
         }
     }
 }
@@ -2007,12 +2071,15 @@ pub const MAX_KEY_TIMING: Duration = Duration::from_millis(100);
 /// Whether any prompted secret's value appears in the workflow or the checkpoint, field by field (decoded values, not
 /// the file's text, so an escape such as `s` cannot hide one). A caller that prints anything from either checks
 /// this first; the error names only where, never the value.
-pub fn check_secrets(wf: &Workflow, secrets: &Vars, resume: Option<&Checkpoint>) -> Result<(), WorkflowError> {
+pub fn check_secrets(wf: &Workflow, secrets: &Vars, resume: Option<&Checkpoint>, laptop: &str) -> Result<(), WorkflowError> {
     let values = Secrets(wf.secrets.keys().filter_map(|k| secrets.get(k).cloned()).collect());
-    match secret_place(wf, &values, resume) {
-        Some(place) => Err(WorkflowError::SecretInFile { place }),
-        None => Ok(()),
+    if let Some(place) = secret_place(wf, &values, resume) {
+        return Err(WorkflowError::SecretInFile { place });
     }
+    if values.appears_in(laptop) {
+        return Err(WorkflowError::SecretInName);
+    }
+    Ok(())
 }
 
 /// Checks before a run that need no screen: timing options, the pause budget of every state, and that no prompted
@@ -2021,6 +2088,10 @@ fn precheck(wf: &Workflow, secrets: &Secrets, opts: &WorkflowOptions, resume: Op
     // Privacy first: no other check may report anything from the file before this one has passed.
     if let Some(place) = secret_place(wf, secrets, resume) {
         return Err(WorkflowError::SecretInFile { place });
+    }
+    // The laptop's name is saved with the journal, the checkpoint and the run record, and names the record's files.
+    if secrets.appears_in(&opts.laptop) {
+        return Err(WorkflowError::SecretInName);
     }
     let unchosen = wf.unchosen();
     if !unchosen.is_empty() {
@@ -2230,7 +2301,10 @@ pub fn run_workflow(
     if let Err(err) = &mut result {
         // Host diagnostics are free text: scrub them in the returned error as well as in the trace.
         match err {
-            WorkflowError::Reference(m) | WorkflowError::Text(m) | WorkflowError::Action { error: RunError::Host(m), .. } => {
+            WorkflowError::Reference(m)
+            | WorkflowError::Text(m)
+            | WorkflowError::Journal(m)
+            | WorkflowError::Action { error: RunError::Host(m), .. } => {
                 e.secrets.scrub(m)
             }
             _ => {}

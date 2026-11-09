@@ -158,7 +158,10 @@ first and carries on only from the step it stopped at or the next one.
 | *the screen did not move on* | the step was done but the next screen never came (slow network, a dialog) | finish by hand, then Resume |
 | *The saved run was on laptop X* (Resume is off) | the adapter's saved run belongs to another laptop | run this laptop from the start; the other one resumes with its own name |
 | *does not match the checkpoint; not resuming* | the laptop is no longer where the run stopped | run again from the start (it recognises the screen it is on) |
-| *another run of this workflow on this adapter is in progress, or one did not end cleanly* | a run of this copy is already using this adapter, or the app or computer stopped mid-run | if none is running: **Recover the interrupted run** (the panel offers it, saying which step it reached; or `kvmit run <your copy>.toml --recover`), check the laptop, then Resume. Resume looks at the screen first and asks before sending anything again |
+| *another run of this workflow on this adapter is in progress* | a run of this copy is using this adapter (in another window or a terminal) | wait for it, or stop it there |
+| *a run of this workflow on this adapter did not end cleanly* | the app or the computer stopped mid-run | **Recover the interrupted run** (the panel offers it, saying which step it reached; or `kvmit run <your copy>.toml --recover`), check the laptop, then Resume. Resume looks at the screen first and asks before sending anything again |
+| *could not record the run's progress* | the scripts folder cannot be written (a full disk, a removed drive) | fix that; the run stopped before sending more. Then Recover and Resume |
+| *the laptop's name contains the value of a prompted secret* | the name typed under **This laptop** contains the password or sign-in | name the laptop differently |
 
 If something stops that this table does not explain, save the trace and notes and send them with the ticket.
 
@@ -170,7 +173,7 @@ Everything lives in your scripts folder (`Documents\kvm-it\scripts` on Windows; 
 |---|---|
 | `windows-11-oobe-provisioning-<name>.toml` | your copy |
 | `oobe-win11\*.png` | saved screen pictures, only where text cannot be read (shared by every copy in the folder) |
-| `checkpoints\` | where a stopped run is kept for Resume (no secrets, no pictures) |
+| `checkpoints\` | where a stopped run is kept for Resume, and a running one records its progress (no secrets, no pictures) |
 | `runs\workflow-run-<time>-<laptop>.trace.jsonl`, `.notes.md` | each live run's record |
 
 How workflows work in general (states, checks, writing your own) is in [the UX notes](ux.md#stateful-workflows-issue-46).
