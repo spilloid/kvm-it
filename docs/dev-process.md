@@ -1243,9 +1243,9 @@ provisioning guide: no defect. Open, for the next release:
 
 | # | Sev | Finding | Verdict and fix |
 |---|---|---|---|
-| 1 | Medium | Only a yes/no reaches the run, not the states accepted: a picture removed between the app's check and the run's probe is accepted too, dropping a stop nobody approved | **Open.** Pass the accepted states; refuse unless the run's missing set is within them. |
-| 2 | Medium | Windows path aliases (`pics.` and `pics`) pass the tenant-picture collision check, so a renamed tenant can overwrite a state's picture | **Open.** Refuse trailing-dot/space components; regression test. |
-| 3 | Medium | Save profile replaces the file with default permissions (a `0600` file becomes `0644` on Linux/macOS) | **Open.** Copy the original permissions to the temp file before the rename; fail if that fails. |
+| 1 | Medium | Only a yes/no reaches the run, not the states accepted: a picture removed between the app's check and the run's probe is accepted too, dropping a stop nobody approved | **Fixed** (0.6 branch): `WorkflowOptions::allow_missing_only`; refused otherwise. Test. |
+| 2 | Medium | Windows path aliases (`pics.` and `pics`) pass the tenant-picture collision check, so a renamed tenant can overwrite a state's picture | **Fixed** (0.6 branch): such names refused; the rename compares names as Windows does. Tests. |
+| 3 | Medium | Save profile replaces the file with default permissions (a `0600` file becomes `0644` on Linux/macOS) | **Fixed** (0.6 branch): permissions copied before the rename, temp created owner-only. Test (Unix). |
 
 The same day astra ran a general project review: [reviews/2026-11-07-astra-general.md](reviews/2026-11-07-astra-general.md)
 (26 findings, 6 owner decisions).
