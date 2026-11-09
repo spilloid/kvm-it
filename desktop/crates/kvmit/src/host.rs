@@ -89,6 +89,10 @@ impl Host for ScriptHost {
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
     }
+    /// This run's session with the adapter is gone (a reconnect makes a new one, which this run does not take over).
+    fn link_lost(&self) -> Option<String> {
+        self.dev.as_ref().filter(|d| !d.is_connected()).map(|_| "the adapter disconnected".to_string())
+    }
     fn event(&mut self, ev: RunEvent) {
         (self.on_event)(ev)
     }

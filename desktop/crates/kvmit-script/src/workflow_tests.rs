@@ -77,6 +77,8 @@ struct Sim {
     fail_persist_at: Option<usize>,
     /// Each key press really takes this long (a slow link: acknowledgements and retries).
     key_cost: Duration,
+    /// The link drops after this many looks at the screen.
+    link_lost_after_looks: Option<usize>,
 }
 
 impl Host for Sim {
@@ -223,6 +225,9 @@ impl Host for Sim {
     }
     fn cancelled(&self) -> bool {
         self.cancel_after_keys.is_some_and(|n| self.typed >= n)
+    }
+    fn link_lost(&self) -> Option<String> {
+        self.link_lost_after_looks.filter(|n| self.looks >= *n).map(|_| "the adapter disconnected".into())
     }
     fn event(&mut self, e: crate::exec::RunEvent) {
         self.events.push(e);
@@ -1794,4 +1799,19 @@ fn keys_stop_part_way_once_they_run_past_the_deadline() {
     // Part-way still counts as sent: a resume asks before sending again.
     assert_eq!(r.checkpoint(&w).unwrap().attempted, Some(1));
     assert!(r.result.unwrap_err().to_string().contains("stopped part-way"));
+}
+
+#[test]
+fn a_lost_link_stops_a_waiting_run_at_once() {
+    // A manual step is being watched when the adapter's link drops: the run stops there, not at its next key.
+    let w = Workflow::parse(MANUAL).unwrap();
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), link_lost_after_looks: Some(5), ..Default::default() };
+    let started = std::time::Instant::now();
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::LinkLost(m)) if m.contains("disconnected")), "{:?}", r.result);
+    assert!(started.elapsed() < Duration::from_secs(2), "well before the step's 3 s timeout");
+    assert!(r.result.clone().unwrap_err().to_string().contains("Reconnect, then Resume"));
+    // Its checkpoint still says the step was being waited for.
+    let cp = r.checkpoint(&w).unwrap();
+    assert_eq!((cp.state.as_str(), cp.waiting), ("REGION", true));
 }

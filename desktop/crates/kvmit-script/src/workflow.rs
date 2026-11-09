@@ -1056,6 +1056,9 @@ impl Host for Scrubbed<'_> {
     fn cancelled(&self) -> bool {
         self.inner.cancelled()
     }
+    fn link_lost(&self) -> Option<String> {
+        self.inner.link_lost()
+    }
     fn event(&mut self, mut ev: crate::exec::RunEvent) {
         match &mut ev {
             crate::exec::RunEvent::Aborted { reason } => self.secrets.scrub(reason),
@@ -1113,6 +1116,8 @@ pub enum WorkflowError {
     SecretInName,
     /// A live run's progress could not be recorded (its journal), so nothing more was sent.
     Journal(String),
+    /// The adapter's link dropped during the run: it stopped at once (keys already sent stay sent).
+    LinkLost(String),
     Options(String),
     Action { state: String, error: RunError },
     Cancelled,
@@ -1175,6 +1180,10 @@ impl std::fmt::Display for WorkflowError {
             WorkflowError::SecretInName => write!(
                 f,
                 "the laptop's name contains the value of a prompted secret; name the laptop differently"
+            ),
+            WorkflowError::LinkLost(m) => write!(
+                f,
+                "the adapter's link was lost ({m}); stopped. Reconnect, then Resume: it looks at the screen first, and asks before sending again what may have been sent"
             ),
             WorkflowError::Journal(m) => {
                 write!(f, "could not record the run's progress ({m}); stopped before sending anything more")
@@ -1525,7 +1534,15 @@ impl Engine<'_> {
     }
 
     fn check(&self) -> Result<(), WorkflowError> {
-        if self.host.cancelled() { Err(WorkflowError::Cancelled) } else { Ok(()) }
+        if self.host.cancelled() {
+            return Err(WorkflowError::Cancelled);
+        }
+        if !self.opts.run.dry_run {
+            if let Some(why) = self.host.link_lost() {
+                return Err(WorkflowError::LinkLost(why));
+            }
+        }
+        Ok(())
     }
 
     fn record(&mut self, o: &Observation) {
@@ -2318,6 +2335,7 @@ pub fn run_workflow(
             WorkflowError::Reference(m)
             | WorkflowError::Text(m)
             | WorkflowError::Journal(m)
+            | WorkflowError::LinkLost(m)
             | WorkflowError::Action { error: RunError::Host(m), .. } => {
                 e.secrets.scrub(m)
             }

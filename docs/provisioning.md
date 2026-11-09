@@ -163,6 +163,7 @@ first and carries on only from the step it stopped at or the next one.
 | *does not match the checkpoint; not resuming* | the laptop is no longer where the run stopped | run again from the start (it recognises the screen it is on) |
 | *another run of this workflow on this adapter is in progress* | a run of this copy is using this adapter (in another window or a terminal) | wait for it, or stop it there |
 | *a run of this workflow on this adapter did not end cleanly* | the app or the computer stopped mid-run | **Recover the interrupted run** (the panel offers it, saying which step it reached; or `kvmit run <your copy>.toml --recover`), check the laptop, then Resume. Resume looks at the screen first and asks before sending anything again |
+| *the adapter's link was lost* | the adapter lost power or went out of Bluetooth range during the run | reconnect (the app does it by itself when the adapter is back), check the laptop, then Resume |
 | *could not record the run's progress* | the scripts folder cannot be written (a full disk, a removed drive) | fix that; the run stopped before sending more. Then Recover and Resume |
 | *the laptop's name contains the value of a prompted secret* | the name typed under **This laptop** contains the password or sign-in | name the laptop differently |
 

@@ -49,6 +49,9 @@
 - **A burst of keys has a real deadline** (general review #15): once a workflow starts sending after its last look,
   the keys stop part-way if they run past 5 s by the clock (a slow or retrying link), every key is released, and the
   run stops saying so; a resume asks before sending them again. Host-tested.
+- **A run stops as soon as the adapter's link drops** (general review #18): it no longer watches on (a manual step,
+  updates) and fails at its next key. It says so and keeps its checkpoint; after reconnecting, Resume looks at the
+  screen first and asks before sending again. Host-tested.
 - `kvmit run --check` and the app's Reference screens say which screens are recognised by text on this computer and
   which pictures are not needed.
 

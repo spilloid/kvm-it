@@ -143,6 +143,12 @@ pub trait Host {
     }
     fn confirm(&mut self, message: &str) -> bool;
     fn cancelled(&self) -> bool;
+    /// Why keys can no longer reach the target (the adapter's link dropped), if so. A live workflow stops at once
+    /// rather than watch on and fail at its next key: resuming after a reconnect looks at the screen first. Hosts
+    /// without a link report nothing.
+    fn link_lost(&self) -> Option<String> {
+        None
+    }
     fn event(&mut self, ev: RunEvent);
 }
 
