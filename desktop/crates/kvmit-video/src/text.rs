@@ -154,9 +154,12 @@ mod imp {
         Ok(parse_tsv(&String::from_utf8_lossy(&out), frame.width as f64, frame.height as f64))
     }
 
+    /// A line being gathered from Tesseract's words: its words, and its box as (x0, y0, x1, y1) in pixels.
+    type Gathered = (Vec<String>, f64, f64, f64, f64);
+
     pub(super) fn parse_tsv(tsv: &str, fw: f64, fh: f64) -> Vec<TextLine> {
-        // key (block, par, line) -> (words, x0, y0, x1, y1), in the order lines first appear
-        let mut lines: BTreeMap<(u32, u32, u32), (Vec<String>, f64, f64, f64, f64)> = BTreeMap::new();
+        // key (block, par, line) -> the line so far, in the order lines first appear
+        let mut lines: BTreeMap<(u32, u32, u32), Gathered> = BTreeMap::new();
         for row in tsv.lines().skip(1) {
             let c: Vec<&str> = row.split('\t').collect();
             if c.len() < 12 || c[0] != "5" || c[11].trim().is_empty() {
