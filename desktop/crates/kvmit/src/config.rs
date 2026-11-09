@@ -31,7 +31,8 @@ impl Config {
     }
     /// Change settings: `f` is applied to the file's current contents (not this possibly stale copy), which are saved,
     /// and then to this copy, so newer settings saved by another `kvmit` process (one per adapter, or the GUI) survive.
-    /// Not locked: two updates at the same instant can still race, but only over one read and one write.
+    /// The read, the change and the write happen under a lock beside the file (`config.json.lock`, held by the
+    /// operating system), so two processes updating at once never lose one's change; a failed write is reported.
     ///
     /// When the file exists but cannot be read (still unreadable after the Windows retry), nothing is saved: this copy may
     /// hold defaults (its own load failed) or settings older than the file's, and saving it would replace what is on disk.
@@ -40,6 +41,7 @@ impl Config {
         self.update_at(&config_path(), f)
     }
     fn update_at(&mut self, p: &Path, f: impl Fn(&mut Config)) -> Result<(), String> {
+        let _held = lock_config(p);
         self.update_with(read_config(p), p, f)
     }
     fn update_with(&mut self, read: std::io::Result<String>, p: &Path, f: impl Fn(&mut Config)) -> Result<(), String> {
@@ -48,23 +50,25 @@ impl Config {
             format!("Settings not saved: {} could not be read ({e}). The change lasts until kvm-it closes.", p.display())
         })?;
         f(&mut fresh);
-        fresh.save_to(p);
-        Ok(())
+        fresh.save_to(p).map_err(|e| format!("Settings not saved: {} could not be written ({e}). The change lasts until kvm-it closes.", p.display()))
     }
     fn load_from(p: &Path) -> Config {
         read_config(p).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
     /// Write a temp file unique to this save and rename it over the config: several `kvmit` processes (one per
     /// adapter) may save at once, and a torn file would make `load` silently fall back to defaults.
-    fn save_to(&self, p: &Path) {
+    fn save_to(&self, p: &Path) -> std::io::Result<()> {
         if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            std::fs::create_dir_all(dir)?;
         }
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let tmp = p.with_extension(format!("json.{}.{}.tmp", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
-        if std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap_or_default()).is_err() || retry_while_replaced(|| std::fs::rename(&tmp, p)).is_err() {
+        let saved = std::fs::write(&tmp, serde_json::to_string_pretty(self).unwrap_or_default())
+            .and_then(|_| retry_while_replaced(|| std::fs::rename(&tmp, p)));
+        if saved.is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
+        saved
     }
     pub fn script_dir(&self) -> PathBuf {
         self.script_dir.clone().unwrap_or_else(|| default_script_dir(dirs::document_dir(), dirs::home_dir()))
@@ -103,6 +107,18 @@ fn retry_while_replaced<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::i
         }
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// Serialises settings updates across processes: the lock file beside the config, locked until the returned file is
+/// dropped (the operating system releases it if the process dies). Best effort: if the lock cannot be taken (a
+/// read-only folder), the update goes ahead unlocked, as before, and its write reports any failure.
+fn lock_config(p: &Path) -> Option<std::fs::File> {
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(p.with_extension("json.lock")).ok()?;
+    f.lock().ok()?;
+    Some(f)
 }
 
 fn read_config(p: &Path) -> std::io::Result<String> {
@@ -167,7 +183,7 @@ mod tests {
     #[test]
     fn concurrent_saves_never_leave_a_torn_file() {
         let p = temp_config("torn");
-        Config::default().save_to(&p);
+        Config::default().save_to(&p).unwrap();
         let (reading, saves) = (std::sync::atomic::AtomicBool::new(true), AtomicU64::new(0));
         std::thread::scope(|s| {
             for i in 0..8 {
@@ -175,7 +191,7 @@ mod tests {
                 s.spawn(move || {
                     // keep saving until the reader is done, so its reads run while saves are going on
                     while reading.load(Ordering::SeqCst) {
-                        Config { last_device: Some(format!("dev-{i}")), ..Default::default() }.save_to(p);
+                        let _ = Config { last_device: Some(format!("dev-{i}")), ..Default::default() }.save_to(p);
                         saves.fetch_add(1, Ordering::SeqCst);
                     }
                 });
@@ -203,12 +219,42 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_updates_lose_no_change_and_a_failed_write_is_reported() {
+        let p = temp_config("locked");
+        std::thread::scope(|s| {
+            let p = &p;
+            // Two writers, each from its own stale copy, each changing its own setting many times.
+            s.spawn(move || {
+                let mut c = Config::default();
+                for i in 0..40 {
+                    c.update_at(p, |c| c.last_device = Some(format!("dev-{i}"))).unwrap();
+                }
+            });
+            s.spawn(move || {
+                let mut c = Config::default();
+                for i in 0..40 {
+                    c.update_at(p, |c| c.script_dir = Some(PathBuf::from(format!("dir-{i}")))).unwrap();
+                }
+            });
+        });
+        let on_disk = Config::load_from(&p);
+        assert_eq!(on_disk.last_device.as_deref(), Some("dev-39"));
+        assert_eq!(on_disk.script_dir, Some(PathBuf::from("dir-39")));
+        // A config whose folder cannot be made: the change is reported as not saved.
+        let blocked = p.parent().unwrap().join("not-a-folder");
+        std::fs::write(&blocked, "").unwrap();
+        let err = Config::default().update_at(&blocked.join("config.json"), |c| c.theme = crate::theme::ThemeChoice::Dark).unwrap_err();
+        assert!(err.contains("not saved"), "{err}");
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    #[test]
     fn an_update_keeps_settings_another_process_saved_since() {
         let p = temp_config("update");
         let mut gui = Config::default();
-        gui.save_to(&p);
+        gui.save_to(&p).unwrap();
         // another process (a CLI run) records its adapter after the GUI loaded its copy
-        Config { last_device: Some("AA:BB".into()), ..Default::default() }.save_to(&p);
+        Config { last_device: Some("AA:BB".into()), ..Default::default() }.save_to(&p).unwrap();
         gui.update_at(&p, |c| c.theme = crate::theme::ThemeChoice::Dark).unwrap();
         let on_disk = Config::load_from(&p);
         assert_eq!(on_disk.last_device.as_deref(), Some("AA:BB"));
@@ -221,7 +267,7 @@ mod tests {
     fn an_update_after_a_failed_read_leaves_the_saved_settings_alone() {
         let p = temp_config("unread");
         let saved = Config { last_device: Some("AA:BB".into()), last_video_key: Some("Cam @ usb-1".into()), ..Default::default() };
-        saved.save_to(&p);
+        saved.save_to(&p).unwrap();
         // this process's own load failed too (or predates another process's save), so its copy holds defaults
         let mut gui = Config::default();
         let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);

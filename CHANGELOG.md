@@ -40,6 +40,9 @@
   may not have arrived, every key is released, and if that fails too the link is closed so the adapter releases
   them; input queued behind it is dropped. A script or workflow whose final release fails closes the link the same
   way. Host-tested (builds and clippy); not yet forced on hardware. The firmware half (#17) is still open.
+- **Settings are never lost or silently unsaved** (general review #24): updates from the app and from `kvmit` runs
+  happen one at a time under a lock beside the settings file, so one never overwrites another's change, and a
+  settings file that cannot be written says so instead of looking saved. Host-tested.
 - `kvmit run --check` and the app's Reference screens say which screens are recognised by text on this computer and
   which pictures are not needed.
 
