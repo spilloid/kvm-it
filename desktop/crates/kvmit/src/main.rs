@@ -43,7 +43,8 @@ enum Cmd {
         /// on | off (omit to just show the state)
         state: Option<String>,
     },
-    /// Type text on the target (reads stdin if no text is given; --secret prompts without echo)
+    /// Type text on the target (reads stdin if no text is given). With --secret it is always asked for, without echo:
+    /// a secret given on the command line is refused (it would stay in the shell's history).
     Type {
         text: Option<String>,
         #[arg(long)]
@@ -288,6 +289,10 @@ fn real_main(cli: Cli) -> R<()> {
             }
         }),
         Cmd::Type { text, secret } => {
+            if secret && text.is_some() {
+                // On the command line it is already in the shell's history and the process list.
+                return Err("with --secret, leave the text out: it is asked for, hidden (a secret on the command line is kept in your shell's history)".into());
+            }
             let text = match text {
                 Some(t) => t,
                 None if secret => rpassword::prompt_password("Text to type (hidden): ")?,

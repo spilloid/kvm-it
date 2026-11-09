@@ -43,6 +43,9 @@
 - **Settings are never lost or silently unsaved** (general review #24): updates from the app and from `kvmit` runs
   happen one at a time under a lock beside the settings file, so one never overwrites another's change, and a
   settings file that cannot be written says so instead of looking saved. Host-tested.
+- **Secrets typed by hand are handled like a workflow's** (general review #22, in part): `kvmit type --secret` refuses
+  text given on the command line (it would stay in the shell's history) and always asks for it hidden; the app's Type
+  box is wiped, with its undo history, once the text is sent. Secrets still pass through ordinary strings inside a run.
 - `kvmit run --check` and the app's Reference screens say which screens are recognised by text on this computer and
   which pictures are not needed.
 

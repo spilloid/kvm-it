@@ -2213,7 +2213,8 @@ impl App {
     }
 
     fn text_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.add(egui::TextEdit::singleline(&mut self.type_text).password(self.type_secret).hint_text("text to type on the target"));
+        let field = egui::Id::new("kvmit-type-text");
+        ui.add(egui::TextEdit::singleline(&mut self.type_text).password(self.type_secret).hint_text("text to type on the target").id(field));
         ui.checkbox(&mut self.type_secret, "Secret (masked, never logged)");
         let warning = uistate::untypable_warning(&self.type_text, self.type_secret);
         if let Some(w) = &warning {
@@ -2238,7 +2239,9 @@ impl App {
             // The text is cleared only once the run has actually started; on any failure it stays for another try.
             let vars: Vars = [("t".to_string(), self.type_text.clone())].into();
             if self.start_run(s, std::path::PathBuf::from("."), vars, false, ctx.clone()) {
-                self.type_text.clear();
+                // Wiped, with the field's undo history (egui keeps it in clear text), as the workflow's secrets are.
+                zeroize::Zeroize::zeroize(&mut self.type_text);
+                purge_secret_fields(ctx, &[field]);
             }
         }
     }
