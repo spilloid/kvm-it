@@ -571,14 +571,15 @@ pub fn save_run_record(
     use kvmit_script::WorkflowError;
     let jsonl = kvmit_script::workflow::trace_jsonl(report);
     // A run refused because the file, or the laptop's name, holds a secret's value repeats neither, anywhere.
+    // The file is checked first, so a refusal over the file says nothing about the laptop's name: withheld too.
     let (file_withheld, name_withheld) = match &report.result {
-        Err(WorkflowError::SecretInFile { .. }) => (true, false),
+        Err(WorkflowError::SecretInFile { .. }) => (true, true),
         Err(WorkflowError::SecretInName) => (false, true),
         _ => (false, false),
     };
     let laptop = if name_withheld { "" } else { laptop };
     let named = match (name_withheld, laptop.is_empty()) {
-        (true, _) => "(name withheld: it contains a secret's value)",
+        (true, _) => "(name withheld: the run was refused over a secret's value)",
         (false, true) => "(not named)",
         (false, false) => laptop,
     };
@@ -657,11 +658,49 @@ fn write_saved(
         .create_new(true)
         .open(&tmp)
         .and_then(|mut f| f.write_all(json.as_bytes()).and_then(|_| f.sync_all()))
-        .and_then(|_| std::fs::rename(&tmp, &path));
+        .and_then(|_| durable_rename(&tmp, &path));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     written.map(|_| path)
+}
+
+/// Rename `from` over `to` so that the rename itself survives a power cut or a crash of the computer once this
+/// returns: Windows writes it through (`MOVEFILE_WRITE_THROUGH`), elsewhere the folder is synced.
+fn durable_rename(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
+        let wide = |p: &std::path::Path| p.as_os_str().encode_wide().chain([0]).collect::<Vec<u16>>();
+        let (f, t) = (wide(from), wide(to));
+        // SAFETY: both are NUL-terminated UTF-16 strings that live across the call.
+        unsafe {
+            MoveFileExW(windows::core::PCWSTR(f.as_ptr()), windows::core::PCWSTR(t.as_ptr()), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+        }
+        .map_err(|e| std::io::Error::from_raw_os_error(e.code().0 & 0xFFFF))
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(from, to)?;
+        sync_dir(to)
+    }
+}
+
+/// Make a change to the folder holding `p` (a file made, renamed or removed) survive a crash of the computer.
+fn sync_dir(p: &std::path::Path) -> std::io::Result<()> {
+    let dir = p.parent().unwrap_or(std::path::Path::new("."));
+    #[cfg(windows)]
+    {
+        // A folder is flushed through a handle opened for writing with backup semantics.
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new().write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(dir)?.sync_all()
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::File::open(dir)?.sync_all()
+    }
 }
 
 /// Where a live run journals its checkpoint as it goes: if the run never ends cleanly (the app or the computer
@@ -689,15 +728,27 @@ const IN_PROGRESS: &str = "another run of this workflow on this adapter is in pr
 /// earlier kvm-it's run that did not end cleanly. `create`: make the file if there is none (a run); else `Ok(None)`.
 fn take_lock(lock: &std::path::Path, create: bool) -> Result<Option<(std::fs::File, bool)>, String> {
     use std::io::Write;
-    let open = |new: bool| std::fs::OpenOptions::new().read(true).write(true).create_new(new).open(lock);
     let cannot = |e: std::io::Error| format!("cannot lock this workflow's checkpoint ({}): {e}", lock.display());
-    let (file, created) = match if create { open(true) } else { Err(std::io::ErrorKind::AlreadyExists.into()) } {
-        Ok(f) => (f, true),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match open(false) {
-            Ok(f) => (f, false),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(cannot(e)),
-        },
+    if create && !lock.exists() {
+        // Written whole under a name of this process's own, then linked into place (which fails if another got there
+        // first): no one ever sees this version's lock file empty, which is what 0.5 left behind.
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let tmp = lock.with_extension(format!("lock.{}-{nanos}.tmp", std::process::id()));
+        let made = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .and_then(|mut f| f.write_all(LOCK_MARK).and_then(|_| f.sync_all()))
+            .and_then(|_| match std::fs::hard_link(&tmp, lock) {
+                Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(e),
+                _ => Ok(()),
+            });
+        let _ = std::fs::remove_file(&tmp);
+        made.and_then(|_| sync_dir(lock)).map_err(cannot)?;
+    }
+    let file = match std::fs::OpenOptions::new().read(true).write(true).open(lock) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !create => return Ok(None),
         Err(e) => return Err(cannot(e)),
     };
     match file.try_lock() {
@@ -705,10 +756,7 @@ fn take_lock(lock: &std::path::Path, create: bool) -> Result<Option<(std::fs::Fi
         Err(std::fs::TryLockError::WouldBlock) => return Err(IN_PROGRESS.into()),
         Err(std::fs::TryLockError::Error(e)) => return Err(cannot(e)),
     }
-    let legacy = !created && file.metadata().is_ok_and(|m| m.len() == 0);
-    if created {
-        (&file).write_all(LOCK_MARK).and_then(|_| file.sync_all()).map_err(cannot)?;
-    }
+    let legacy = file.metadata().is_ok_and(|m| m.len() == 0);
     Ok(Some((file, legacy)))
 }
 
@@ -733,10 +781,12 @@ fn run_files(dir: &std::path::Path, slot: &Slot) -> Option<RunFiles> {
     })
 }
 
+/// Remove `p` if it is there, durably (see [`sync_dir`]).
 fn remove_if_there(p: &std::path::Path) -> Result<(), String> {
     match std::fs::remove_file(p) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {e}", p.display())),
-        _ => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {e}", p.display())),
+        Ok(()) => sync_dir(p).map_err(|e| format!("{}: {e}", p.display())),
     }
 }
 
@@ -787,7 +837,7 @@ pub fn recover(dir: &std::path::Path, slot: &Slot) -> Result<String, String> {
         }
         Some(_) => {
             remove_if_there(&f.held)?;
-            std::fs::rename(&f.journal, &f.path).map_err(|e| format!("{}: {e}", f.journal.display()))?;
+            durable_rename(&f.journal, &f.path).map_err(|e| format!("{}: {e}", f.journal.display()))?;
             "Recovered: the interrupted run's last step is now its checkpoint. Check the laptop, then Resume (it looks at the screen first, and asks before sending anything again)."
         }
         None if f.held.exists() && f.path.exists() => {
@@ -796,13 +846,15 @@ pub fn recover(dir: &std::path::Path, slot: &Slot) -> Result<String, String> {
             "Recovered: the interrupted run recorded nothing more; its checkpoint is kept."
         }
         None if f.held.exists() => {
-            std::fs::rename(&f.held, &f.path).map_err(|e| format!("{}: {e}", f.held.display()))?;
+            durable_rename(&f.held, &f.path).map_err(|e| format!("{}: {e}", f.held.display()))?;
             if legacy {
                 "Recovered: the checkpoint from before the interrupted run is back. That run was by an earlier kvm-it, which recorded nothing as it went: it may have sent keys, so check the laptop before you Resume."
             } else {
                 "Recovered: the interrupted run recorded nothing (it sent nothing), so the checkpoint from before it is back."
             }
         }
+        // The run had saved its checkpoint and stopped while finishing: that checkpoint stands.
+        None if f.path.exists() => "Recovered: the interrupted run had saved its checkpoint, which is kept.",
         None => "Recovered: the interrupted run recorded nothing, and there was no earlier checkpoint.",
     };
     remove_if_there(&f.running)?;
@@ -873,9 +925,10 @@ pub fn claim_checkpoint(dir: &std::path::Path, slot: &Slot) -> Result<Option<Cla
         .create_new(true)
         .open(&f.running)
         .and_then(|r| r.sync_all())
+        .and_then(|_| sync_dir(&f.running))
         .map_err(|e| format!("cannot mark this workflow's run as going on ({}): {e}", f.running.display()))?;
     let claim = |held| Claim { _lock: lock, running: f.running.clone(), held };
-    match std::fs::rename(&f.path, &f.held) {
+    match durable_rename(&f.path, &f.held) {
         Ok(()) => Ok(Some(claim(Some(f.held.clone())))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some(claim(None))),
         Err(e) => {
@@ -994,14 +1047,14 @@ pub fn keep_checkpoint(
                 if let Some(h) = held {
                     remove_if_there(h)?;
                 }
-                std::fs::rename(&f.journal, &f.path).map_err(|e| format!("Could not save a checkpoint ({}: {e})", f.path.display()))?;
+                durable_rename(&f.journal, &f.path).map_err(|e| format!("Could not save a checkpoint ({}: {e})", f.path.display()))?;
                 Ok(Some(format!("Saved a checkpoint at {}: Resume continues from there after looking at the screen.", cp.state)))
             }
             // Stopped before recognising any screen: if nothing was sent, the earlier checkpoint is back; keys sent with
             // no state to resume from discard it (it is never resumed past them).
             (Err(_), None) => {
                 match held {
-                    Some(h) if !sent_keys(report) => std::fs::rename(h, &f.path)
+                    Some(h) if !sent_keys(report) => durable_rename(h, &f.path)
                         .map_err(|e| format!("The earlier checkpoint {} could not be put back ({e})", h.display()))?,
                     Some(h) => remove_if_there(h)?,
                     None => {}
@@ -1403,6 +1456,9 @@ mod tests {
         assert_eq!(interrupted(&dir, &slot, text), None, "a run going on is not interrupted");
         assert!(recover(&dir, &slot).unwrap_err().contains("in progress"), "never pulled from under a live run");
         assert!(claim_checkpoint(&dir, &slot).unwrap_err().contains("in progress"));
+        let lock = checkpoint_path(&dir, &slot).unwrap().with_extension("json.lock");
+        // Its size: the content cannot be read past the lock on Windows.
+        assert_eq!(std::fs::metadata(&lock).unwrap().len(), LOCK_MARK.len() as u64, "never left empty (that would read as 0.5's crash)");
         // It records keys about to be sent in A, then the app dies (the claim is dropped without finishing).
         let mut write = journal_writer(dir.clone(), slot.clone(), text.into(), "LT-7".into());
         write(&cp_at("A", 1)).unwrap();
@@ -1457,11 +1513,25 @@ mod tests {
         assert!(recover(&dir, &slot).unwrap().contains("checkpoint is kept"));
         assert_eq!(load_checkpoint(&dir, &slot, text).unwrap().map(|c| c.state), Some("B".into()));
         assert!(!held.exists());
+        // A stopped run finished for real, then died before removing its marker: its own checkpoint stands, and Recover
+        // says so.
+        let claim = claim_checkpoint(&dir, &slot).unwrap();
+        let stopped = kvmit_script::WorkflowReport {
+            result: Err(WorkflowError::Cancelled),
+            trace: Vec::new(),
+            context: kvmit_script::workflow::Context { current: Some("A".into()), visit_attempts: 1, ..Default::default() },
+        };
+        assert!(keep_checkpoint(&dir, &slot, text, false, &_wf, &stopped, claim.as_ref(), "").unwrap().starts_with("Saved"));
+        let running = checkpoint_path(&dir, &slot).unwrap().with_extension("json.running");
+        std::fs::write(&running, "").unwrap();
+        drop(claim);
+        assert!(recover(&dir, &slot).unwrap().contains("had saved its checkpoint"));
+        assert_eq!(load_checkpoint(&dir, &slot, text).unwrap().map(|c| (c.state, c.attempted)), Some(("A".into(), Some(1))));
         // A run that recorded nothing sent nothing: the checkpoint from before it is back.
         let claim = claim_checkpoint(&dir, &slot).unwrap().unwrap();
         drop(claim);
         assert!(recover(&dir, &slot).unwrap().contains("sent nothing"));
-        assert_eq!(load_checkpoint(&dir, &slot, text).unwrap().map(|c| c.state), Some("B".into()));
+        assert_eq!(load_checkpoint(&dir, &slot, text).unwrap().map(|c| c.state), Some("A".into()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1507,6 +1577,11 @@ mod tests {
         let report = kvmit_script::run_workflow(&wf, &secrets, &kvmit_layout::UsAnsi, &mut host, &Default::default(), None, &mut |_, _| {});
         assert!(matches!(report.result, Err(WorkflowError::SecretInFile { .. })), "{:?}", report.result);
         save_run_record(&dir, "LT-1", "AA:BB", &wf, &report).unwrap();
+        // Both at once: the file is checked first, and the laptop's name (holding it too) is still withheld.
+        let opts = kvmit_script::WorkflowOptions { laptop: "LT hunter2".into(), ..Default::default() };
+        let report = kvmit_script::run_workflow(&wf, &secrets, &kvmit_layout::UsAnsi, &mut host, &opts, None, &mut |_, _| {});
+        assert!(matches!(report.result, Err(WorkflowError::SecretInFile { .. })), "{:?}", report.result);
+        save_run_record(&dir, "LT hunter2", "AA:BB", &wf, &report).unwrap();
         // The laptop's name holds it.
         let plain = kvmit_script::Workflow::parse(&text.replace("hunter2 setup", "setup")).unwrap();
         let opts = kvmit_script::WorkflowOptions { laptop: "LT hunter2".into(), ..Default::default() };

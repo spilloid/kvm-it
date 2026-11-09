@@ -1699,22 +1699,26 @@ impl Engine<'_> {
     }
 
     /// Before an attempt's keys: count it and record that it is about to be sent (a crash from here on counts the
-    /// keys as sent, so a resume asks before sending them again), then announce it. Nothing slow may come between the
-    /// last look and the keys, so this goes first.
+    /// keys as sent, so a resume asks before sending them again). Nothing slow may come between the last look and the
+    /// keys, so this goes first; the attempt is announced ([`Self::attempted`]) once the keys went.
     fn intend(&mut self, s: &StateDef, ops: &[(usize, Op)], attempt: u32) -> Result<(), WorkflowError> {
         *self.ctx.attempts.entry(s.name.clone()).or_insert(0) += 1;
         // Only keys sent count against a resume: waiting in a state that types nothing sends nothing to replay.
         if !ops.is_empty() {
             self.ctx.visit_attempts = attempt;
         }
-        self.persist()?;
+        self.persist()
+    }
+
+    /// The trace's record of an attempt: after its keys were sent (or a burst was cut short, which counts as sent), so
+    /// it never says keys went that a last look held back.
+    fn attempted(&mut self, s: &StateDef, ops: &[(usize, Op)], attempt: u32) {
         self.emit(WorkflowEvent::ActionAttempted {
             state: s.name.clone(),
             attempt,
             steps: ops.len(),
             dry_run: self.opts.run.dry_run,
         });
-        Ok(())
     }
 
     /// Right before keys: the frame the last check rested on must still be within `evidence_age`. Whatever ran after
@@ -2013,10 +2017,15 @@ impl Engine<'_> {
                             timeout_ms: s.timeout.as_millis() as u64,
                         })
                     }
-                    None if !sends => self.intend(&s, ops, attempt)?,
+                    None if !sends => {
+                        self.intend(&s, ops, attempt)?;
+                        self.attempted(&s, ops, attempt);
+                    }
                     None => {
                         self.fresh()?;
-                        self.send(&s, ops)?;
+                        let sent = self.send(&s, ops);
+                        self.attempted(&s, ops, attempt);
+                        sent?;
                         if let Some(key) = &s.verify_typed {
                             // Settled on this state and showing the value, on one fresh frame; then straight on.
                             self.verify_typed(&s, key)?;

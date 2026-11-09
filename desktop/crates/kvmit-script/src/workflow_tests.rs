@@ -634,6 +634,13 @@ fn approval_is_followed_by_a_fresh_look_before_typing() {
     let r = go(&w, &mut sim, &opts(), None);
     assert!(matches!(r.result, Err(WorkflowError::TenantMismatch { .. })), "{:?}", r.result);
     assert_eq!(enters(&sim), 3, "nothing typed on the enrollment screen");
+    // The trace never says keys went that the last look held back (it is the run's record for the ticket).
+    assert!(
+        !events(&r).iter().any(|e| matches!(e, WorkflowEvent::ActionAttempted { state, .. } if state == "AUTOPILOT")),
+        "{:?}",
+        r.trace
+    );
+    assert_eq!(r.checkpoint(&w).unwrap().attempted, Some(0));
     // Pictures from before the decision still queued in the capture (new frame numbers, old screen) are not the fresh
     // look: they arrive within the capture latency and are skipped.
     let mut sim = Sim {

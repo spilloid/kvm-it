@@ -1313,3 +1313,18 @@ adapters, and the rebuilt bundle's source hash and checksums match (pairing not 
 
 Also: a lock file left by 0.5 (empty, no journal) is recovered the same way, warning that keys it sent were not
 recorded.
+
+## 2026-11-09 - Round-70 fixes (`48302a7`): review round 71 (Claude Opus 5.5, standing in for Codex)
+
+**STD-001 deviation:** Codex `gpt-6-astra` hit its usage limit again (reset 4:21 AM); Opus stood in (operator
+standing permission, logged per the rule). A Codex round over these fixes is owed. Read-only, tests and probes on a
+clean `git archive` of `48302a7`. Eight of round 70's nine fixes held (#8 only in part: finding 1). **NO SIGN-OFF**:
+2 Medium, 3 Low; all confirmed, all fixed in the next commit.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Medium | With the password in both the workflow's name and the laptop's, the refusal was `SecretInFile` (checked first) and the run record kept the laptop's name, in its header and file names | **Confirmed** (probe). Any refusal over a secret withholds the laptop's name too. Test with both at once. |
+| 2 | Medium | Journal records were renamed into place without making the rename durable: a power cut right after the keys could lose the "sent" record, and Recover then Resume could re-send without asking | **Confirmed.** Renames are written through (`MoveFileExW` with `MOVEFILE_WRITE_THROUGH` on Windows; the folder is synced elsewhere), and creating or removing the run's files syncs their folder. Not testable by a crash here: by construction. |
+| 3 | Low | `ActionAttempted` ("Sent N steps") was emitted before the last look, so a look that refused (another tenant's page) left a trace saying the Enter went there | **Confirmed** (probe). The progress record stays before the look; the trace event follows the keys (also when a burst is cut short). Test. |
+| 4 | Low | A crash after the final checkpoint was saved but before the run's marker went made Recover say "recorded nothing"; the test built a state no real crash produces | **Confirmed.** Its own message ("had saved its checkpoint, which is kept"); tested by a real `keep_checkpoint` then the marker put back. |
+| 5 | Low | The lock file was created empty and written after locking: losing that race left an empty file, read ever after as 0.5's crash | **Confirmed** (probe). The lock file is written whole under a private name and hard-linked into place, so it never exists empty. Test. |

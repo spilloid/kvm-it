@@ -84,9 +84,96 @@ pub fn apply(text: &str, values: &BTreeMap<String, String>) -> Result<String, St
     Ok(out)
 }
 
+/// `text` with state `state` recognised by these phrases (`sets`: alternatives, every phrase of one set must show), in
+/// place of the ones it had. Written as `text = ["a", "b"]` for one set, `text = [["a"], ["b"]]` for several. Only that
+/// state's phrases change: comments and layout are kept, and the result must parse to the same workflow otherwise.
+/// Empty `sets` removes them (the state is then recognised by its pictures, if it has any).
+pub fn set_phrases(text: &str, state: &str, sets: &[Vec<String>]) -> Result<String, String> {
+    let wf = Workflow::parse(text)?;
+    let mut expected = wf.clone();
+    let target = expected.states.iter_mut().find(|s| s.name == state).ok_or_else(|| format!("no state {state:?}"))?;
+    let sets: Vec<Vec<String>> = sets
+        .iter()
+        .map(|set| set.iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect::<Vec<_>>())
+        .filter(|set| !set.is_empty())
+        .collect();
+    target.detect.text = sets.clone();
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e: toml_edit::TomlError| e.to_string())?;
+    let states = doc.get_mut("states").and_then(|s| s.as_array_of_tables_mut()).ok_or("no [[states]]")?;
+    let table = states
+        .iter_mut()
+        .find(|t| t.get("name").and_then(|n| n.as_str()) == Some(state))
+        .ok_or_else(|| format!("no state {state:?}"))?;
+    let detect = table.get_mut("detect").and_then(|d| d.as_table_like_mut()).ok_or_else(|| format!("state {state:?} has no detect"))?;
+    let strings = |set: &[String]| set.iter().map(|p| toml_edit::Value::from(p.as_str())).collect::<toml_edit::Array>();
+    let value = match sets.as_slice() {
+        [] => None,
+        [one] => Some(toml_edit::Value::Array(strings(one))),
+        many => Some(toml_edit::Value::Array(many.iter().map(|set| toml_edit::Value::Array(strings(set))).collect())),
+    };
+    match value {
+        Some(mut v) => {
+            if let Some(old) = detect.get("text").and_then(|i| i.as_value()) {
+                *v.decor_mut() = old.decor().clone();
+            }
+            detect.insert("text", toml_edit::Item::Value(v));
+        }
+        None => {
+            detect.remove("text");
+        }
+    }
+    let mut out = doc.to_string();
+    if text.contains("\r\n") {
+        out = out.replace("\r\n", "\n").replace('\n', "\r\n");
+    }
+    // The phrases' own rules (length, how many, one line) are the parser's.
+    let got = Workflow::parse(&out)?;
+    if got != expected {
+        return Err("changing the phrases would change more than them; nothing was changed".into());
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_states_phrases_are_rewritten_in_place_and_nothing_else() {
+        let src = "workflow_format = 1
+name = \"w\"
+start = [\"A\"]
+
+[[states]]
+name = \"A\"
+# the name screen
+detect = { text = [\"Name your device\"], region = [0.5, 0.0, 0.5, 0.5] }   # keep
+next = [\"B\"]
+
+[[states]]
+name = \"B\"
+detect = { text = [\"Done here\"] }
+terminal = true
+";
+        let two = vec![vec!["Name your device".to_string()], vec!["Name this PC".to_string()]];
+        let out = set_phrases(src, "A", &two).unwrap();
+        assert!(out.contains("text = [[\"Name your device\"], [\"Name this PC\"]]"), "{out}");
+        assert!(out.contains("# the name screen") && out.contains("# keep") && out.contains("region = [0.5, 0.0, 0.5, 0.5]"));
+        let wf = Workflow::parse(&out).unwrap();
+        assert_eq!(wf.states[0].detect.text, two);
+        assert_eq!(wf.states[1].detect.text, vec![vec!["Done here".to_string()]], "the other state is untouched");
+        // Back to one set: the flat form; blanks are dropped.
+        let out = set_phrases(&out, "A", &[vec!["Name your device".into(), "  ".into()], vec![]]).unwrap();
+        assert!(out.contains("text = [\"Name your device\"]"), "{out}");
+        // The parser's rules hold: too short, unknown state, and a state left with nothing to recognise it by.
+        assert!(set_phrases(src, "A", &[vec!["ab".into()]]).unwrap_err().contains("3 to 200"));
+        assert!(set_phrases(src, "Z", &two).unwrap_err().contains("no state"));
+        assert!(set_phrases(src, "A", &[]).is_err(), "no picture and no phrase");
+        // CRLF files stay CRLF.
+        let crlf = src.replace('\n', "\r\n");
+        let out = set_phrases(&crlf, "A", &two).unwrap();
+        assert!(!out.replace("\r\n", "").contains('\n'));
+    }
 
     const WF: &str = r#"workflow_format = 1
 name = "w"
