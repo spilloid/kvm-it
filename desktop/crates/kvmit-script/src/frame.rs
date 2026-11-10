@@ -34,6 +34,33 @@ impl Frame {
         self
     }
 
+    /// Twice the size each way, bilinear: small interface text (a sign-in typed into a field) reads more reliably
+    /// enlarged. The capture number and time carry over.
+    pub fn doubled(&self) -> Frame {
+        let (w, h) = (self.width * 2, self.height * 2);
+        let mut gray = vec![0u8; w * h];
+        let px = |x: usize, y: usize| self.gray[y * self.width + x] as u32;
+        for y in 0..h {
+            // Output pixel centres fall a quarter of a source pixel either side of each source centre.
+            let (y0, y1, wy) = match y % 2 {
+                0 => ((y / 2).saturating_sub(1), y / 2, 1u32),
+                _ => (y / 2, (y / 2 + 1).min(self.height - 1), 3u32),
+            };
+            for x in 0..w {
+                let (x0, x1, wx) = match x % 2 {
+                    0 => ((x / 2).saturating_sub(1), x / 2, 1u32),
+                    _ => (x / 2, (x / 2 + 1).min(self.width - 1), 3u32),
+                };
+                // weights in quarters: the nearer source pixel counts 3, the farther 1
+                let (ax, bx) = if x % 2 == 0 { (wx, 4 - wx) } else { (4 - (wx - 2), wx - 2) };
+                let (ay, by) = if y % 2 == 0 { (wy, 4 - wy) } else { (4 - (wy - 2), wy - 2) };
+                let v = px(x0, y0) * ax * ay + px(x1, y0) * bx * ay + px(x0, y1) * ax * by + px(x1, y1) * bx * by;
+                gray[y * w + x] = ((v + 8) / 16) as u8;
+            }
+        }
+        Frame { width: w, height: h, gray, seq: self.seq, captured_at: self.captured_at }
+    }
+
     /// Area-average downscale to the comparison grid (upscales by replication if smaller).
     pub fn thumb(&self) -> Vec<u8> {
         let mut out = vec![0u8; GRID_W * GRID_H];
@@ -191,5 +218,21 @@ mod tests {
     fn rejects_bad_dimensions() {
         assert!(Frame::new(0, 4, vec![]).is_none());
         assert!(Frame::new(2, 2, vec![0; 3]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod doubled_tests {
+    use super::Frame;
+
+    #[test]
+    fn doubling_keeps_flat_areas_and_blends_edges_between_neighbours() {
+        let f = Frame::new(2, 1, vec![0, 200]).unwrap().with_seq(Some(7));
+        let d = f.doubled();
+        assert_eq!((d.width, d.height, d.seq), (4, 2, Some(7)));
+        assert_eq!(&d.gray[..4], &[0, 50, 150, 200], "quarter, three-quarter blends between the two pixels");
+        assert_eq!(&d.gray[..4], &d.gray[4..], "one row doubles into two equal rows");
+        let flat = Frame::new(3, 3, vec![90; 9]).unwrap().doubled();
+        assert!(flat.gray.iter().all(|v| *v == 90));
     }
 }

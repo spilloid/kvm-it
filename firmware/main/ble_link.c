@@ -437,17 +437,15 @@ static void start_link(void)
 {
     static bool boot_window_used;  /* the power-on window is offered once per chip boot, not per host re-sync */
     g_started = true;
-    /* Plug-in is physical presence: a power-on offers a short pairing window, bonded or not, so a new controller
-     * needs no BOOT press. With a bond stored, only a physical reset counts (power-on/plug-in, or the EN/RESET pin,
-     * which the COM port's auto-reset also drives): a crash or watchdog reboot must not reopen pairing, or anyone
-     * able to crash the adapter could. A bonded controller reconnects during or after the window as usual. */
-    esp_reset_reason_t why = esp_reset_reason();
-    bool physical = why == ESP_RST_POWERON || why == ESP_RST_EXT;
-    if (CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S > 0 && !boot_window_used && (physical || !have_bond())) {
+    /* An adapter with no trusted controller yet opens a short pairing window at boot, so the first pairing needs no
+     * BOOT press. Once a controller is trusted, no boot opens one (0.6.0): replacing it takes a BOOT press, so an
+     * adapter carried from laptop to laptop is not open to pairing each time it regains power. The trusted
+     * controller reconnects as usual. */
+    if (CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S > 0 && !boot_window_used && !have_bond()) {
         boot_window_used = true;
         open_window(CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S);
     } else {
-        if (!physical) ESP_LOGI(TAG, "reset reason %d is not a power-on: no pairing window (press BOOT to pair)", why);
+        if (have_bond()) ESP_LOGI(TAG, "a controller is trusted: no pairing window at boot (press BOOT to pair another)");
         adv_start();
     }
 }
@@ -482,7 +480,7 @@ esp_err_t ble_link_start(void)
     ESP_ERROR_CHECK(esp_timer_create(&ta, &g_window_timer));
 
     proto_ops_t ops = {NULL, o_down, o_up, o_rel, o_move, o_btn, o_wheel, o_mounted, o_held, o_counts, o_name, o_set_boot_drive, o_boot_drive};
-    uint8_t uuid[16], fw[3] = {0, 2, 0};
+    uint8_t uuid[16], fw[3] = {0, 2, 1};
     char name[KVM_NAME_MAX + 1];
     kvm_config_uuid(uuid);
     kvm_config_name(name);

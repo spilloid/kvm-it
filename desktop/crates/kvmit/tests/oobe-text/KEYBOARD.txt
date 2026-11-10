@@ -1,0 +1,10 @@
+0.53 0.17 0.34 0.03|Is this the right keyboard layout or input
+0.53 0.20 0.07 0.02|method?
+0.53 0.26 0.30 0.02|If you also use another keyboard layout, you can add that next.
+0.55 0.35 0.02 0.02|US
+0.55 0.42 0.19 0.02|Canadian Multilingual Standard
+0.55 0.50 0.05 0.02|Colemak
+0.55 0.58 0.09 0.02|English (India)
+0.55 0.66 0.02 0.02|Irish
+0.55 0.73 0.08 0.02|NZ Aotearoa
+0.81 0.83 0.02 0.01|Yes

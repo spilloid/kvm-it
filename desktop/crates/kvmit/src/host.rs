@@ -12,6 +12,8 @@ use tokio::runtime::Handle;
 
 pub type ConfirmFn = Box<dyn FnMut(&str) -> bool + Send>;
 pub type EventFn = Box<dyn FnMut(RunEvent) + Send>;
+/// Records a live workflow's progress durably (its journal); an error stops the run before what depends on it.
+pub type JournalFn = Box<dyn FnMut(&kvmit_script::Checkpoint) -> Result<(), String> + Send>;
 
 pub struct ScriptHost {
     pub rt: Handle,
@@ -23,6 +25,8 @@ pub struct ScriptHost {
     pub cancel: Arc<AtomicBool>,
     pub confirm: ConfirmFn,
     pub on_event: EventFn,
+    /// A live workflow run's journal (`None`: scripts, dry runs, or a run that cannot be saved for resuming).
+    pub journal: Option<JournalFn>,
 }
 
 fn e(err: kvmit_ble::LinkError) -> String {
@@ -38,8 +42,15 @@ impl Host for ScriptHost {
     fn key_up(&mut self, key: Key) -> Result<(), String> {
         self.rt.block_on(self.dev.as_ref().ok_or(NO_ADAPTER)?.key_up(key)).map_err(e)
     }
+    /// Every run ends here. If even this fails, keys may stay held on the target (and the link's keepalives would keep
+    /// them held): the session is closed so the adapter's link-drop release takes over.
     fn release_all(&mut self) -> Result<(), String> {
-        self.rt.block_on(self.dev.as_ref().ok_or(NO_ADAPTER)?.release_all()).map_err(e)
+        let dev = self.dev.as_ref().ok_or(NO_ADAPTER)?;
+        let r = self.rt.block_on(dev.release_all()).map_err(e);
+        if r.is_err() {
+            self.rt.block_on(dev.shutdown());
+        }
+        r.map_err(|m| format!("{m} (disconnected so the adapter releases the keys)"))
     }
     fn mouse_move(&mut self, dx: i32, dy: i32) -> Result<(), String> {
         self.dev.as_ref().ok_or(NO_ADAPTER)?.mouse_move(dx, dy);
@@ -60,14 +71,27 @@ impl Host for ScriptHost {
     }
     /// A valid picture name with nothing saved there yet. A name the path rule refuses is not "missing": loading it
     /// reports why.
+    fn read_text(&mut self, frame: &Frame) -> Result<Vec<kvmit_script::text::TextLine>, String> {
+        kvmit_video::text::read_text(frame)
+    }
     fn reference_missing(&mut self, name: &str) -> bool {
         crate::wf_view::reference_path(&self.base_dir, name).is_ok_and(|p| std::fs::symlink_metadata(&p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound))
+    }
+    fn persist(&mut self, checkpoint: &kvmit_script::Checkpoint) -> Result<(), String> {
+        match &mut self.journal {
+            Some(write) => write(checkpoint),
+            None => Ok(()),
+        }
     }
     fn confirm(&mut self, message: &str) -> bool {
         (self.confirm)(message)
     }
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
+    }
+    /// This run's session with the adapter is gone (a reconnect makes a new one, which this run does not take over).
+    fn link_lost(&self) -> Option<String> {
+        self.dev.as_ref().filter(|d| !d.is_connected()).map(|_| "the adapter disconnected".to_string())
     }
     fn event(&mut self, ev: RunEvent) {
         (self.on_event)(ev)

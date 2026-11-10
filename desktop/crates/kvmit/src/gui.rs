@@ -202,6 +202,11 @@ pub struct App {
     wf_saved_slot: Option<crate::wf_view::Slot>,
     /// The reference image "Save this screen as" writes (an index into the workflow's references).
     wf_snap: usize,
+    /// Screen wording: the state whose phrases are shown, its wordings as edited (each a list of phrases that must all
+    /// show), and the last reading of the screen (its lines, or why it could not be read).
+    wf_phr_state: usize,
+    wf_phr_rows: Option<(String, Vec<Vec<String>>)>,
+    wf_phr_read: Option<Result<Vec<kvmit_script::text::TextLine>, String>>,
     /// The setup form of the selected workflow: its setup values as chosen so far (seeded from its profile).
     wf_setup: BTreeMap<String, String>,
     /// The file name "Save my copy" writes, and whether the user typed it (else it follows the organisation's name).
@@ -214,6 +219,12 @@ pub struct App {
     wf_allow_missing: bool,
     /// The states that acceptance named: a longer list needs it again.
     wf_allow_for: Vec<String>,
+    /// The laptop this run is on, as named by the operator (asset tag, serial; optional): it goes into the checkpoint
+    /// and the run record, and a checkpoint resumes only on the laptop it names.
+    wf_laptop: String,
+    /// A run of this workflow on this adapter that did not end cleanly (none holds its lock, its marker is left): the state its journal
+    /// reached and when. Read with the saved checkpoint.
+    wf_interrupted: Option<(Option<String>, Option<u64>)>,
 }
 
 /// The id of a workflow secret's password field: explicit, so its state can be found and removed, and tied to the
@@ -329,12 +340,17 @@ impl App {
             wf_reload: None,
             wf_allow_missing: false,
             wf_allow_for: Vec::new(),
+            wf_laptop: String::new(),
+            wf_interrupted: None,
             purge_ids: Vec::new(),
             wf_generation: 0,
             wf_saved: None,
             wf_saved_read: None,
             wf_saved_slot: None,
             wf_snap: 0,
+            wf_phr_state: 0,
+            wf_phr_rows: None,
+            wf_phr_read: None,
             cfg,
         };
         // Zero-step reconnect: the last adapter and capture device come back on their own.
@@ -402,7 +418,7 @@ impl App {
                 if let Err(e) = backend::pair(&id).await {
                     with_link(&|l: &mut Link| {
                         *l = Link::Disconnected;
-                        *notice.lock().unwrap() = format!("Pairing failed: {e}. Re-plug the adapter (15 s pairing window) or press BOOT briefly on it, then try again.");
+                        *notice.lock().unwrap() = format!("Pairing failed: {e}. Press BOOT briefly on the adapter (it opens a 5-minute pairing window; a new adapter also opens one for 15 s after it is plugged in), then try again.");
                     });
                     ctx.request_repaint();
                     return;
@@ -528,6 +544,7 @@ impl App {
             let done = pending.clone();
             self.rt.spawn(async move {
                 while let Some(ev) = rx.recv().await {
+                    let is_release = matches!(ev, Input::Up(_) | Input::Button(_, false));
                     let r = match ev {
                         Input::Down(k) => dev.key_down(k).await,
                         Input::Up(k) => dev.key_up(k).await,
@@ -571,6 +588,21 @@ impl App {
                     if let Err(e) = r {
                         debug_log(&format!("input not delivered: {e}"));
                         *notice.lock().unwrap() = format!("input not delivered: {e}");
+                        // A release that may not have arrived leaves a key or button held on the target (and our
+                        // keepalives would keep it held): the same recovery as a chord's. Release everything; if even
+                        // that fails, close the session so the adapter's link-drop release takes over. Input queued
+                        // behind it is dropped, not sent onto a target whose state is unknown.
+                        if is_release {
+                            *notice.lock().unwrap() = if dev.release_all().await.is_ok() {
+                                format!("A release was not delivered ({e}); all keys released.")
+                            } else {
+                                dev.shutdown().await;
+                                format!("A release was not delivered ({e}) and keys could not be released: disconnected so the adapter releases them.")
+                            };
+                            while rx.try_recv().is_ok() {
+                                done.fetch_sub(1, Ordering::SeqCst);
+                            }
+                        }
                     }
                     done.fetch_sub(1, Ordering::SeqCst);
                 }
@@ -801,6 +833,9 @@ impl App {
         self.var_values.clear();
         self.wf_setup.clear();
         self.wf_setup_name_edited = false;
+        self.wf_phr_state = 0;
+        self.wf_phr_rows = None;
+        self.wf_phr_read = None;
         self.wf_allow_missing = false;
         self.wf_allow_for.clear();
         if self.library[i].workflow {
@@ -910,6 +945,7 @@ impl App {
                     log2.lock().unwrap().push(line);
                     ctx2.request_repaint();
                 }),
+                journal: None,
             };
             let opts = RunOptions { dry_run: dry, ..Default::default() };
             let result = run(&ops, &mut host, &opts);
@@ -1005,6 +1041,9 @@ impl App {
             (handle.cancel.clone(), handle.done.clone(), handle.log.clone(), handle.confirm.clone(), handle.outcome.clone());
         let (rt, capture, shared2) = (self.rt.handle().clone(), self.capture.clone(), shared.clone());
         let allow_missing = self.wf_allow_missing;
+        let laptop = crate::wf_view::laptop_name(&self.wf_laptop).unwrap_or_default();
+        // The states named when the box was ticked: a run that finds any other missing is refused.
+        let allow_only: std::collections::BTreeSet<String> = self.wf_allow_for.iter().cloned().collect();
         std::thread::spawn(move || {
             let ctx3 = ctx.clone();
             let cancel2 = cancel.clone();
@@ -1017,8 +1056,17 @@ impl App {
                 confirm: Box::new(move |msg| ask(&confirm, &cancel2, msg, || ctx3.request_repaint())),
                 // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
                 on_event: Box::new(|_| {}),
+                // A live run journals its progress before what depends on it, in case it never ends cleanly.
+                journal: slot.clone().filter(|_| !dry).map(|sl| {
+                    crate::wf_view::journal_writer(files.script_dir.clone(), sl, files.text.clone(), laptop.clone())
+                }),
             };
-            let mut opts = kvmit_script::WorkflowOptions { allow_missing_pictures: allow_missing, ..Default::default() };
+            let mut opts = kvmit_script::WorkflowOptions {
+                allow_missing_pictures: allow_missing,
+                allow_missing_only: allow_missing.then_some(allow_only),
+                laptop: laptop.clone(),
+                ..Default::default()
+            };
             opts.run.dry_run = dry;
             let (log2, ctx4, sh) = (log.clone(), ctx.clone(), shared2.clone());
             let report = kvmit_script::run_workflow(&wf, &secrets, &UsAnsi, &mut host, &opts, resume.as_ref().map(|(_, cp)| cp), &mut |t, c| {
@@ -1031,8 +1079,15 @@ impl App {
                 ctx4.request_repaint();
             });
             *outcome.lock().unwrap() = Some(crate::wf_view::outcome(&report.result));
-            let kept = slot.as_ref().and_then(|s| crate::wf_view::keep_checkpoint(&files.script_dir, s, &files.text, dry, &wf, &report, claim.as_ref()));
+            let kept = slot
+                .as_ref()
+                .and_then(|s| crate::wf_view::keep_checkpoint(&files.script_dir, s, &files.text, dry, &wf, &report, claim.as_ref(), &laptop));
             if let Some(msg) = kept {
+                log.lock().unwrap().push(msg);
+            }
+            // Every live run leaves its record, completed or stopped.
+            if let (false, Some(s)) = (dry, slot.as_ref()) {
+                let msg = crate::wf_view::save_run_record(&files.script_dir, &laptop, &s.adapter, &wf, &report).unwrap_or_else(|e| e);
                 log.lock().unwrap().push(msg);
             }
             {
@@ -1054,12 +1109,36 @@ impl App {
     /// the target through setup by hand once, saving each screen under the name its state expects.
     fn references_ui(&mut self, ui: &mut egui::Ui, wf: &kvmit_script::Workflow, base: &std::path::Path) {
         let refs = crate::wf_view::references(wf, base);
-        let missing = refs.iter().filter(|r| !r.present).count();
-        let title = if missing == 0 { "Reference screens (all present)".to_string() } else { format!("Reference screens ({missing} of {} missing)", refs.len()) };
+        let reader = crate::wf_view::text_reader();
+        let reads_text = reader.is_ok();
+        let by_text = crate::wf_view::by_text(wf, reads_text);
+        let needed = |r: &crate::wf_view::Reference| crate::wf_view::picture_needed(wf, &r.image, reads_text);
+        let missing = refs.iter().filter(|r| !r.present && needed(r)).count();
+        let title = match missing {
+            0 if !by_text.is_empty() => format!("Screens ({} of {} recognised by their text)", by_text.len(), wf.states.len()),
+            0 => "Reference screens (all present)".to_string(),
+            n => format!("Reference screens ({n} needed, not saved)"),
+        };
         egui::CollapsingHeader::new(title).id_salt("wf_refs").default_open(missing > 0).show(ui, |ui| {
+            match (&reader, by_text.is_empty()) {
+                (Ok(()), false) => {
+                    ui.small(format!("Recognised by their text, no picture needed: {}.", by_text.join(", ")));
+                }
+                (Err(why), _) if wf.states.iter().any(|s| !s.detect.text.is_empty()) => {
+                    ui.colored_label(
+                        health_color(Health::Working, ui),
+                        format!("Text cannot be read on this computer ({why}): screens are recognised by their pictures."),
+                    );
+                }
+                _ => {}
+            }
             for r in &refs {
                 ui.horizontal_wrapped(|ui| {
-                    let (h, t) = if r.present { (Health::Good, "ok") } else { (Health::Bad, "missing") };
+                    let (h, t) = match (r.present, needed(r)) {
+                        (true, _) => (Health::Good, "ok"),
+                        (false, true) => (Health::Bad, "missing"),
+                        (false, false) => (Health::Idle, "not needed"),
+                    };
                     ui.colored_label(health_color(h, ui), t);
                     ui.monospace(&r.image);
                     ui.small(r.used_by.join(", "));
@@ -1068,14 +1147,14 @@ impl App {
             if refs.is_empty() {
                 return;
             }
-            let tenants = crate::wf_view::missing_tenant_pictures(wf, &refs);
+            let tenants = crate::wf_view::missing_tenant_pictures(wf, &refs, reads_text);
             if !tenants.is_empty() {
                 ui.colored_label(
                     health_color(Health::Bad, ui),
                     format!("Required before any run: {} (the organisation check compares every listed organisation).", tenants.join(", ")),
                 );
             }
-            let blind = crate::wf_view::blind_states(wf, &refs);
+            let blind = crate::wf_view::blind_states(wf, &refs, reads_text);
             if !blind.is_empty() {
                 let stops = wf.stop_states(&blind);
                 if ui.checkbox(&mut self.wf_allow_missing, format!("Run without the pictures of {}", blind.join(", "))).changed() {
@@ -1121,7 +1200,154 @@ impl App {
                     }
                 }
             });
-            ui.small("Each state is recognised by its screen: bring the target to it (by hand, or a dry run up to it) and save it.");
+            ui.small("A state without phrases (or where text cannot be read) is recognised by its picture: bring the target to it (by hand, or a dry run up to it) and save it.");
+        });
+    }
+
+    /// Screen wording: the phrases each screen is recognised by, edited and saved in the workflow file (only that
+    /// state's phrases change), with the current screen's text read to check a wording or copy one. A built-in is
+    /// shown, not changed: set up a copy first.
+    fn phrases_ui(&mut self, ui: &mut egui::Ui, wf: &kvmit_script::Workflow, sel: usize, running: bool) {
+        if wf.states.is_empty() {
+            return;
+        }
+        let path = self.library[sel].path.clone();
+        egui::CollapsingHeader::new("Screen wording").id_salt(("wf_phrases", sel)).show(ui, |ui| {
+            ui.small(
+                "Each screen is recognised by phrases it shows. If a laptop words one differently (another Windows build), \
+                 add that wording here. A wording with several phrases needs every one of them on screen.",
+            );
+            self.wf_phr_state = self.wf_phr_state.min(wf.states.len() - 1);
+            let before = self.wf_phr_state;
+            egui::ComboBox::from_id_salt(("wf_phr_state", sel)).selected_text(&wf.states[self.wf_phr_state].name).show_ui(ui, |ui| {
+                for (i, s) in wf.states.iter().enumerate() {
+                    ui.selectable_value(&mut self.wf_phr_state, i, &s.name);
+                }
+            });
+            let state = &wf.states[self.wf_phr_state];
+            // The rows follow the file: a different state, or the file changed under them, starts again from it.
+            // Kept as the file holds them (wordings, each a list of phrases): nothing is split or joined on a character
+            // a phrase may itself contain.
+            let from_file: Vec<Vec<String>> = state.detect.text.clone();
+            if before != self.wf_phr_state || self.wf_phr_rows.as_ref().is_none_or(|(n, _)| *n != state.name) {
+                self.wf_phr_rows = Some((state.name.clone(), from_file.clone()));
+            }
+            let editable = path.is_some() && !running;
+            let rows = &mut self.wf_phr_rows.as_mut().expect("set above").1;
+            let mut remove: Option<(usize, usize)> = None;
+            for (i, row) in rows.iter_mut().enumerate() {
+                ui.horizontal_wrapped(|ui| {
+                    for (j, phrase) in row.iter_mut().enumerate() {
+                        if j > 0 {
+                            ui.label("and");
+                        }
+                        ui.add_enabled(editable, egui::TextEdit::singleline(phrase).desired_width(240.0));
+                        if editable && ui.small_button("x").on_hover_text("Remove this phrase").clicked() {
+                            remove = Some((i, j));
+                        }
+                    }
+                    if editable && ui.small_button("+ phrase").on_hover_text("Another phrase this wording needs on screen").clicked() {
+                        row.push(String::new());
+                    }
+                });
+            }
+            if let Some((i, j)) = remove {
+                rows[i].remove(j);
+                if rows[i].is_empty() {
+                    rows.remove(i);
+                }
+            }
+            if rows.is_empty() {
+                ui.small("No phrases: this screen is recognised by its picture.");
+            }
+            let sets = crate::wf_view::wording_sets(rows);
+            let changed = sets != state.detect.text;
+            ui.horizontal(|ui| {
+                if editable && ui.button("Add a wording").clicked() {
+                    rows.push(vec![String::new()]);
+                }
+                let frame = self.capture.lock().unwrap().as_ref().and_then(|c| c.latest());
+                let b = ui.add_enabled(frame.is_some(), egui::Button::new("Read the screen now"));
+                let b = if frame.is_none() { b.on_disabled_hover_text("Open a video source first.") } else { b.on_hover_text("Reads the text on the current video, to check this screen's wording or copy a line.") };
+                if b.clicked() {
+                    let f = frame.expect("enabled only with a frame").to_gray();
+                    self.wf_phr_read = Some(kvmit_video::text::read_text(&f));
+                }
+            });
+            match &self.wf_phr_read {
+                Some(Ok(lines)) => {
+                    // Would this screen, as read now, count as the state (with the wording as edited)?
+                    let mut probe = state.detect.clone();
+                    probe.text = sets.clone();
+                    match probe.text_score(lines) {
+                        Some((score, _)) if score >= probe.text_threshold => {
+                            ui.colored_label(health_color(Health::Good, ui), format!("The screen shows this wording ({:.0}%).", score * 100.0));
+                        }
+                        Some((score, _)) => {
+                            ui.colored_label(health_color(Health::Bad, ui), format!("The screen does not show this wording (closest {:.0}%).", score * 100.0));
+                        }
+                        None => {}
+                    }
+                    ui.small(if editable { "On screen now (click a line to add it as a wording):" } else { "On screen now:" });
+                    let mut add = None;
+                    for l in lines.iter().filter(|l| !l.text.trim().is_empty()) {
+                        if editable {
+                            if ui.small_button(&l.text).clicked() {
+                                add = Some(l.text.trim().to_string());
+                            }
+                        } else {
+                            ui.small(&l.text);
+                        }
+                    }
+                    if let (Some(t), Some((_, rows))) = (add, self.wf_phr_rows.as_mut()) {
+                        rows.push(vec![t]);
+                    }
+                }
+                Some(Err(e)) => {
+                    ui.colored_label(health_color(Health::Working, ui), format!("Text cannot be read: {e}"));
+                }
+                None => {}
+            }
+            match &path {
+                None => {
+                    ui.small("A built-in workflow is not changed here: set up your copy first, then change its wording.");
+                }
+                Some(path) => {
+                    let why = if running {
+                        Some("A script is running.")
+                    } else if !changed {
+                        Some("Nothing changed.")
+                    } else {
+                        None
+                    };
+                    ui.horizontal(|ui| {
+                        let b = ui.add_enabled(why.is_none(), egui::Button::new("Save wording"));
+                        let b = match why {
+                            Some(w) => b.on_disabled_hover_text(w),
+                            None => b.on_hover_text(format!(
+                                "Changes only {}'s phrases in {}. A checkpoint saved before the change will not resume.",
+                                state.name,
+                                path.display()
+                            )),
+                        };
+                        if b.clicked() {
+                            let source = self.library[sel].source.clone();
+                            let saved = crate::wf_view::save_wording(path, &source, &state.name, &sets, &self.wf_secrets);
+                            match saved {
+                                Ok(()) => {
+                                    self.wf_reload = Some(path.clone());
+                                    self.wf_phr_rows = None;
+                                    self.set_notice(format!("Saved {}'s wording: try it with a dry run.", state.name));
+                                }
+                                Err(e) => self.set_notice(format!("Not saved: {e}")),
+                            }
+                        }
+                        if changed && ui.button("Undo changes").clicked() {
+                            self.wf_phr_rows = Some((state.name.clone(), from_file.clone()));
+                        }
+                    });
+                }
+            }
         });
     }
 
@@ -1135,8 +1361,8 @@ impl App {
         egui::CollapsingHeader::new(title).id_salt(("wf_setup", sel)).default_open(builtin.is_some()).show(ui, |ui| {
             if builtin.is_some() {
                 ui.label(
-                    "A built-in workflow holds an example organisation. Choose yours: Save my copy writes your own copy into \
-                     the scripts folder, selected next for its reference screens and a run.",
+                    "A built-in workflow holds an example organisation and leaves the choices that matter to you. Choose \
+                     yours: Save my copy writes your own copy into the scripts folder and selects it.",
                 );
             }
             let mut problem: Option<String> = None;
@@ -1196,7 +1422,7 @@ impl App {
                         match saved {
                             Ok(p) => {
                                 self.wf_reload = Some(p.clone());
-                                self.set_notice(format!("Saved {}: next, save its reference screens, then a dry run.", p.display()));
+                                self.set_notice(format!("Saved {}: next, a dry run.", p.display()));
                             }
                             Err(e) => self.set_notice(format!("Not saved: {e}")),
                         }
@@ -1291,11 +1517,13 @@ impl App {
         let base = self.library[sel].path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.cfg.script_dir());
         // Every frame, whether or not the list is open: an acceptance covers only the screens it named, so a picture
         // that goes missing afterwards (deleted outside the app) drops it.
-        let blind = crate::wf_view::blind_states(&wf, &crate::wf_view::references(&wf, &base));
+        let blind = crate::wf_view::blind_states(&wf, &crate::wf_view::references(&wf, &base), crate::wf_view::text_reader().is_ok());
         if blind.is_empty() || blind.iter().any(|b| !self.wf_allow_for.contains(b)) {
             self.wf_allow_missing = false;
         }
         self.references_ui(ui, &wf, &base);
+        let running = self.run_handle.as_ref().is_some_and(|r| r.running());
+        self.phrases_ui(ui, &wf, sel, running);
         let external = self.library[sel].path.is_some();
         let source = entry_source(&self.library[sel]);
         if external {
@@ -1316,7 +1544,12 @@ impl App {
             missing.map(|k| format!("Enter {} first.", wf.secrets.get(&k).cloned().unwrap_or(k)))
         });
         let busy = running.then(|| "A script is already running.".to_string());
-        let why_run = why_ready.clone().or(busy.clone()).or(uistate::send_block_reason(self.device().is_some(), self.input_idle()).map(str::to_string));
+        let why_laptop = crate::wf_view::laptop_name(&self.wf_laptop).err();
+        let why_run = why_ready
+            .clone()
+            .or(busy.clone())
+            .or(why_laptop)
+            .or(uistate::send_block_reason(self.device().is_some(), self.input_idle()).map(str::to_string));
         let why_dry = why_unsaved.or(busy.clone()).or(if self.capture.lock().unwrap().is_none() {
             Some("Open a video source first: a dry run still watches the screen.".to_string())
         } else {
@@ -1348,6 +1581,7 @@ impl App {
         let due = ended || self.wf_saved_read.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1));
         if let (false, true, Some(slot)) = (running, due, &slot) {
             self.wf_saved_read = Some(std::time::Instant::now());
+            self.wf_interrupted = crate::wf_view::interrupted(&files.script_dir, slot, &files.text);
             match crate::wf_view::load_checkpoint_raw(&files.script_dir, slot, &files.text) {
                 Ok(cp) => self.wf_saved = cp,
                 Err(e) => {
@@ -1363,6 +1597,33 @@ impl App {
         // A stopped run with a known state can be resumed: the engine looks at the screen again first, never replays.
         // What is resumable is the saved checkpoint (written by a stopped live run here or by `kvmit run`).
         let checkpoint = if running { None } else { self.wf_saved.clone() };
+        if let (false, Some((state, at)), Some(sl)) = (running, self.wf_interrupted.clone(), slot.as_ref()) {
+            let red = theme::palette(ui.visuals().dark_mode).bad_text;
+            let reached = match state {
+                Some(s) => format!("It reached {s} ({}); keys may have been sent there.", crate::wf_view::ago(at)),
+                None => "It recorded nothing.".to_string(),
+            };
+            ui.colored_label(red, format!("A run of this workflow on this adapter did not end cleanly (the app or the computer stopped). {reached}"));
+            let b = ui.button("Recover the interrupted run").on_hover_text(
+                "Only if no run is going on (in another window or a terminal). Its last step becomes the checkpoint: check the \
+                 laptop, then Resume, which looks at the screen first and asks before sending anything again.",
+            );
+            if b.clicked() {
+                match crate::wf_view::recover(&files.script_dir, sl) {
+                    Ok(m) => self.set_notice(m),
+                    Err(e) => self.set_notice(format!("Could not recover: {e}")),
+                }
+                self.wf_saved_read = None;
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.label("This laptop");
+            ui.add_enabled(
+                !running,
+                egui::TextEdit::singleline(&mut self.wf_laptop).hint_text("asset tag or serial (optional)").desired_width(220.0),
+            )
+            .on_hover_text("Names this laptop's run record, and its checkpoint: Resume continues only on the laptop it names.");
+        });
         ui.horizontal(|ui| {
             let r = ui.add_enabled(why_run.is_none(), egui::Button::new("▶ Run"));
             if let Some(w) = &why_run {
@@ -1381,9 +1642,15 @@ impl App {
                 self.start_workflow((wf.clone(), source.clone()), files.clone(), dry, true, None, ctx.clone());
             }
             if let Some((shown, cp)) = &checkpoint {
-                let r = ui.add_enabled(why_run.is_none(), egui::Button::new(format!("Resume from {}", cp.state)));
+                let (on, at) = crate::wf_view::checkpoint_laptop(shown);
+                let label = match on.is_empty() {
+                    true => format!("Resume from {} ({})", cp.state, crate::wf_view::ago(at)),
+                    false => format!("Resume {on} from {} ({})", cp.state, crate::wf_view::ago(at)),
+                };
+                let why_resume = why_run.clone().or(crate::wf_view::resume_refusal(shown, &self.wf_laptop));
+                let r = ui.add_enabled(why_resume.is_none(), egui::Button::new(label));
                 r.clone().on_hover_text("Looks at the screen first; continues only if it shows that state or one that may follow it.");
-                if let Some(w) = &why_run {
+                if let Some(w) = &why_resume {
                     r.clone().on_disabled_hover_text(w);
                 }
                 if r.clicked() {
@@ -1955,7 +2222,8 @@ impl App {
     }
 
     fn text_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.add(egui::TextEdit::singleline(&mut self.type_text).password(self.type_secret).hint_text("text to type on the target"));
+        let field = egui::Id::new("kvmit-type-text");
+        ui.add(egui::TextEdit::singleline(&mut self.type_text).password(self.type_secret).hint_text("text to type on the target").id(field));
         ui.checkbox(&mut self.type_secret, "Secret (masked, never logged)");
         let warning = uistate::untypable_warning(&self.type_text, self.type_secret);
         if let Some(w) = &warning {
@@ -1980,7 +2248,9 @@ impl App {
             // The text is cleared only once the run has actually started; on any failure it stays for another try.
             let vars: Vars = [("t".to_string(), self.type_text.clone())].into();
             if self.start_run(s, std::path::PathBuf::from("."), vars, false, ctx.clone()) {
-                self.type_text.clear();
+                // Wiped, with the field's undo history (egui keeps it in clear text), as the workflow's secrets are.
+                zeroize::Zeroize::zeroize(&mut self.type_text);
+                purge_secret_fields(ctx, &[field]);
             }
         }
     }

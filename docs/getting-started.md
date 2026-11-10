@@ -49,8 +49,9 @@ tell us how it goes.)
 ## 4. Pair (once)
 
 1. Move the cable: plug the adapter's **USB** port into the **target**. (COM can stay plugged in or not.)
-2. For **15 seconds** after it powers up, it accepts a new pairing. Missed it? Press **BOOT** briefly: that reopens the window
-   for 5 minutes. No physical access, no pairing. That is the entire security model, and it is a feature.
+2. For **15 seconds** after it first powers up, it accepts a pairing. Missed it? Press **BOOT** briefly: that reopens the
+   window for 5 minutes. Once paired, it never opens a window by itself again: pairing another controller takes a BOOT
+   press. No physical access, no pairing. That is the entire security model, and it is a feature.
 3. In kvm-it: **Adapter** chip, **Scan for adapters**, **Pair & connect**. On Windows this pairs with no system dialog at all.
 
 From then on, move the cables to the next machine and the app reconnects by itself.
@@ -144,36 +145,42 @@ project's signed shim and iPXE; but then iPXE only starts signed things (Windows
 Violation"), and some locked-down PCs turn that CA off and refuse the drive. All of that has been run in a virtual machine, not yet on a real PC. And the boot script on the
 drive is the demo until editing it from the app lands (developers can change it today: [developing.md](developing.md)).
 
-## 7. Set up Windows 11 with a workflow (new in 0.5.0)
+## 7. Set up Windows 11 with a workflow (new in 0.5.0, reads the screen since 0.6.0)
 
-A **workflow** drives Windows setup screen by screen: it recognises each screen from a picture of it, types only on the
-screen it expects, checks that the next screen arrived, and stops (typing nothing) on anything it does not recognise.
-The built-in one, `windows-11-oobe-provisioning.toml`, goes from the region screen to the user's first sign-in, by
-**Windows Autopilot** or by **joining Microsoft Entra with a work or school account**. It is a template: the screens after
-the work-or-school sign-in page have not yet been run on any machine (up to there it has run in a virtual machine).
-Try it on one machine, with a dry run first. The full guide, with every screen and what to do when it stops, is
-[Provision Windows 11 laptops](provisioning.md).
+A **workflow** drives Windows setup screen by screen: it recognises each screen by **reading its text** ("Is this the
+right country or region?"), types only on the screen it expects, checks that the next screen arrived, and stops (typing
+nothing) on anything it does not recognise. The built-in one, `windows-11-oobe-provisioning.toml`, goes from the region
+screen to the user's first sign-in, by **Windows Autopilot** or by **joining Microsoft Entra with a work or school
+account**. Up to the work-or-school sign-in page it has run in a virtual machine; the screens after it have not yet run
+on any machine. Try it on one machine, with a dry run first. The full guide, with every screen and what to do when it
+stops, is [Provision Windows 11 laptops](provisioning.md); what each part of the panel is for, and which ones you can
+leave closed, is [The workflow panel](workflow-panel.md).
+
+Reading text needs nothing extra on Windows (with English among its languages) or macOS; on Linux install Tesseract
+(`sudo apt install tesseract-ocr`).
 
 1. **Make it yours.** In **Scripts…**, select **[built-in workflow] windows-11-oobe-provisioning.toml** and fill in
-   **Set up your copy**: Windows Autopilot or a work or school account, your organisation's short name, and whether to
-   accept the licence terms. **Save my copy** writes your copy into the scripts folder and selects it (from a terminal:
+   **Set up your copy**: Windows Autopilot or a work or school account, your organisation's short name and sign-in
+   domain (`fabrikam.com`), and whether to accept the licence terms. The method and the licence have no default.
+   **Save my copy** writes your copy into the scripts folder and selects it (from a terminal:
    `kvmit workflow new windows-11-oobe-provisioning`). No text editor needed; change it later in its
    **Approved profile**.
-2. **Save its screens once.** Select it in the Scripts list and open **Reference screens**: every screen it needs is
-   listed, marked missing. Take one machine through setup by hand. At each screen, choose that screen's name under
-   **Save this screen as** and click it. For the organisation's picture, save the password page (with your branding)
-   under the tenant's name. `kvmit run <file> --check` lists the same from a terminal; `kvmit video snap <path>` saves one.
-3. **Dry run.** Reset the machine to the first setup screen and click **Dry run**: it watches the screen and sends
-   nothing (no sign-in or password needed). Click through setup by hand and check that the timeline names each screen as you reach it.
-4. **Run.** Enter the user's sign-in and password (held in memory only, never saved), tick that you reviewed the file and
-   click **Run**. The timeline says **Your turn** at the steps a person must do: connect the network, approve the
-   sign-in on a phone, choose privacy settings. Do those at the target; the run sees the screen move on and continues.
-   It ends at Windows Hello or the desktop, for the user to take over.
-5. **If it stops**, it says why and saves a checkpoint. Fix the target, then click **Resume** (or `kvmit run <file>
-   --resume`): it looks at the screen first and carries on only from the state it stopped in or the next one.
+2. **Dry run.** Reset the machine to the first setup screen and click **Dry run**: it watches the screen and sends
+   nothing (no sign-in or password needed). Click through setup by hand and check that the timeline names each screen
+   as you reach it.
+3. **Run.** Name the laptop under **This laptop** (its asset tag or serial), enter the user's sign-in and password
+   (held in memory only, never saved), tick that you reviewed the file and click **Run**. The timeline says **Your
+   turn** at the steps a person must do: connect the network, approve the sign-in on a phone, choose privacy settings.
+   Do those at the target; the run sees the screen move on and continues. Before the password it checks that the page
+   shows that very account in your domain. It ends at Windows Hello or the desktop, for the user to take over. Every
+   live run saves a record (no secrets) in `runs/` in the scripts folder.
+4. **If it stops**, it says why and saves a checkpoint. Fix the target, then click **Resume** (or `kvmit run <file>
+   --resume --laptop <name>`): it looks at the screen first and carries on only from the state it stopped in or the
+   next one. If the app or the computer stopped mid-run, click **Recover the interrupted run** first.
    [What each stop means](provisioning.md#when-it-stops).
 
-From a terminal the whole run is `kvmit run <your copy>.toml` (add `--save-trace` for a record for the ticket).
+Where text cannot be read, screens can still be recognised from saved pictures (**Reference screens**), but a run that
+checks the sign-in does not start there. From a terminal the whole run is `kvmit run <your copy>.toml --laptop <name>`.
 
 ## When something is off
 

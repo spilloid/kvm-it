@@ -45,7 +45,8 @@ Everything the app does is also on the command line:
 `kvmit scan | status | type "text" | key ctrl alt delete | run script.toml [--dry-run] | import payload.txt | flash`.
 
 **[Full walkthrough on the docs site](https://spilloid.github.io/kvm-it/)** or [docs/getting-started.md](docs/getting-started.md).
-Provisioning laptops: [docs/provisioning.md](docs/provisioning.md). Read
+Provisioning laptops: [docs/provisioning.md](docs/provisioning.md), and the app's workflow panel section by section:
+[docs/workflow-panel.md](docs/workflow-panel.md). Read
 the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what the LED and BOOT button mean.
 
 **Hacking on it?** Building from source (that is where Rust and Docker live): [docs/developing.md](docs/developing.md).
@@ -80,6 +81,10 @@ not bare-metal Windows).
 | Stateful workflows (engine, app panel, `kvmit run`, saved checkpoints, reference screens) | **host-tested** against simulated targets; **VM-verified** on the first four Windows 11 25H2 setup screens (Proxmox VM, QEMU harness). The app's workflow panel was looked at on screen on Windows 11 (demo video, no adapter): setup form, reference list, secrets; not yet during a live run. No capture card or adapter has run a workflow |
 | Setting up a workflow without a text editor (app: Set up your copy, Save profile; `kvmit workflow new/set/show`) | **host-tested**; run in the app and the CLI on Windows 11 (2026-11-06): a copy written with the chosen values only, comments kept, a profile change saved in place |
 | Built-in Windows 11 provisioning workflow (Autopilot or Microsoft Entra join with a work account) | **template**: the work-account path **VM-verified** from the region screen to the work-or-school sign-in page (25H2, driven end to end by the workflow, 2026-11-04); both paths simulated end to end (host-tested); signing in, MFA, enrolment, the tenant check and Autopilot **not verified** |
+| Screens recognised by reading their text (unreleased, 0.6.0: Windows OCR, Apple Vision, Tesseract on Linux) | **host-tested** (real Windows OCR output of nine setup screens as fixtures); **VM-verified** with Windows OCR: the work-account path from the region screen to the work-or-school sign-in page by text alone, through updates and a restart (Windows 11 25H2, 2026-11-07). Apple Vision and Tesseract: **built**, not yet run against setup screens |
+| Sign-in read back before Enter, organisation check by reading the password page (unreleased, 0.6.0) | **host-tested**; **VM-verified**: a typed sign-in read back exactly, and the stop with Caps Lock on. The account check on a real password page **not verified** |
+| Named laptops, a record of every live run, recovering a run cut short (unreleased, 0.6.0) | **host-tested** (including each crash point while a run finishes); the laptop field looked at in the app; not yet through a crash on a real run |
+| Firmware 0.2.1: no pairing window at power-on once paired (unreleased) | **built** in the pinned ESP-IDF container and bundled; **not yet run on a board** |
 | macOS as the controller (Apple silicon; AVFoundation capture, CoreBluetooth link and pairing, Quartz keyboard grab, flasher, recording) | **hardware-verified** on a real Mac (0.4.6, 2026-10-08, maintainer): an adapter and a live picture from an HDMI capture card, every button in the app's menu clicked through, and two boards reflashed from the Mac and working afterwards. **Not exercised:** recording with sound, the YUYV colour and capture-card-unplug cases, wheel/touchpad on a target (issues #31-#34), ISO Apple keyboards. Shipped as `kvm-it-X.Y.Z-macos-arm64.dmg` (named `-preview` up to 0.4.6); ad-hoc signed, not notarized: macOS asks you to allow it |
 | Session recording (GIF / WebM through `ffmpeg`, sound opt-in) | **host-tested** only (v0.4.4: unit tests plus the encoder against a real ffmpeg on synthetic frames); **not run with a real capture card, the capture card's audio, or the GUI button on hardware** |
 

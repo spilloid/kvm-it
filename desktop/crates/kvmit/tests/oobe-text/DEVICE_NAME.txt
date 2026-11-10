@@ -1,0 +1,9 @@
+0.53 0.17 0.15 0.03|Name your device
+0.53 0.22 0.20 0.02|Make this device yours with unique names.
+0.53 0.26 0.21 0.02|Your device will restart after you name it.
+0.55 0.33 0.09 0.02|Name your device
+0.53 0.39 0.13 0.02|Can't contain only numbers
+0.53 0.42 0.25 0.02|No spaces or special characters other than hyphen (
+0.53 0.44 0.19 0.01|dashes ( — and —), and underscore ( _ )
+0.70 0.83 0.02 0.02|Skip
+0.81 0.83 0.03 0.01|Next

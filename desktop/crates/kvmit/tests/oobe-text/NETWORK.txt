@@ -1,0 +1,12 @@
+0.53 0.14 0.30 0.03|Let's connect you to a network
+0.53 0.20 0.32 0.02|You'll need an internet connection to continue setting up your
+0.53 0.23 0.34 0.02|device. Once connected, you'll get the latest features and security
+0.53 0.26 0.04 0.02|updates.
+0.53 0.30 0.33 0.02|If you need to install a network adapter driver, download it from
+0.53 0.33 0.32 0.02|your device manufacturer's website or from the maker of your
+0.53 0.35 0.09 0.02|network adapter.
+0.55 0.62 0.06 0.01|Install driver
+0.53 0.69 0.18 0.02|Having trouble getting connected?
+0.53 0.71 0.32 0.02|For troubleshooting tips, use another device and visit aka.ms/
+0.53 0.74 0.07 0.02|networksetup
+0.81 0.83 0.03 0.01|Next

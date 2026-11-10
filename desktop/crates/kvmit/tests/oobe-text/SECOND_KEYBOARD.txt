@@ -1,0 +1,3 @@
+0.53 0.17 0.33 0.03|Want to add a second keyboard layout?
+0.68 0.83 0.06 0.02|Add layout
+0.81 0.83 0.02 0.02|Skip

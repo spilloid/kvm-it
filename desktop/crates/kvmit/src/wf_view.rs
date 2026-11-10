@@ -84,6 +84,7 @@ pub fn timeline(trace: &[TraceEntry]) -> Vec<Row> {
                 WorkflowEvent::TenantVerified { tenant, confidence, .. } => {
                     (format!("Tenant {tenant} confirmed ({:.0}% match)", confidence * 100.0), Health::Good)
                 }
+                WorkflowEvent::TypedVerified { state, key } => (format!("{state}: {key} shows as typed"), Health::Good),
                 WorkflowEvent::GuardChecked { state, ok: false, detail } => {
                     (format!("Check failed in {state}: {detail}"), Health::Bad)
                 }
@@ -137,6 +138,10 @@ pub fn reference_path(base: &std::path::Path, name: &str) -> Result<std::path::P
     let p = std::path::Path::new(name);
     if name.is_empty() || p.is_absolute() || p.components().any(|c| !matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir)) {
         return Err(format!("reference image {name:?} must be a relative path inside the file's folder"));
+    }
+    // Windows drops a trailing dot or space from each name (`pics.` is `pics`): two spellings of one file.
+    if name.split(['/', '\\']).any(|c| !c.is_empty() && c != "." && (c.ends_with('.') || c.ends_with(' '))) {
+        return Err(format!("reference image {name:?}: a folder or file name may not end with a dot or a space"));
     }
     Ok(base.join(p))
 }
@@ -193,16 +198,48 @@ pub fn save_reference(base: &std::path::Path, name: &str, w: usize, h: usize, rg
     Ok(dest)
 }
 
-/// Every reference image of a workflow, in file order (states, then tenants), each listed once.
-/// The states none of whose pictures is present in `refs` (as [`references`] lists them): not recognisable in a run.
-pub fn blind_states(wf: &kvmit_script::Workflow, refs: &[Reference]) -> Vec<String> {
-    let present = |i: &String| refs.iter().any(|r| &r.image == i && r.present);
-    wf.states.iter().filter(|s| !s.detect.screens.iter().any(present)).map(|s| s.name.clone()).collect()
+/// Whether this computer reads text off the screen (each operating system's own recogniser), probed once: the error
+/// says why not. Workflows recognise screens with phrases by their text wherever it can be read.
+pub fn text_reader() -> Result<(), String> {
+    static READER: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    READER
+        .get_or_init(|| {
+            let blank = kvmit_script::Frame::new(64, 36, vec![255; 64 * 36]).expect("valid size");
+            kvmit_video::text::read_text(&blank).map(|_| ())
+        })
+        .clone()
 }
 
-/// The tenant pictures missing while some state checks the tenant: a run will not start without them.
-pub fn missing_tenant_pictures(wf: &kvmit_script::Workflow, refs: &[Reference]) -> Vec<String> {
-    if !wf.states.iter().any(|s| s.verify_tenant) {
+/// The states recognised by their text in a run here (they have phrases, and `reads_text`): their pictures are not used.
+pub fn by_text(wf: &kvmit_script::Workflow, reads_text: bool) -> Vec<String> {
+    wf.states.iter().filter(|s| reads_text && !s.detect.text.is_empty()).map(|s| s.name.clone()).collect()
+}
+
+/// Whether a run here uses this picture: a state that is not recognised by text shows it, or the tenant check compares
+/// it (when it cannot read the page).
+pub fn picture_needed(wf: &kvmit_script::Workflow, image: &str, reads_text: bool) -> bool {
+    let text = by_text(wf, reads_text);
+    wf.states.iter().any(|s| s.detect.screens.iter().any(|i| i == image) && !text.contains(&s.name))
+        || (tenant_by_picture(wf, reads_text) && wf.tenants.values().any(|i| i == image))
+}
+
+/// The tenant check compares pictures unless it can read the page (text is read here and the profile names its
+/// sign-in domain).
+fn tenant_by_picture(wf: &kvmit_script::Workflow, reads_text: bool) -> bool {
+    wf.states.iter().any(|s| s.verify_tenant) && !(reads_text && wf.config.contains_key(kvmit_script::workflow::TENANT_DOMAIN))
+}
+
+/// Every reference image of a workflow, in file order (states, then tenants), each listed once.
+/// The states not recognisable in a run here: not by text, and none of their pictures present in `refs`.
+pub fn blind_states(wf: &kvmit_script::Workflow, refs: &[Reference], reads_text: bool) -> Vec<String> {
+    let present = |i: &String| refs.iter().any(|r| &r.image == i && r.present);
+    let text = by_text(wf, reads_text);
+    wf.states.iter().filter(|s| !text.contains(&s.name) && !s.detect.screens.iter().any(present)).map(|s| s.name.clone()).collect()
+}
+
+/// The tenant pictures missing while the tenant check compares pictures: a run will not start without them.
+pub fn missing_tenant_pictures(wf: &kvmit_script::Workflow, refs: &[Reference], reads_text: bool) -> Vec<String> {
+    if !tenant_by_picture(wf, reads_text) {
         return Vec::new();
     }
     wf.tenants.values().filter(|i| !refs.iter().any(|r| &r.image == *i && r.present)).cloned().collect()
@@ -392,6 +429,39 @@ pub fn write_new_workflow(dir: &std::path::Path, name: &str, text: &str) -> Resu
 /// Replace a workflow file's text, only if it still holds `was` (what the caller read and changed): a change made
 /// elsewhere in between is never overwritten. Written to a temporary file and renamed, so a reader sees one whole
 /// version or the other.
+/// Screen wording's save: `state`'s phrases set to `sets` in the workflow file at `path` (whose text was `was`), only
+/// if the file still holds that text, and never with a phrase holding the value of a secret entered for this
+/// workflow (a line read off the screen can be the sign-in typed): that is refused without repeating it.
+pub fn save_wording(
+    path: &std::path::Path,
+    was: &str,
+    state: &str,
+    sets: &[Vec<String>],
+    entered: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    // First, before anything can repeat a phrase (a parse error quotes it): none may hold an entered secret.
+    let holds_secret = sets.iter().flatten().any(|p| entered.values().any(|v| !v.is_empty() && p.contains(v.as_str())));
+    if holds_secret {
+        return Err("a phrase holds the value of a secret entered above (the sign-in or password)".into());
+    }
+    let text = kvmit_script::setup::set_phrases(was, state, sets)?;
+    let new = kvmit_script::Workflow::parse(&text)?;
+    let entered: kvmit_script::Vars = entered.iter().filter(|(_, v)| !v.is_empty()).map(|(k, v)| (k.clone(), v.clone())).collect();
+    if kvmit_script::workflow::check_secrets(&new, &entered, None, "").is_err() {
+        return Err("a phrase holds the value of a secret entered above (the sign-in or password)".into());
+    }
+    rewrite_workflow(path, was, &text)
+}
+
+/// The editor's wordings as the file will hold them: each phrase trimmed, empty phrases and wordings dropped, and
+/// nothing split or joined (a phrase may itself hold `+`).
+pub fn wording_sets(rows: &[Vec<String>]) -> Vec<Vec<String>> {
+    rows.iter()
+        .map(|r| r.iter().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect::<Vec<_>>())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 pub fn rewrite_workflow(path: &std::path::Path, was: &str, text: &str) -> Result<(), String> {
     // One save at a time (the app and `kvmit workflow set`): the lock covers the comparison and the replacement. An
     // editor saving in that instant is not covered.
@@ -422,13 +492,19 @@ fn replace_if_unchanged(path: &std::path::Path, was: &str, text: &str) -> Result
         return Err(format!("{} changed since it was opened: reload it and set it up again", path.display()));
     }
     use std::io::Write;
+    // The new file gets the old one's permissions before it takes its place (a private file stays private), and is
+    // created owner-only meanwhile.
+    let perms = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.permissions();
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let tmp = path.with_extension(format!("toml.{}-{nanos}.tmp", std::process::id()));
-    let written = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut open, 0o600);
+    let written = open
         .open(&tmp)
         .and_then(|mut f| f.write_all(text.as_bytes()).and_then(|_| f.sync_all()))
+        .and_then(|_| std::fs::set_permissions(&tmp, perms))
         .and_then(|_| std::fs::rename(&tmp, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -462,6 +538,104 @@ pub struct SavedCheckpoint {
     /// The workflow file's exact text, hashed.
     pub definition: String,
     pub checkpoint: kvmit_script::Checkpoint,
+    /// The laptop the stopped run was on, as the operator named it (empty: not named). A resume must name the same
+    /// one: the adapter moves from laptop to laptop, and a checkpoint is only good for the laptop it was saved on.
+    #[serde(default)]
+    pub laptop: String,
+    /// When it was saved (seconds since 1970), to say how long ago.
+    #[serde(default)]
+    pub saved_unix: Option<u64>,
+    /// In a journal only: the run completed (it is finishing up), so there is nothing to resume.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ended: bool,
+}
+
+/// A laptop's name as the operator gives it (an asset tag, a serial): trimmed, at most 40 letters, digits, spaces and
+/// `-_.#`. Empty is allowed (not named). It names run records, so it carries nothing else.
+pub fn laptop_name(s: &str) -> Result<String, String> {
+    let t = s.trim();
+    if t.chars().count() > 40 || !t.chars().all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.' | '#')) {
+        return Err("a laptop's name is at most 40 letters, digits, spaces and - _ . #".into());
+    }
+    Ok(t.to_string())
+}
+
+/// Who a saved checkpoint is for and how old it is, from its file's text.
+pub fn checkpoint_laptop(raw: &str) -> (String, Option<u64>) {
+    serde_json::from_str::<SavedCheckpoint>(raw).map(|s| (s.laptop, s.saved_unix)).unwrap_or_default()
+}
+
+/// Why a saved checkpoint must not be resumed on `laptop` (the name entered now): it was saved for another one, or
+/// one of the two is not named. Names compare without regard to case.
+pub fn resume_refusal(raw: &str, laptop: &str) -> Option<String> {
+    let (saved, _) = checkpoint_laptop(raw);
+    if saved.eq_ignore_ascii_case(laptop.trim()) {
+        return None;
+    }
+    Some(match (saved.is_empty(), laptop.trim().is_empty()) {
+        (true, _) => "The saved run was on a laptop that was not named: resume it only by naming none, on that same laptop.".into(),
+        (false, true) => format!("The saved run was on laptop {saved}: name it to resume there."),
+        (false, false) => format!("The saved run was on laptop {saved}, not {}: run this one from the start.", laptop.trim()),
+    })
+}
+
+/// "3 min ago", "2 h ago": how long since `unix`.
+pub fn ago(unix: Option<u64>) -> String {
+    let Some(t) = unix else { return "earlier".into() };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(t);
+    match now.saturating_sub(t) {
+        s if s < 90 => "just now".into(),
+        s if s < 90 * 60 => format!("{} min ago", s / 60),
+        s if s < 48 * 3600 => format!("{} h ago", s / 3600),
+        s => format!("{} days ago", s / 86400),
+    }
+}
+
+/// Every live run leaves a record: its trace (JSONL) and notes (Markdown) in `runs/` beside the workflows, named by the
+/// time and the laptop, with the laptop, the adapter and the workflow at the top of the notes. No secrets: the trace
+/// never holds them. Returns where, or why not.
+pub fn save_run_record(
+    dir: &std::path::Path,
+    laptop: &str,
+    adapter: &str,
+    wf: &kvmit_script::Workflow,
+    report: &kvmit_script::WorkflowReport,
+) -> Result<String, String> {
+    use kvmit_script::WorkflowError;
+    let jsonl = kvmit_script::workflow::trace_jsonl(report);
+    // A run refused because the file, or the laptop's name, holds a secret's value repeats neither, anywhere.
+    // The file is checked first, so a refusal over the file says nothing about the laptop's name: withheld too.
+    let (file_withheld, name_withheld) = match &report.result {
+        Err(WorkflowError::SecretInFile { .. }) => (true, true),
+        Err(WorkflowError::SecretInName) => (false, true),
+        _ => (false, false),
+    };
+    let laptop = if name_withheld { "" } else { laptop };
+    let named = match (name_withheld, laptop.is_empty()) {
+        (true, _) => "(name withheld: the run was refused over a secret's value)",
+        (false, true) => "(not named)",
+        (false, false) => laptop,
+    };
+    let md = format!(
+        "Laptop: {named}  \nAdapter: {adapter}  \nWorkflow: {}  \nResult: {}\n\n{}",
+        match (file_withheld, wf.name.is_empty()) {
+            (true, _) => "(name withheld: the file contains a secret's value)",
+            (false, true) => "(unnamed)",
+            (false, false) => wf.name.as_str(),
+        },
+        match &report.result {
+            Ok(()) => "completed".to_string(),
+            Err(e) => format!("stopped: {e}"),
+        },
+        kvmit_script::workflow::trace_markdown(wf, report)
+    );
+    let tag: String = laptop.chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    let stamp = match tag.is_empty() {
+        true => kvmit_record::naming::stamp_now(),
+        false => format!("{}-{tag}", kvmit_record::naming::stamp_now()),
+    };
+    let runs = dir.join("runs");
+    save_exports(&runs, &stamp, &jsonl, &md).map(|stem| format!("Run record saved: {} (.trace.jsonl, .notes.md)", runs.join(stem).display())).map_err(|e| format!("Could not save the run record: {e}"))
 }
 
 /// Where a slot's checkpoint lives: one file per workflow and adapter, under `<scripts>/checkpoints/`. `None` when the
@@ -478,10 +652,33 @@ pub fn save_checkpoint(
     slot: &Slot,
     text: &str,
     checkpoint: &kvmit_script::Checkpoint,
+    laptop: &str,
 ) -> std::io::Result<std::path::PathBuf> {
     let unnamed = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "the workflow's file name is not Unicode");
     let path = checkpoint_path(dir, slot).ok_or_else(unnamed)?;
-    let saved = SavedCheckpoint { slot: slot.clone(), definition: fnv(text.as_bytes()), checkpoint: checkpoint.clone() };
+    write_saved(&path, slot, text, checkpoint, laptop, false)
+}
+
+/// Write a saved checkpoint (or a run's journal) to `path`: a temporary file renamed over it.
+fn write_saved(
+    path: &std::path::Path,
+    slot: &Slot,
+    text: &str,
+    checkpoint: &kvmit_script::Checkpoint,
+    laptop: &str,
+    ended: bool,
+) -> std::io::Result<std::path::PathBuf> {
+    let unnamed = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "the workflow's file name is not Unicode");
+    let path = path.to_path_buf();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).ok();
+    let saved = SavedCheckpoint {
+        slot: slot.clone(),
+        definition: fnv(text.as_bytes()),
+        checkpoint: checkpoint.clone(),
+        laptop: laptop.to_string(),
+        saved_unix: now,
+        ended,
+    };
     let json = serde_json::to_string_pretty(&saved).map_err(|_| unnamed())?;
     std::fs::create_dir_all(path.parent().expect("under checkpoints/"))?;
     // A temporary file of this writer's own, created new, then renamed over the checkpoint: a reader sees one whole
@@ -494,11 +691,212 @@ pub fn save_checkpoint(
         .create_new(true)
         .open(&tmp)
         .and_then(|mut f| f.write_all(json.as_bytes()).and_then(|_| f.sync_all()))
-        .and_then(|_| std::fs::rename(&tmp, &path));
+        .and_then(|_| durable_rename(&tmp, &path));
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     written.map(|_| path)
+}
+
+/// Rename `from` over `to` so that the rename itself survives a power cut or a crash of the computer once this
+/// returns: Windows writes it through (`MOVEFILE_WRITE_THROUGH`), elsewhere the folder is synced.
+fn durable_rename(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
+        let wide = |p: &std::path::Path| p.as_os_str().encode_wide().chain([0]).collect::<Vec<u16>>();
+        let (f, t) = (wide(from), wide(to));
+        // SAFETY: both are NUL-terminated UTF-16 strings that live across the call.
+        unsafe {
+            MoveFileExW(windows::core::PCWSTR(f.as_ptr()), windows::core::PCWSTR(t.as_ptr()), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+        }
+        .map_err(|e| std::io::Error::from_raw_os_error(e.code().0 & 0xFFFF))
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(from, to)?;
+        sync_dir(to)
+    }
+}
+
+/// Make a change to the folder holding `p` (a file made, renamed or removed) survive a crash of the computer.
+fn sync_dir(p: &std::path::Path) -> std::io::Result<()> {
+    let dir = p.parent().unwrap_or(std::path::Path::new("."));
+    #[cfg(windows)]
+    {
+        // A folder is flushed through a handle opened for writing with backup semantics.
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        std::fs::OpenOptions::new().write(true).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(dir)?.sync_all()
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::File::open(dir)?.sync_all()
+    }
+}
+
+/// Where a live run journals its checkpoint as it goes: if the run never ends cleanly (the app or the computer
+/// stopped), this says where it got to. At the end of a run it holds the final state first, so a crash while finishing
+/// leaves one record that says what is true.
+pub fn journal_path(dir: &std::path::Path, slot: &Slot) -> Option<std::path::PathBuf> {
+    checkpoint_path(dir, slot).map(|p| p.with_extension("json.journal"))
+}
+
+/// A live run's journal, for its host: every record the engine makes (a state entered, a wait begun, keys about to
+/// be sent) is written durably before the engine goes on, and a failed write stops the run before the keys.
+pub fn journal_writer(dir: std::path::PathBuf, slot: Slot, text: String, laptop: String) -> crate::host::JournalFn {
+    Box::new(move |cp| {
+        // A run whose file cannot be named is not saved for resuming at all: nothing to journal either.
+        let Some(path) = journal_path(&dir, &slot) else { return Ok(()) };
+        write_saved(&path, &slot, &text, cp, &laptop, false).map(|_| ()).map_err(|e| format!("{}: {e}", path.display()))
+    })
+}
+
+const LOCK_MARK: &[u8] = b"kvm-it workflow run lock\n";
+const IN_PROGRESS: &str = "another run of this workflow on this adapter is in progress (in this or another window, or a terminal)";
+
+/// The slot's lock, held by this process until the returned file is dropped (the operating system releases it if
+/// the process dies, so a lock never outlives its run). The file itself stays. `legacy`: an empty lock file left by an
+/// earlier kvm-it's run that did not end cleanly. `create`: make the file if there is none (a run); else `Ok(None)`.
+fn take_lock(lock: &std::path::Path, create: bool) -> Result<Option<(std::fs::File, bool)>, String> {
+    use std::io::Write;
+    let cannot = |e: std::io::Error| format!("cannot lock this workflow's checkpoint ({}): {e}", lock.display());
+    if create && !lock.exists() {
+        // Written whole under a name of this process's own, then linked into place (which fails if another got there
+        // first): no one ever sees this version's lock file empty, which is what 0.5 left behind.
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let tmp = lock.with_extension(format!("lock.{}-{nanos}.tmp", std::process::id()));
+        let made = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .and_then(|mut f| f.write_all(LOCK_MARK).and_then(|_| f.sync_all()))
+            .and_then(|_| match std::fs::hard_link(&tmp, lock) {
+                Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => Err(e),
+                _ => Ok(()),
+            });
+        let _ = std::fs::remove_file(&tmp);
+        made.and_then(|_| sync_dir(lock)).map_err(cannot)?;
+    }
+    let file = match std::fs::OpenOptions::new().read(true).write(true).open(lock) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !create => return Ok(None),
+        Err(e) => return Err(cannot(e)),
+    };
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Err(IN_PROGRESS.into()),
+        Err(std::fs::TryLockError::Error(e)) => return Err(cannot(e)),
+    }
+    let legacy = file.metadata().is_ok_and(|m| m.len() == 0);
+    Ok(Some((file, legacy)))
+}
+
+/// The files of a slot's runs, beside its checkpoint.
+struct RunFiles {
+    path: std::path::PathBuf,
+    lock: std::path::PathBuf,
+    /// There while a run is going on, or after one that did not end cleanly. Made and removed only under the lock.
+    running: std::path::PathBuf,
+    held: std::path::PathBuf,
+    journal: std::path::PathBuf,
+}
+
+fn run_files(dir: &std::path::Path, slot: &Slot) -> Option<RunFiles> {
+    let path = checkpoint_path(dir, slot)?;
+    Some(RunFiles {
+        lock: path.with_extension("json.lock"),
+        running: path.with_extension("json.running"),
+        held: path.with_extension("json.claimed"),
+        journal: path.with_extension("json.journal"),
+        path,
+    })
+}
+
+/// Remove `p` if it is there, durably (see [`sync_dir`]).
+fn remove_if_there(p: &std::path::Path) -> Result<(), String> {
+    match std::fs::remove_file(p) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {e}", p.display())),
+        Ok(()) => sync_dir(p).map_err(|e| format!("{}: {e}", p.display())),
+    }
+}
+
+/// A run of this workflow on this adapter that did not end cleanly, and none is going on now (its lock is free). With
+/// its journal, the state it reached and when; `Some((None, _))` without one (it stopped before recording anything).
+pub fn interrupted(dir: &std::path::Path, slot: &Slot, text: &str) -> Option<(Option<String>, Option<u64>)> {
+    let f = run_files(dir, slot)?;
+    let (_lock, legacy) = take_lock(&f.lock, false).ok().flatten()?;
+    if !legacy && !f.running.exists() {
+        return None;
+    }
+    let journal = std::fs::read_to_string(&f.journal).ok();
+    Some(match journal.as_deref().and_then(|raw| read_journal(raw, slot, text).map(|s| (s, raw))) {
+        Some((state, raw)) => (Some(state), checkpoint_laptop(raw).1),
+        None => (None, None),
+    })
+}
+
+fn read_journal(raw: &str, slot: &Slot, text: &str) -> Option<String> {
+    let saved: SavedCheckpoint = serde_json::from_str(raw).ok()?;
+    (saved.slot == *slot && saved.definition == fnv(text.as_bytes())).then_some(saved.checkpoint.state)
+}
+
+/// Recover a run that did not end cleanly. Refused while a run holds the slot's lock (it is going on); under the
+/// lock, so no run starts meanwhile. The journal is the authority: its last record becomes the saved checkpoint
+/// (Resume then looks at the screen first, and asks before sending again what may have been sent), or, if the run
+/// had completed, nothing is left to resume. Without a journal the run sent nothing (every burst of keys is journalled
+/// first), so the checkpoint it had set aside is put back.
+pub fn recover(dir: &std::path::Path, slot: &Slot) -> Result<String, String> {
+    let f = run_files(dir, slot).ok_or("no checkpoint name")?;
+    let none = "no run of this workflow on this adapter was interrupted";
+    let (lock, legacy) = take_lock(&f.lock, false)
+        .map_err(|e| if e == IN_PROGRESS { format!("{e}: not recovering while it runs") } else { e })?
+        .ok_or(none)?;
+    if !legacy && !f.running.exists() {
+        return Err(none.into());
+    }
+    let journal = match std::fs::read_to_string(&f.journal) {
+        Ok(raw) => Some(raw),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(format!("{}: {e}", f.journal.display())),
+    };
+    let msg = match journal {
+        Some(raw) if serde_json::from_str::<SavedCheckpoint>(&raw).is_ok_and(|s| s.ended) => {
+            remove_if_there(&f.held)?;
+            remove_if_there(&f.journal)?;
+            "Recovered: the interrupted run had completed, so there is nothing to resume."
+        }
+        Some(_) => {
+            remove_if_there(&f.held)?;
+            durable_rename(&f.journal, &f.path).map_err(|e| format!("{}: {e}", f.journal.display()))?;
+            "Recovered: the interrupted run's last step is now its checkpoint. Check the laptop, then Resume (it looks at the screen first, and asks before sending anything again)."
+        }
+        None if f.held.exists() && f.path.exists() => {
+            // The newer one is kept.
+            remove_if_there(&f.held)?;
+            "Recovered: the interrupted run recorded nothing more; its checkpoint is kept."
+        }
+        None if f.held.exists() => {
+            durable_rename(&f.held, &f.path).map_err(|e| format!("{}: {e}", f.held.display()))?;
+            if legacy {
+                "Recovered: the checkpoint from before the interrupted run is back. That run was by an earlier kvm-it, which recorded nothing as it went: it may have sent keys, so check the laptop before you Resume."
+            } else {
+                "Recovered: the interrupted run recorded nothing (it sent nothing), so the checkpoint from before it is back."
+            }
+        }
+        // The run had saved its checkpoint and stopped while finishing: that checkpoint stands.
+        None if f.path.exists() => "Recovered: the interrupted run had saved its checkpoint, which is kept.",
+        None => "Recovered: the interrupted run recorded nothing, and there was no earlier checkpoint.",
+    };
+    remove_if_there(&f.running)?;
+    if legacy {
+        use std::io::Write;
+        (&lock).write_all(LOCK_MARK).map_err(|e| format!("{}: {e}", f.lock.display()))?;
+    }
+    drop(lock);
+    Ok(msg.into())
 }
 
 /// The saved checkpoint for exactly this slot and text, if there is one. A checkpoint of an earlier version of the
@@ -529,43 +927,48 @@ fn read_saved(path: &std::path::Path, slot: &Slot, text: &str) -> Result<Option<
     Ok((saved.slot == *slot && saved.definition == fnv(text.as_bytes())).then_some((json, saved.checkpoint)))
 }
 
-/// A live run's hold on its slot, from before it sends anything until [`keep_checkpoint`]: a lock file only one run
-/// can create, and the checkpoint it set aside.
+/// A live run's hold on its slot, from before it sends anything until it is dropped (after [`keep_checkpoint`]): the
+/// slot's lock, held by the operating system for as long as this process has it, the run's marker, and the checkpoint
+/// it set aside.
 #[derive(Debug)]
 pub struct Claim {
-    lock: std::path::PathBuf,
+    _lock: std::fs::File,
+    running: std::path::PathBuf,
     /// The saved checkpoint, renamed so it is never resumed while this run goes on.
     held: Option<std::path::PathBuf>,
 }
 
-/// Before a live run sends anything: take the slot's lock (created new, so a second run of this workflow on this
-/// adapter is refused, in any window or process) and set its saved checkpoint aside (renamed to `.claimed`, never
-/// resumed). From then on no checkpoint older than this run can be resumed. A lock left by a run that crashed stays
-/// until removed by hand: that is the safe side, since that run may have sent keys. If either step fails, the run
-/// must not start.
+/// Before a live run sends anything: take the slot's lock (a second run of this workflow on this adapter, in any window
+/// or process, is refused), refuse if a run before it did not end cleanly (Recover it first), mark this run as going
+/// on, and set its saved checkpoint aside (renamed to `.claimed`, never resumed). From then on no checkpoint older
+/// than this run can be resumed. If any step fails, the run must not start.
 pub fn claim_checkpoint(dir: &std::path::Path, slot: &Slot) -> Result<Option<Claim>, String> {
-    let Some(path) = checkpoint_path(dir, slot) else { return Ok(None) };
-    std::fs::create_dir_all(path.parent().expect("under checkpoints/")).map_err(|e| e.to_string())?;
-    let lock = path.with_extension("json.lock");
-    match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(format!(
-                "another run of this workflow on this adapter is in progress (or one crashed: then delete {} and check the target before running)",
-                lock.display()
-            ))
-        }
-        Err(e) => return Err(format!("cannot lock this workflow's checkpoint ({}): {e}", lock.display())),
+    let Some(f) = run_files(dir, slot) else { return Ok(None) };
+    std::fs::create_dir_all(f.path.parent().expect("under checkpoints/")).map_err(|e| e.to_string())?;
+    let (lock, legacy) = take_lock(&f.lock, true)?.expect("created if missing");
+    if legacy || f.running.exists() {
+        return Err(format!(
+            "a run of this workflow on this adapter did not end cleanly (the app or the computer stopped): Recover it \
+             (in the app, or `kvmit run <file> --recover`), then check the laptop ({})",
+            f.running.display()
+        ));
     }
-    let held = path.with_extension("json.claimed");
-    match std::fs::rename(&path, &held) {
-        Ok(()) => Ok(Some(Claim { lock, held: Some(held) })),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some(Claim { lock, held: None })),
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&f.running)
+        .and_then(|r| r.sync_all())
+        .and_then(|_| sync_dir(&f.running))
+        .map_err(|e| format!("cannot mark this workflow's run as going on ({}): {e}", f.running.display()))?;
+    let claim = |held| Claim { _lock: lock, running: f.running.clone(), held };
+    match durable_rename(&f.path, &f.held) {
+        Ok(()) => Ok(Some(claim(Some(f.held.clone())))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Some(claim(None))),
         Err(e) => {
-            let _ = std::fs::remove_file(&lock);
+            let _ = std::fs::remove_file(&f.running);
             Err(format!(
                 "the workflow's saved checkpoint {} cannot be set aside ({e}); fix that (or delete it) before running",
-                path.display()
+                f.path.display()
             ))
         }
     }
@@ -591,8 +994,8 @@ pub fn release_claim(dir: &std::path::Path, slot: &Slot, claim: Claim) -> Result
             failed.push(format!("the checkpoint is left at {} ({e})", held.display()));
         }
     }
-    if let Err(e) = std::fs::remove_file(&claim.lock) {
-        failed.push(format!("the lock {} could not be removed ({e}): delete it before running", claim.lock.display()));
+    if let Err(e) = std::fs::remove_file(&claim.running) {
+        failed.push(format!("{} could not be removed ({e}): Recover the run before running again", claim.running.display()));
     }
     if failed.is_empty() { Ok(()) } else { Err(failed.join("; ")) }
 }
@@ -633,8 +1036,13 @@ fn sent_keys(report: &kvmit_script::WorkflowReport) -> bool {
 
 /// After a run: a stopped live run with a known state saves its checkpoint. The checkpoint the run's `claim` set
 /// aside is discarded once it sent keys or completed; if it sent nothing and saved nothing (it stopped before
-/// recognising a screen), it is put back, so resuming is still possible. Then the lock is released. A dry run changes
-/// nothing. Returns what to tell the user.
+/// recognising a screen), it is put back, so resuming is still possible. Then the run's marker is removed (the lock is
+/// released when the claim is dropped). A dry run changes nothing. Returns what to tell the user.
+///
+/// In an order a crash cannot get wrong: the final state goes into the journal first (a completed run's marked as
+/// such), and from then on it is what [`recover`] goes by; the set-aside checkpoint is removed before the journal
+/// becomes the checkpoint; the marker goes last. If a step fails, the run is left as interrupted, to Recover.
+#[allow(clippy::too_many_arguments)]
 pub fn keep_checkpoint(
     dir: &std::path::Path,
     slot: &Slot,
@@ -643,36 +1051,58 @@ pub fn keep_checkpoint(
     wf: &kvmit_script::Workflow,
     report: &kvmit_script::WorkflowReport,
     claim: Option<&Claim>,
+    laptop: &str,
 ) -> Option<String> {
     if dry {
         return None;
     }
-    let sent = sent_keys(report);
-    let saved = if report.result.is_ok() { None } else { report.checkpoint(wf).map(|cp| (save_checkpoint(dir, slot, text, &cp), cp.state)) };
-    let restore = !sent && report.result.is_err() && !matches!(saved, Some((Ok(_), _)));
-    // `Some(Ok)`: the earlier checkpoint is back; `Some(Err)`: it could not be put back, and is left where it is.
-    let mut restored: Option<Result<(), String>> = None;
-    if let Some(c) = claim {
-        if let Some(held) = &c.held {
-            match checkpoint_path(dir, slot) {
-                Some(path) if restore => {
-                    restored = Some(std::fs::rename(held, &path).map_err(|e| format!("{} could not be put back ({e})", held.display())));
+    let f = run_files(dir, slot)?;
+    let held = claim.and_then(|c| c.held.as_ref());
+    let left = |why: String| match claim {
+        Some(_) => format!("{why}: the run is left as interrupted. Once that is fixed, Recover it (it keeps what the run recorded)."),
+        None => format!("{why}, so this run cannot be resumed: run it again from the start."),
+    };
+    let finished = (|| -> Result<Option<String>, String> {
+        let cp = report.checkpoint(wf);
+        match (&report.result, cp) {
+            (Ok(()), cp) => {
+                if let Some(cp) = cp {
+                    write_saved(&f.journal, slot, text, &cp, laptop, true).map_err(|e| format!("Could not record the end of the run ({e})"))?;
                 }
-                _ => {
-                    let _ = std::fs::remove_file(held);
+                if let Some(h) = held {
+                    remove_if_there(h)?;
                 }
+                remove_if_there(&f.journal)?;
+                Ok(None)
+            }
+            (Err(_), Some(cp)) => {
+                write_saved(&f.journal, slot, text, &cp, laptop, false).map_err(|e| format!("Could not save a checkpoint ({e})"))?;
+                if let Some(h) = held {
+                    remove_if_there(h)?;
+                }
+                durable_rename(&f.journal, &f.path).map_err(|e| format!("Could not save a checkpoint ({}: {e})", f.path.display()))?;
+                Ok(Some(format!("Saved a checkpoint at {}: Resume continues from there after looking at the screen.", cp.state)))
+            }
+            // Stopped before recognising any screen: if nothing was sent, the earlier checkpoint is back; keys sent with
+            // no state to resume from discard it (it is never resumed past them).
+            (Err(_), None) => {
+                match held {
+                    Some(h) if !sent_keys(report) => durable_rename(h, &f.path)
+                        .map_err(|e| format!("The earlier checkpoint {} could not be put back ({e})", h.display()))?,
+                    Some(h) => remove_if_there(h)?,
+                    None => {}
+                }
+                remove_if_there(&f.journal)?;
+                Ok(None)
             }
         }
-        let _ = std::fs::remove_file(&c.lock);
-    }
-    let lost = |why: String| format!("{why}, so this run cannot be resumed: run it again from the start.");
-    match (saved, restored) {
-        (Some((Ok(_), state)), _) => Some(format!("Saved a checkpoint at {state}: Resume continues from there after looking at the screen.")),
-        (Some((Err(e), _)), Some(Ok(()))) => Some(format!("Could not save a checkpoint ({e}); the earlier one is back, as nothing was sent.")),
-        (Some((Err(e), _)), Some(Err(r))) => Some(lost(format!("Could not save a checkpoint ({e}), and the earlier one {r}"))),
-        (Some((Err(e), _)), None) => Some(lost(format!("Could not save a checkpoint ({e})"))),
-        (None, Some(Err(r))) => Some(format!("Nothing was sent, but the earlier checkpoint {r}: it cannot be resumed until it is renamed back.")),
-        (None, _) => None,
+    })();
+    match finished {
+        Ok(msg) => match claim.map(|c| remove_if_there(&c.running)) {
+            Some(Err(e)) => Some(left(format!("Could not finish the run's record ({e})"))),
+            _ => msg,
+        },
+        Err(e) => Some(left(e)),
     }
 }
 
@@ -907,9 +1337,9 @@ mod tests {
             trace: vec![],
             context: Context { current: Some("A".into()), ..Default::default() },
         };
-        assert_eq!(keep_checkpoint(&dir, &a, text, true, &wf, &stopped, None), None, "a dry run saves nothing");
+        assert_eq!(keep_checkpoint(&dir, &a, text, true, &wf, &stopped, None, ""), None, "a dry run saves nothing");
         assert_eq!(load_checkpoint(&dir, &a, text), Ok(None));
-        assert!(keep_checkpoint(&dir, &a, text, false, &wf, &stopped, None).unwrap().starts_with("Saved a checkpoint at A"));
+        assert!(keep_checkpoint(&dir, &a, text, false, &wf, &stopped, None, "").unwrap().starts_with("Saved a checkpoint at A"));
         assert_eq!(load_checkpoint(&dir, &a, text).unwrap().map(|c| c.state), Some("A".into()));
         assert_eq!(load_checkpoint(&dir, &other_file, text), Ok(None), "another workflow");
         assert_eq!(load_checkpoint(&dir, &other_adapter, text), Ok(None), "the same workflow on another target");
@@ -921,11 +1351,12 @@ mod tests {
         assert_eq!(load_checkpoint(&dir, &a, text), Ok(None));
         assert!(claim_checkpoint(&dir, &a).unwrap_err().contains("in progress"));
         let elsewhere = claim_checkpoint(&dir, &other_adapter).unwrap().unwrap();
-        keep_checkpoint(&dir, &other_adapter, text, false, &wf, &stopped, Some(&elsewhere));
+        keep_checkpoint(&dir, &other_adapter, text, false, &wf, &stopped, Some(&elsewhere), "");
         // That run stopped before recognising a screen and sent nothing: the claimed checkpoint is put back, and the
         // slot is free again.
         let nothing = WorkflowReport { result: Err(WorkflowError::Cancelled), trace: vec![], context: Context::default() };
-        assert_eq!(keep_checkpoint(&dir, &a, text, false, &wf, &nothing, Some(&claim)), None);
+        assert_eq!(keep_checkpoint(&dir, &a, text, false, &wf, &nothing, Some(&claim), ""), None);
+        drop((claim, elsewhere));
         assert_eq!(load_checkpoint(&dir, &a, text).unwrap().map(|c| c.state), Some("A".into()));
         assert_eq!(load_checkpoint(&dir, &other_adapter, text).unwrap().map(|c| c.state), Some("A".into()), "kept apart");
         // A run that sent keys and then could not tell where it stopped: the claimed one is discarded.
@@ -937,11 +1368,13 @@ mod tests {
             }],
             ..nothing.clone()
         };
-        assert_eq!(keep_checkpoint(&dir, &a, text, false, &wf, &sent, Some(&claim)), None);
+        assert_eq!(keep_checkpoint(&dir, &a, text, false, &wf, &sent, Some(&claim), ""), None);
+        drop(claim);
         assert_eq!(load_checkpoint(&dir, &a, text), Ok(None), "never resumed past keys that run sent");
         let claim = claim_checkpoint(&dir, &a).unwrap().unwrap();
         let done = WorkflowReport { result: Ok(()), ..stopped.clone() };
-        assert_eq!(keep_checkpoint(&dir, &a, text, false, &wf, &done, Some(&claim)), None, "a completed run leaves none");
+        assert_eq!(keep_checkpoint(&dir, &a, text, false, &wf, &done, Some(&claim), ""), None, "a completed run leaves none");
+        drop(claim);
         assert_eq!(load_checkpoint(&dir, &a, text), Ok(None));
         assert!(claim_checkpoint(&dir, &a).is_ok(), "and releases the slot");
         // Ids differing only in case are one adapter: one checkpoint, one lock.
@@ -964,20 +1397,301 @@ mod tests {
             trace: vec![],
             context: Context { current: Some(state.into()), ..Default::default() },
         };
-        keep_checkpoint(&dir, &a, text, false, &wf, &at("A"), None);
+        keep_checkpoint(&dir, &a, text, false, &wf, &at("A"), None, "");
         let (shown, _) = load_checkpoint_raw(&dir, &a, text).unwrap().unwrap();
         // Unchanged: the resume starts from the copy taken under the lock.
         let claim = claim_checkpoint(&dir, &a).unwrap();
         let (claim, cp) = resume_from_claim(&dir, &a, text, claim, &shown).unwrap();
         assert_eq!(cp.state, "A");
-        keep_checkpoint(&dir, &a, text, false, &wf, &at("A"), claim.as_ref());
+        keep_checkpoint(&dir, &a, text, false, &wf, &at("A"), claim.as_ref(), "");
+        drop(claim);
         // Another run saved a newer one after it was shown: refused, the newer one put back, the slot free.
         let (shown, _) = load_checkpoint_raw(&dir, &a, text).unwrap().unwrap();
-        keep_checkpoint(&dir, &a, text, false, &wf, &at("B"), None);
+        keep_checkpoint(&dir, &a, text, false, &wf, &at("B"), None, "");
         let claim = claim_checkpoint(&dir, &a).unwrap();
         assert!(resume_from_claim(&dir, &a, text, claim, &shown).unwrap_err().contains("changed"));
         assert_eq!(load_checkpoint(&dir, &a, text).unwrap().map(|c| c.state), Some("B".into()));
         assert!(claim_checkpoint(&dir, &a).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_checkpoint_resumes_only_on_the_laptop_it_names_and_every_live_run_leaves_a_record() {
+        assert_eq!(laptop_name("  LT-0042 ").unwrap(), "LT-0042");
+        assert_eq!(laptop_name("").unwrap(), "");
+        for bad in ["a/b", "x\ny", "jane@contoso.com", &"x".repeat(41)] {
+            assert!(laptop_name(bad).is_err(), "{bad:?}");
+        }
+        let dir = std::env::temp_dir().join(format!("kvmit-laptop-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let text = "workflow_format = 1\nname = \"w\"\nstart = [\"A\"]\n[secrets]\npw = { prompt = \"Password\" }\n[[states]]\nname = \"A\"\ndetect = { text = [\"Name your device\"] }\nnext = [\"B\"]\nactions = [ { secret_text = \"{{pw}}\" } ]\n[[states]]\nname = \"B\"\ndetect = { text = [\"Done here\"] }\nterminal = true\n";
+        let wf = kvmit_script::Workflow::parse(text).unwrap();
+        let slot = Slot::new(Source::Builtin("w.toml".into()), "aa:bb");
+        let cp = kvmit_script::Checkpoint {
+            workflow: "w".into(),
+            state: "A".into(),
+            derived: BTreeMap::new(),
+            attempts: BTreeMap::new(),
+            attempted: Some(1),
+            waiting: false,
+            history: Vec::new(),
+        };
+        save_checkpoint(&dir, &slot, text, &cp, "LT-0042").unwrap();
+        let (raw, _) = load_checkpoint_raw(&dir, &slot, text).unwrap().unwrap();
+        assert_eq!(checkpoint_laptop(&raw).0, "LT-0042");
+        assert!(checkpoint_laptop(&raw).1.is_some());
+        assert_eq!(resume_refusal(&raw, "lt-0042"), None, "names compare without case");
+        assert!(resume_refusal(&raw, "LT-0043").unwrap().contains("run this one from the start"));
+        assert!(resume_refusal(&raw, "").unwrap().contains("name it to resume"));
+        save_checkpoint(&dir, &slot, text, &cp, "").unwrap();
+        let (raw, _) = load_checkpoint_raw(&dir, &slot, text).unwrap().unwrap();
+        assert_eq!(resume_refusal(&raw, ""), None);
+        assert!(resume_refusal(&raw, "LT-1").is_some(), "an unnamed checkpoint is not claimed by a named laptop");
+        // The record: under runs/, named by the laptop, its notes headed by laptop, adapter and result; no secret.
+        let report = kvmit_script::WorkflowReport {
+            result: Err(kvmit_script::WorkflowError::UnknownScreen { best: None }),
+            trace: Vec::new(),
+            context: Default::default(),
+        };
+        let msg = save_run_record(&dir, "LT 0042", "AA:BB", &wf, &report).unwrap();
+        assert!(msg.contains("runs") && msg.contains("LT_0042"), "{msg}");
+        let notes = std::fs::read_dir(dir.join("runs")).unwrap().map(|e| e.unwrap().path()).find(|p| p.to_string_lossy().ends_with(".notes.md")).unwrap();
+        let md = std::fs::read_to_string(notes).unwrap();
+        assert!(md.starts_with("Laptop: LT 0042  \nAdapter: AA:BB  \nWorkflow: w  \nResult: stopped:"), "{md}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn journal_fixture(tag: &str) -> (std::path::PathBuf, &'static str, kvmit_script::Workflow, Slot) {
+        let dir = std::env::temp_dir().join(format!("kvmit-journal-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let text = "workflow_format = 1\nname = \"w\"\nstart = [\"A\"]\n[[states]]\nname = \"A\"\ndetect = { text = [\"Name your device\"] }\nnext = [\"B\"]\nactions = [ { key = \"ENTER\" } ]\n[[states]]\nname = \"B\"\ndetect = { text = [\"Done here\"] }\nterminal = true\n";
+        let wf = kvmit_script::Workflow::parse(text).unwrap();
+        (dir, text, wf, Slot::new(Source::Builtin("w.toml".into()), "aa:bb"))
+    }
+
+    fn cp_at(state: &str, attempted: u32) -> kvmit_script::Checkpoint {
+        kvmit_script::Checkpoint {
+            workflow: "w".into(),
+            state: state.into(),
+            derived: BTreeMap::new(),
+            attempts: BTreeMap::new(),
+            attempted: Some(attempted),
+            waiting: false,
+            history: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_run_that_never_ends_cleanly_is_recovered_from_its_journal() {
+        let (dir, text, wf, slot) = journal_fixture("crash");
+        // A live run claims the slot: while it holds it, it is not "interrupted", and Recover is refused.
+        let claim = claim_checkpoint(&dir, &slot).unwrap().unwrap();
+        assert_eq!(interrupted(&dir, &slot, text), None, "a run going on is not interrupted");
+        assert!(recover(&dir, &slot).unwrap_err().contains("in progress"), "never pulled from under a live run");
+        assert!(claim_checkpoint(&dir, &slot).unwrap_err().contains("in progress"));
+        let lock = checkpoint_path(&dir, &slot).unwrap().with_extension("json.lock");
+        // Its size: the content cannot be read past the lock on Windows.
+        assert_eq!(std::fs::metadata(&lock).unwrap().len(), LOCK_MARK.len() as u64, "never left empty (that would read as 0.5's crash)");
+        // It records keys about to be sent in A, then the app dies (the claim is dropped without finishing).
+        let mut write = journal_writer(dir.clone(), slot.clone(), text.into(), "LT-7".into());
+        write(&cp_at("A", 1)).unwrap();
+        drop(claim);
+        let (state, at) = interrupted(&dir, &slot, text).unwrap();
+        assert_eq!(state.as_deref(), Some("A"));
+        assert!(at.is_some());
+        assert!(claim_checkpoint(&dir, &slot).unwrap_err().contains("Recover it"));
+        // Recovered: the journal is the checkpoint (keys were sent: a resume asks before sending again).
+        assert!(recover(&dir, &slot).unwrap().starts_with("Recovered: the interrupted run's last step"));
+        assert_eq!(interrupted(&dir, &slot, text), None);
+        assert!(recover(&dir, &slot).unwrap_err().contains("was interrupted"), "nothing left to recover");
+        let (raw, cp) = load_checkpoint_raw(&dir, &slot, text).unwrap().unwrap();
+        assert_eq!((cp.state.as_str(), cp.attempted), ("A", Some(1)));
+        assert_eq!(checkpoint_laptop(&raw).0, "LT-7");
+        // A run that ends cleanly leaves no journal and no marker behind.
+        let claim = claim_checkpoint(&dir, &slot).unwrap();
+        write(&cp_at("B", 0)).unwrap();
+        let report = kvmit_script::WorkflowReport {
+            result: Ok(()),
+            trace: Vec::new(),
+            context: kvmit_script::workflow::Context { current: Some("B".into()), ..Default::default() },
+        };
+        assert_eq!(keep_checkpoint(&dir, &slot, text, false, &wf, &report, claim.as_ref(), ""), None);
+        drop(claim);
+        assert!(!journal_path(&dir, &slot).unwrap().exists());
+        assert_eq!(interrupted(&dir, &slot, text), None);
+        assert_eq!(load_checkpoint(&dir, &slot, text), Ok(None), "a completed run leaves nothing to resume");
+        assert!(claim_checkpoint(&dir, &slot).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_crash_while_a_run_finishes_recovers_what_the_run_ended_with() {
+        let (dir, text, _wf, slot) = journal_fixture("finish");
+        save_checkpoint(&dir, &slot, text, &cp_at("A", 0), "").unwrap();
+        // A completed run wrote its end into the journal, then died before tidying up: nothing to resume, and the
+        // checkpoint it had set aside does not come back.
+        let claim = claim_checkpoint(&dir, &slot).unwrap().unwrap();
+        write_saved(&journal_path(&dir, &slot).unwrap(), &slot, text, &cp_at("B", 0), "", true).unwrap();
+        drop(claim);
+        assert!(recover(&dir, &slot).unwrap().contains("had completed"));
+        assert_eq!(load_checkpoint(&dir, &slot, text), Ok(None));
+        // A stopped run saved its final checkpoint, then died before removing its marker: the older one set aside
+        // never replaces it.
+        save_checkpoint(&dir, &slot, text, &cp_at("A", 0), "").unwrap();
+        let claim = claim_checkpoint(&dir, &slot).unwrap().unwrap();
+        save_checkpoint(&dir, &slot, text, &cp_at("B", 1), "").unwrap();
+        let held = checkpoint_path(&dir, &slot).unwrap().with_extension("json.claimed");
+        assert!(held.exists());
+        drop(claim);
+        assert!(recover(&dir, &slot).unwrap().contains("checkpoint is kept"));
+        assert_eq!(load_checkpoint(&dir, &slot, text).unwrap().map(|c| c.state), Some("B".into()));
+        assert!(!held.exists());
+        // A stopped run finished for real, then died before removing its marker: its own checkpoint stands, and Recover
+        // says so.
+        let claim = claim_checkpoint(&dir, &slot).unwrap();
+        let stopped = kvmit_script::WorkflowReport {
+            result: Err(WorkflowError::Cancelled),
+            trace: Vec::new(),
+            context: kvmit_script::workflow::Context { current: Some("A".into()), visit_attempts: 1, ..Default::default() },
+        };
+        assert!(keep_checkpoint(&dir, &slot, text, false, &_wf, &stopped, claim.as_ref(), "").unwrap().starts_with("Saved"));
+        let running = checkpoint_path(&dir, &slot).unwrap().with_extension("json.running");
+        std::fs::write(&running, "").unwrap();
+        drop(claim);
+        assert!(recover(&dir, &slot).unwrap().contains("had saved its checkpoint"));
+        assert_eq!(load_checkpoint(&dir, &slot, text).unwrap().map(|c| (c.state, c.attempted)), Some(("A".into(), Some(1))));
+        // A run that recorded nothing sent nothing: the checkpoint from before it is back.
+        let claim = claim_checkpoint(&dir, &slot).unwrap().unwrap();
+        drop(claim);
+        assert!(recover(&dir, &slot).unwrap().contains("sent nothing"));
+        assert_eq!(load_checkpoint(&dir, &slot, text).unwrap().map(|c| c.state), Some("A".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_lock_left_by_an_earlier_kvm_it_is_recovered_with_a_warning() {
+        let (dir, text, _wf, slot) = journal_fixture("legacy");
+        save_checkpoint(&dir, &slot, text, &cp_at("A", 0), "").unwrap();
+        let path = checkpoint_path(&dir, &slot).unwrap();
+        // 0.5's run: an empty lock file, the checkpoint set aside, then a crash.
+        std::fs::rename(&path, path.with_extension("json.claimed")).unwrap();
+        std::fs::write(path.with_extension("json.lock"), "").unwrap();
+        assert!(interrupted(&dir, &slot, text).is_some());
+        assert!(claim_checkpoint(&dir, &slot).unwrap_err().contains("Recover it"));
+        assert!(recover(&dir, &slot).unwrap().contains("may have sent keys"));
+        assert_eq!(load_checkpoint(&dir, &slot, text).unwrap().map(|c| c.state), Some("A".into()));
+        assert!(claim_checkpoint(&dir, &slot).is_ok(), "the lock file is this version's now");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_run_record_repeats_no_name_a_refusal_says_holds_a_secret() {
+        let dir = std::env::temp_dir().join(format!("kvmit-record-withheld-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let text = "workflow_format = 1\nname = \"hunter2 setup\"\nstart = [\"A\"]\n[secrets]\npw = { prompt = \"Password\" }\n[[states]]\nname = \"A\"\ndetect = { text = [\"Name your device\"] }\nterminal = true\n";
+        let wf = kvmit_script::Workflow::parse(text).unwrap();
+        let secrets: kvmit_script::Vars = [("pw".to_string(), "hunter2".to_string())].into();
+        // Refused for real by the engine, as the app runs it: the file's name holds the password.
+        struct Idle;
+        impl kvmit_script::Host for Idle {
+            fn key_down(&mut self, _: kvmit_hid::Key) -> Result<(), String> { Err("no keys in this test".into()) }
+            fn key_up(&mut self, _: kvmit_hid::Key) -> Result<(), String> { Err("no keys in this test".into()) }
+            fn release_all(&mut self) -> Result<(), String> { Ok(()) }
+            fn mouse_move(&mut self, _: i32, _: i32) -> Result<(), String> { Ok(()) }
+            fn mouse_button(&mut self, _: u8, _: bool) -> Result<(), String> { Ok(()) }
+            fn sleep(&mut self, _: std::time::Duration) {}
+            fn screen(&mut self) -> Option<kvmit_script::Frame> { None }
+            fn reference(&mut self, _: &str) -> Result<kvmit_script::Frame, String> { Err("none".into()) }
+            fn confirm(&mut self, _: &str) -> bool { false }
+            fn cancelled(&self) -> bool { false }
+            fn event(&mut self, _: kvmit_script::RunEvent) {}
+        }
+        let mut host = Idle;
+        let report = kvmit_script::run_workflow(&wf, &secrets, &kvmit_layout::UsAnsi, &mut host, &Default::default(), None, &mut |_, _| {});
+        assert!(matches!(report.result, Err(WorkflowError::SecretInFile { .. })), "{:?}", report.result);
+        save_run_record(&dir, "LT-1", "AA:BB", &wf, &report).unwrap();
+        // Both at once: the file is checked first, and the laptop's name (holding it too) is still withheld.
+        let opts = kvmit_script::WorkflowOptions { laptop: "LT hunter2".into(), ..Default::default() };
+        let report = kvmit_script::run_workflow(&wf, &secrets, &kvmit_layout::UsAnsi, &mut host, &opts, None, &mut |_, _| {});
+        assert!(matches!(report.result, Err(WorkflowError::SecretInFile { .. })), "{:?}", report.result);
+        save_run_record(&dir, "LT hunter2", "AA:BB", &wf, &report).unwrap();
+        // The laptop's name holds it.
+        let plain = kvmit_script::Workflow::parse(&text.replace("hunter2 setup", "setup")).unwrap();
+        let opts = kvmit_script::WorkflowOptions { laptop: "LT hunter2".into(), ..Default::default() };
+        let report = kvmit_script::run_workflow(&plain, &secrets, &kvmit_layout::UsAnsi, &mut host, &opts, None, &mut |_, _| {});
+        assert_eq!(report.result, Err(WorkflowError::SecretInName));
+        save_run_record(&dir, "LT hunter2", "AA:BB", &plain, &report).unwrap();
+        for e in std::fs::read_dir(dir.join("runs")).unwrap() {
+            let p = e.unwrap().path();
+            assert!(!p.to_string_lossy().contains("hunter2"), "{}", p.display());
+            assert!(!std::fs::read_to_string(&p).unwrap().contains("hunter2"), "{}", p.display());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saving_a_wording_keeps_plus_signs_and_never_writes_a_secret() {
+        let dir = std::env::temp_dir().join(format!("kvmit-wording-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("w.toml");
+        let text = "workflow_format = 1
+name = \"w\"
+start = [\"A\"]
+account = \"username\"
+[secrets]
+username = { prompt = \"Sign-in\" }
+[[states]]
+name = \"A\"
+detect = { text = [\"Terms + conditions\"] }
+terminal = true
+";
+        std::fs::write(&p, text).unwrap();
+        let entered: BTreeMap<String, String> = [("username".to_string(), "jane@contoso.com".to_string())].into();
+        // The sign-in, read off the screen and clicked as a wording: refused, the file unchanged, the value not repeated.
+        let with_account = vec![vec!["Terms + conditions".to_string()], vec!["jane@contoso.com".to_string()]];
+        let err = save_wording(&p, text, "A", &with_account, &entered).unwrap_err();
+        assert!(err.contains("secret") && !err.contains("jane"), "{err}");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), text);
+        // A phrase too long to be valid that holds the sign-in: refused as a secret, never quoted by the parse error.
+        let long = vec![vec![format!("{} jane@contoso.com", "x".repeat(220))]];
+        let err = save_wording(&p, text, "A", &long, &entered).unwrap_err();
+        assert!(!err.contains("jane"), "{err}");
+        // The editor's rows, unchanged, give back the file's wordings: a literal + stays inside its phrase.
+        let rows = vec![vec!["  Terms + conditions ".to_string(), String::new()], vec![String::new()]];
+        assert_eq!(wording_sets(&rows), vec![vec!["Terms + conditions".to_string()]]);
+        // A literal + stays inside its phrase.
+        let two = vec![vec!["Terms + conditions".to_string()], vec!["Licence terms".to_string()]];
+        save_wording(&p, text, "A", &two, &entered).unwrap();
+        let saved = kvmit_script::Workflow::parse(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(saved.states[0].detect.text, two);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_picture_name_windows_would_read_as_another_is_refused() {
+        let base = std::path::Path::new("base");
+        for bad in ["pics./a.png", "pics /a.png", "a.png.", "a.png ", "pics\\x./a.png"] {
+            assert!(reference_path(base, bad).unwrap_err().contains("may not end with a dot or a space"), "{bad}");
+        }
+        for ok in ["pics/a.png", "./pics/a.png", "a.b.png", "pics/.hidden.png"] {
+            assert!(reference_path(base, ok).is_ok(), "{ok}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_a_profile_keeps_the_files_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("kvmit-perm-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("w.toml");
+        std::fs::write(&path, "a = 1\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        replace_if_unchanged(&path, "a = 1\n", "a = 2\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a = 2\n");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600, "still private");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1023,7 +1737,9 @@ mod tests {
         // A checkpoint that cannot be set aside stops the run before it starts, and does not keep the slot locked.
         std::fs::create_dir_all(path.with_extension("json.claimed").join("in-the-way")).unwrap();
         assert!(claim_checkpoint(&dir, &a).unwrap_err().contains("cannot be set aside"));
-        assert!(!path.with_extension("json.lock").exists());
+        assert!(!path.with_extension("json.running").exists(), "not marked as going on");
+        std::fs::remove_dir_all(path.with_extension("json.claimed")).unwrap();
+        assert!(claim_checkpoint(&dir, &a).is_ok(), "and the slot is free");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

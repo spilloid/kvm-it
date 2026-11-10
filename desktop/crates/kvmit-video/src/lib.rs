@@ -2,6 +2,7 @@
 //! only for display; there is no transcoding. The Linux backend is V4L2; other platforms report "unsupported"
 //! until their backend lands (docs/roadmap.md).
 pub mod convert;
+pub mod text;
 mod demo;
 mod device;
 mod negotiate;

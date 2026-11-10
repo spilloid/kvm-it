@@ -5,6 +5,7 @@ pub mod exec;
 pub mod frame;
 pub mod model;
 pub mod setup;
+pub mod text;
 pub mod workflow;
 
 pub use exec::{compile, preview, run, Host, Op, Preview, RunError, RunEvent, RunOptions, Vars};
