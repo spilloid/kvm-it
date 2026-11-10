@@ -58,7 +58,7 @@ does not need them.
 ### Screens
 
 How each screen is recognised. Where this computer can read text (Windows, macOS, or Linux with Tesseract), the
-title says something like *Screens (every one recognised by their text)*, and there is nothing to do.
+title says *Screens (N of N recognised by their text)*, with the same number twice, and there is nothing to do.
 
 You need it only where text cannot be read. Then each screen is recognised from a saved picture instead: the list
 shows each picture as **ok**, **missing** or **not needed**. To save one, bring the laptop to that screen, choose the
