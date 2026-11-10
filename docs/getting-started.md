@@ -153,7 +153,8 @@ nothing) on anything it does not recognise. The built-in one, `windows-11-oobe-p
 screen to the user's first sign-in, by **Windows Autopilot** or by **joining Microsoft Entra with a work or school
 account**. Up to the work-or-school sign-in page it has run in a virtual machine; the screens after it have not yet run
 on any machine. Try it on one machine, with a dry run first. The full guide, with every screen and what to do when it
-stops, is [Provision Windows 11 laptops](provisioning.md).
+stops, is [Provision Windows 11 laptops](provisioning.md); what each part of the panel is for, and which ones you can
+leave closed, is [The workflow panel](workflow-panel.md).
 
 Reading text needs nothing extra on Windows (with English among its languages) or macOS; on Linux install Tesseract
 (`sudo apt install tesseract-ocr`).

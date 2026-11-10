@@ -21,6 +21,8 @@ It works two ways:
 > seen by kvm-it. Watch your first laptop all the way through, and save a trace if anything stops
 > (see [When it stops](#when-it-stops)).
 
+A tour of the app's workflow panel, section by section, is in [The workflow panel](workflow-panel.md).
+
 ## What you need
 
 - kvm-it 0.6.0 or later, with an adapter and a capture card ([Get started](getting-started.md)).

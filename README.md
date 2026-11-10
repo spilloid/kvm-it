@@ -45,7 +45,8 @@ Everything the app does is also on the command line:
 `kvmit scan | status | type "text" | key ctrl alt delete | run script.toml [--dry-run] | import payload.txt | flash`.
 
 **[Full walkthrough on the docs site](https://spilloid.github.io/kvm-it/)** or [docs/getting-started.md](docs/getting-started.md).
-Provisioning laptops: [docs/provisioning.md](docs/provisioning.md). Read
+Provisioning laptops: [docs/provisioning.md](docs/provisioning.md), and the app's workflow panel section by section:
+[docs/workflow-panel.md](docs/workflow-panel.md). Read
 the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what the LED and BOOT button mean.
 
 **Hacking on it?** Building from source (that is where Rust and Docker live): [docs/developing.md](docs/developing.md).

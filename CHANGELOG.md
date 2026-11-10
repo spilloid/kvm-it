@@ -3,6 +3,8 @@
 ## [Unreleased] (0.6.0 in progress: screens recognised by their text)
 
 ### Added
+- **The workflow panel, section by section** ([docs/workflow-panel.md](docs/workflow-panel.md)): what each part is
+  for, which four you use on a normal day, what to leave closed, and the words the panel uses.
 - **Workflow screens are recognised by their text**, read with the operating system's own recogniser: Windows OCR
   (built in), Apple Vision on macOS, Tesseract on Linux if installed. A state lists the phrases its screen shows
   (`detect.text`, one set or alternative sets); its pictures become optional. The built-in Windows 11 provisioning
