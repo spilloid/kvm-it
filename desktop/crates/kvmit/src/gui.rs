@@ -161,6 +161,8 @@ pub struct App {
     link: Arc<Mutex<Link>>,
     link_gen: Arc<AtomicU64>,
     link_task: Option<tokio::task::JoinHandle<()>>,
+    /// Tasks own the strong leases, so cancelled/closing transports stay reserved until they really finish.
+    adapter_claims: Vec<(String, std::sync::Weak<()>)>,
     /// Pairings in flight, counted from the moment they are started (a pairing cannot be cancelled, so the flasher waits).
     pairing: Arc<std::sync::atomic::AtomicUsize>,
     scan: Arc<Mutex<Scan>>,
@@ -326,6 +328,7 @@ impl App {
             link: Arc::new(Mutex::new(Link::Disconnected)),
             link_gen: Arc::new(AtomicU64::new(0)),
             link_task: None,
+            adapter_claims: Vec::new(),
             pairing: Arc::default(),
             scan: Arc::new(Mutex::new(Scan::Idle)),
             status: Arc::default(),
@@ -412,6 +415,10 @@ impl App {
 
     fn start_link_mode(&mut self, id: String, ctx: egui::Context, mode: PairingMode) {
         if self.pairing.load(Ordering::SeqCst) > 0 { self.set_notice("Wait for the current pairing operation to finish."); return; }
+        if self.link_task.as_ref().is_none_or(|task| task.is_finished()) && self.adapter_claims.iter().any(|(_, claim)| claim.strong_count() > 0) {
+            self.set_notice("The previous adapter connection is still closing. Wait for it to finish before trying again.");
+            return;
+        }
         if mode == PairingMode::Repair && !self.can_repair(&id) { self.set_notice("Stop this console's input/run before repairing its pairing."); return; }
         if self.unavailable_adapters.iter().any(|other| other.eq_ignore_ascii_case(&id)) {
             self.set_notice("This adapter belongs to another console. Switch to its tab, or disconnect it there first.");
@@ -422,6 +429,8 @@ impl App {
         // superseded one can no longer publish.
         let previous = self.device();
         let previous_task = self.link_task.take();
+        let previous_claims: Vec<_> = self.adapter_claims.iter().filter_map(|(_, claim)| claim.upgrade()).collect();
+        let claim = self.claim_adapter(id.clone());
         let generation = {
             let mut l = self.link.lock().unwrap();
             let g = self.link_gen.fetch_add(1, Ordering::SeqCst) + 1;
@@ -457,15 +466,18 @@ impl App {
             move |state: Link| with_link(&|l: &mut Link| *l = state.clone())
         };
         self.link_task = Some(self.rt.spawn(async move {
+            let _claim = claim;
             if let Some(previous) = previous { previous.shutdown().await; }
             if let Some(previous_task) = previous_task {
                 with_link(&|_| *notice.lock().unwrap() = "Closing the previous adapter connection before continuing…".into());
                 ctx.request_repaint();
                 if !retire_link_task(previous_task, Duration::from_secs(45)).await {
-                    with_link(&|_| *notice.lock().unwrap() = "The previous connection timed out; continuing with pairing recovery…".into());
+                    with_link(&|l| { *l = Link::Disconnected; *notice.lock().unwrap() = "The previous adapter connection could not finish closing. Wait before trying again; its adapter stays reserved until teardown ends.".into(); });
                     ctx.request_repaint();
+                    return;
                 }
             }
+            drop(previous_claims);
             if mode == PairingMode::Repair {
                 if gen_ref.load(Ordering::SeqCst) != generation { return; }
                 with_link(&|_| *notice.lock().unwrap() = "Removing this adapter's saved pairing…".into());
@@ -568,6 +580,12 @@ impl App {
         self.cfg_update(|c| c.last_device = None);
     }
 
+    fn claim_adapter(&mut self, id: String) -> Arc<()> {
+        let claim = Arc::new(());
+        self.adapter_claims.push((id, Arc::downgrade(&claim)));
+        claim
+    }
+
     fn stop_transport(&mut self) {
         // bump the generation and replace the state under one lock, so an in-flight attempt cannot publish in between
         let previous = {
@@ -577,9 +595,21 @@ impl App {
             *self.status_timing.lock().unwrap() = None;
             std::mem::replace(&mut *l, Link::Disconnected)
         };
-        if let Link::Connected { dev, .. } = previous {
-            self.rt.spawn(async move { dev.shutdown().await });
+        let previous_task = self.link_task.take();
+        let mut claims: Vec<_> = self.adapter_claims.iter().filter_map(|(_, claim)| claim.upgrade()).collect();
+        if let Link::Connected { id, .. } | Link::Connecting(id) = &previous {
+            claims.push(self.claim_adapter(id.clone()));
         }
+        let notice = self.notice.clone();
+        self.link_task = Some(self.rt.spawn(async move {
+            let _claims = claims;
+            if let Link::Connected { dev, .. } = previous { dev.shutdown().await; }
+            if let Some(task) = previous_task {
+                if !retire_link_task(task, Duration::from_secs(45)).await {
+                    *notice.lock().unwrap() = "The adapter is still closing. It stays reserved until its previous transport finishes.".into();
+                }
+            }
+        }));
     }
 
     /// The connected adapter's id: checkpoints belong to a workflow on one adapter.
@@ -2037,7 +2067,7 @@ impl eframe::App for App {
             }
             if matches!(link, Link::Connected { .. }) {
                 external.push("The controller is connected to an adapter: use Disconnect in the Adapter popup first.".to_string());
-            } else if self.link_task.as_ref().is_some_and(|task| !task.is_finished()) {
+            } else if self.link_task.as_ref().is_some_and(|task| !task.is_finished()) || self.adapter_claims.iter().any(|(_, claim)| claim.strong_count() > 0) {
                 external.push("Closing the previous Bluetooth connection: wait for it to finish before flashing.".to_string());
             }
             let keep = self.flash.as_mut().is_some_and(|w| w.show(ctx, &external));
@@ -2782,20 +2812,26 @@ impl Console {
     }
 
     fn refresh_claims(&mut self) {
-        let adapters: Vec<_> = self.sessions.iter().map(|s| match &*s.app.link.lock().unwrap() {
-            Link::Connected { id, .. } | Link::Connecting(id) => Some(id.clone()),
-            Link::Failed(_) => s.app.cfg.last_device.clone(),
-            _ => None,
+        let adapters: Vec<Vec<String>> = self.sessions.iter_mut().map(|s| {
+            s.app.adapter_claims.retain(|(_, claim)| claim.strong_count() > 0);
+            let mut ids: Vec<_> = s.app.adapter_claims.iter().map(|(id, _)| id.clone()).collect();
+            let current = match &*s.app.link.lock().unwrap() {
+                Link::Connected { id, .. } | Link::Connecting(id) => Some(id.clone()),
+                Link::Failed(_) => s.app.cfg.last_device.clone(),
+                _ => None,
+            };
+            if let Some(id) = current { if !ids.iter().any(|other| other.eq_ignore_ascii_case(&id)) { ids.push(id); } }
+            ids
         }).collect();
         let videos: Vec<_> = self.sessions.iter().map(|s| {
             s.app.capture.lock().unwrap().as_ref().filter(|c| !c.info.path.starts_with(kvmit_video::DEMO_PREFIX)).map(|c| c.info.path.clone())
         }).collect();
         let busy: Vec<_> = self.sessions.iter().map(|s| {
-            s.app.device().is_some() || s.app.link_task.as_ref().is_some_and(|task| !task.is_finished()) || matches!(&*s.app.link.lock().unwrap(), Link::Connecting(_)) || s.app.pairing.load(Ordering::SeqCst) > 0 || s.app.run_handle.as_ref().is_some_and(|h| h.running())
+            s.app.device().is_some() || s.app.link_task.as_ref().is_some_and(|task| !task.is_finished()) || s.app.adapter_claims.iter().any(|(_, claim)| claim.strong_count() > 0) || matches!(&*s.app.link.lock().unwrap(), Link::Connecting(_)) || s.app.pairing.load(Ordering::SeqCst) > 0 || s.app.run_handle.as_ref().is_some_and(|h| h.running())
         }).collect();
         let labels: Vec<_> = self.sessions.iter().map(|s| s.label.clone()).collect();
         for (i, session) in self.sessions.iter_mut().enumerate() {
-            session.app.unavailable_adapters = adapters.iter().enumerate().filter(|(j, _)| *j != i).filter_map(|(_, id)| id.clone()).collect();
+            session.app.unavailable_adapters = adapters.iter().enumerate().filter(|(j, _)| *j != i).flat_map(|(_, ids)| ids.iter().cloned()).collect();
             session.app.unavailable_video = videos.iter().enumerate().filter(|(j, _)| *j != i).filter_map(|(_, key)| key.clone()).collect();
             session.app.console_flash_blockers = busy.iter().enumerate().filter(|(j, busy)| *j != i && **busy).map(|(j, _)| format!("{} is using an adapter. Disconnect it and stop its run before flashing.", labels[j])).collect();
         }
@@ -2838,6 +2874,7 @@ impl eframe::App for Console {
                         Link::Connected { dev, .. } => { let fw = dev.info().fw; format!("connected · fw {}.{}.{}", fw[0], fw[1], fw[2]) },
                         Link::Connecting(_) => "connecting".into(),
                         Link::Failed(_) => "reconnecting".into(),
+                        Link::Disconnected if session.app.adapter_claims.iter().any(|(_, claim)| claim.strong_count() > 0) => "disconnecting".into(),
                         Link::Disconnected => "disconnected".into(),
                     };
                     let running = session.app.run_handle.as_ref().is_some_and(|h| h.running());
@@ -2852,7 +2889,7 @@ impl eframe::App for Console {
                 let session = &mut self.sessions[self.active];
                 let response = ui.add_enabled(!blocked, egui::TextEdit::singleline(&mut session.label).desired_width(160.0));
                 rename = response.lost_focus();
-                let can_remove = !blocked && session_count > 1 && matches!(&*session.app.link.lock().unwrap(), Link::Disconnected) && session.app.link_task.as_ref().is_none_or(|task| task.is_finished()) && session.app.pairing.load(Ordering::SeqCst) == 0 && session.app.run_handle.as_ref().is_none_or(|h| !h.running()) && !session.app.rec.is_recording() && !session.app.rec.is_finishing() && session.app.flash.is_none();
+                let can_remove = !blocked && session_count > 1 && matches!(&*session.app.link.lock().unwrap(), Link::Disconnected) && session.app.link_task.as_ref().is_none_or(|task| task.is_finished()) && session.app.adapter_claims.iter().all(|(_, claim)| claim.strong_count() == 0) && session.app.pairing.load(Ordering::SeqCst) == 0 && session.app.run_handle.as_ref().is_none_or(|h| !h.running()) && !session.app.rec.is_recording() && !session.app.rec.is_finishing() && session.app.flash.is_none();
                 remove = ui.add_enabled(can_remove, egui::Button::new("Remove console")).on_disabled_hover_text("Disconnect this adapter, stop its run/recording and close its flash window first").clicked();
                 if self.switching.is_some() { ui.spinner(); ui.label("Releasing input on the previous target…"); }
                 else { ui.small(format!("{} · Each console keeps its own adapter, video and workflow", crate::syskeys::RELEASE_CHORD)); }
@@ -2987,6 +3024,71 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(console.switching.is_none(), "handoff did not finish");
+    }
+
+    #[test]
+    fn a_disconnected_adapter_stays_claimed_until_its_old_transport_finishes() {
+        let ctx = egui::Context::default();
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let a = mock_board(&rt);
+        let b = mock_board(&rt);
+        let mut console = mock_console(&ctx, rt.clone(), &[&a, &b]);
+        let (finish, done) = tokio::sync::oneshot::channel::<()>();
+        console.sessions[0].app.link_task = Some(rt.spawn(async move { let _ = done.await; }));
+        console.refresh_claims();
+        assert!(console.sessions[1].app.unavailable_adapters.contains(&"board-0".into()));
+        console.sessions[0].app.stop_transport();
+        console.sessions[0].app.cfg.last_device = None;
+        console.refresh_claims();
+        assert!(console.sessions[1].app.unavailable_adapters.contains(&"board-0".into()), "disconnect must retain ownership until the old transport finishes");
+        let generation = console.sessions[1].app.link_gen.load(Ordering::SeqCst);
+        console.sessions[1].app.start_link("BOARD-0".into(), ctx.clone(), false);
+        assert_eq!(console.sessions[1].app.link_gen.load(Ordering::SeqCst), generation);
+        assert!(console.sessions[1].app.notice.lock().unwrap().contains("another console"));
+        let _ = finish.send(());
+        rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while console.sessions[0].app.link_task.as_ref().is_some_and(|task| !task.is_finished()) {
+                    tokio::task::yield_now().await;
+                }
+            }).await.unwrap();
+        });
+        console.refresh_claims();
+        assert!(!console.sessions[1].app.unavailable_adapters.contains(&"board-0".into()));
+    }
+
+    #[test]
+    fn an_aborted_but_still_executing_transport_cannot_be_reopened() {
+        let ctx = egui::Context::default();
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let mut app = App::with_config(&ctx, Config { script_dir: Some(std::env::temp_dir().join("kvmit-retired-fixture")), ..Default::default() }, None);
+        app.rt = rt.clone();
+        let claim = app.claim_adapter("board".into());
+        let (started, ready) = std_mpsc::channel();
+        let (finish, done) = std_mpsc::channel();
+        let task = rt.spawn(async move {
+            let _claim = claim;
+            let _ = started.send(());
+            // Model a backend call which cannot observe async cancellation yet.
+            let _ = done.recv();
+        });
+        ready.recv_timeout(Duration::from_secs(2)).unwrap();
+        let retired = rt.block_on(retire_link_task(task, Duration::from_millis(10)));
+        app.start_link("board".into(), ctx, false);
+        let generation = app.link_gen.load(Ordering::SeqCst);
+        let notice = app.notice.lock().unwrap().clone();
+        // Always release the blocking fixture before asserting, including on a regression.
+        let _ = finish.send(());
+        rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while app.adapter_claims.iter().any(|(_, claim)| claim.strong_count() > 0) {
+                    tokio::task::yield_now().await;
+                }
+            }).await.unwrap();
+        });
+        assert!(!retired);
+        assert_eq!(generation, 0, "a quarantined adapter must not start another connection");
+        assert!(notice.contains("still closing"));
     }
 
     #[test]

@@ -1530,3 +1530,24 @@ investigation notes; the flash screenshot's USB serials are redacted.
 The prior local browser/accessibility checks cover this design. Publication still requires the real GitHub Pages
 Jekyll build and deployment to succeed, followed by live HTTP, rendered-page, asset and download-link checks. This
 website publication does not publish the 0.6 application or complete its release checklist.
+
+## Round 75 - 2026-11-14 - Astra review of the public 0.6 multi-console diff
+
+Reviewed the already-public PR #59 source diff from `03b7ac5` to `a3b62d3` using `gpt-6-astra` in read-only mode,
+with no tools or local/private files in the review payload. An earlier attempt to review uncommitted files was
+rejected by automatic approval review; the narrower public-source-only review was allowed.
+
+| Finding | Severity | Reproduction and disposition |
+|---|---|---|
+| Adapter claim disappears before its transport finishes disconnecting | High | Confirmed. A regression test disconnects console A with a pending transport, clears its remembered ID, then checks console B's ownership barrier. It failed before the fix. Task-owned leases now retain all adapter claims through shutdown and teardown, including cancelled tasks which have not actually stopped. |
+
+The first fix passed the 15 targeted GUI tests. The final fix also refuses a new connection after a teardown timeout,
+keeps pending claims in flasher/removal guards and displays disconnecting while a lease remains. A second regression
+test models a non-cooperative backend call after async cancellation. The full workspace checks and independent
+re-review are running; this entry alone is not a final release sign-off.
+
+The stale dependency licence listing was regenerated with the pinned cargo-about 0.9.2 tool (official Windows
+archive verified against its published SHA-256), then stamped and checked. The resulting changes are workspace
+package versions 0.5.1 to 0.6.0 and the matching content/input hashes; the external dependency licence texts are
+unchanged. Initial Windows CI passed; macOS tests/package construction passed before the stale-licence smoke check.
+The subsequent licence-corrected Mac and Windows jobs passed.
