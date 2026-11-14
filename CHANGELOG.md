@@ -9,6 +9,12 @@ Workflow automation, OCR and provisioning are included as **prerelease beta**, w
 verification. Automated tests and the partial Windows VM run are evidence for the steps they cover; password entry,
 MFA, enrolment and the Autopilot path remain unverified. The GUI, CLI and guides disclose this before workflow use.
 
+### Known verification limits
+- The maintainer approved releasing with the Linux hardware regression deferred and explicitly disclosed. Linux CI does not establish hardware behaviour.
+- Workflow automation remains prerelease beta without end-to-end physical-laptop verification.
+- Bundled firmware 0.2.1 is built/source-verified, but its changed pairing-window behaviour has not been verified on a board.
+- macOS is ad-hoc signed and not notarized; its forget step still needs System Settings.
+
 ### Added
 - **A full product pass on the website:** the multi-adapter bench story, current real-GUI demo screenshots, a wiring
   diagram that separates BLE control from HDMI video, setup/recovery guidance, consistent documentation navigation,

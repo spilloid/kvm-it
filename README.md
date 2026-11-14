@@ -63,6 +63,8 @@ physical boards. On 2026-11-14 the maintainer confirmed pairing repair, adding a
 physical adapters on Windows. The exact simultaneous adapter count and failure-case input handoffs were not reported.
 See the [0.6 console instructions](docs/getting-started.md#several-targets-in-one-console-06).
 
+**Linux hardware regression was not rerun for 0.6.** The maintainer approved shipping with that gap disclosed; Linux CI is software coverage, not a physical-controller/board pass.
+
 **Workflow automation is prerelease beta in 0.6.** OCR and provisioning have automated tests and partial Windows VM
 coverage, but have not been tested end to end on physical laptops. Password entry, MFA, enrolment and the Autopilot
 path remain unverified. This beta is for supervised evaluation; see the [evidence and guide](docs/provisioning.md).

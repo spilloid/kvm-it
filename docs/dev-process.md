@@ -1560,3 +1560,25 @@ was still executing. The completed-wrapper regression exercises that case. Retir
 completion and the absence of any other strong owners of every predecessor lease; the check is shared by connection
 replacement and disconnect wrappers. A timeout or surviving predecessor keeps the adapter reserved and refuses
 reconnection. The workspace checks and follow-up review cover this final change before release.
+
+### Round 77 - Astra final ownership sign-off and 0.6 release decision
+
+The public-source-only Astra re-review of `d756397` signed off: **no further blocking ownership findings established**.
+It confirmed the completed-wrapper path is closed by checking all predecessor lease owners after awaiting the wrapper;
+retained leases also cover adapter reservations, removal and flasher guards. Static review only, without tool/hardware
+execution. A completed task with a JoinError counts as completed, not successful, but this does not establish an
+ownership overlap when predecessor lease ownership is exclusive.
+
+The final native Windows workspace run passed **364 tests, 1 ignored**. The three new regressions cover disconnect
+ownership, an aborted non-cooperative transport, and completed wrappers with an unfinished predecessor. The final
+Windows CI tests/lint and macOS tests/package/smoke jobs on `d756397` passed; Linux/container CI remains the release
+check before merge. Firmware source hash/checksums and the regenerated dependency licence listing pass.
+
+The maintainer explicitly approved use of the existing GitHub credential helper for GitHub CLI release operations,
+with its token kept only in process memory and sent only to GitHub. The connector lacks release-creation and workflow-
+dispatch mutations, so the CLI is used for those operations; no token is logged or written to a file.
+
+The maintainer also explicitly approved **"Ship with Linux hardware gap disclosed"** for the reviewed 0.6 candidate.
+The Linux physical-controller/board regression is therefore deferred for 0.6 and remains an explicit release-note
+limit. This does not relabel software CI as hardware evidence or waive signing and package validation. The separate
+prior approval for workflow prerelease beta and its physical-laptop evidence limits remains in force.
