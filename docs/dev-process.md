@@ -1582,3 +1582,17 @@ The maintainer also explicitly approved **"Ship with Linux hardware gap disclose
 The Linux physical-controller/board regression is therefore deferred for 0.6 and remains an explicit release-note
 limit. This does not relabel software CI as hardware evidence or waive signing and package validation. The separate
 prior approval for workflow prerelease beta and its physical-laptop evidence limits remains in force.
+
+### Round 78 - Remaining post-round-74 settings-lock review
+
+A public-source-only Astra review covered the blocking lock-acquisition helper introduced after round 74. It
+confirmed a resource-bound defect: each timeout could leave one helper blocked in the native lock call. A standalone
+reproducer using that exact public function with observation counters confirmed eight timed-out requests left eight
+live helpers while the lock holder stayed locked. The late-acquisition handoff itself is safe: after timeout the
+channel drops any acquired file, so the helper never writes settings or retains a late lock.
+
+Acquisition workers are now capped at 32 per process with a lifetime permit; normal uncontended saves still take the
+fast native try-lock path. A persistent lock cannot create further workers once the cap is reached, and caller waits
+remain bounded. Worker creation uses the fallible thread builder, so resource exhaustion is reported as an unsaved-
+settings error rather than panicking. A regression drives repeated timeouts under a real native file lock and checks
+that the queue can drain and reopen afterward. Final review and checks include this guard.

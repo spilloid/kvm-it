@@ -1,7 +1,24 @@
 //! Persistent app settings. Holds device ids and paths only — never secrets (docs/security.md).
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+const MAX_CONFIG_WAITERS: usize = 32;
+static CONFIG_WAITERS: AtomicUsize = AtomicUsize::new(0);
+
+struct ConfigWaiter;
+
+impl ConfigWaiter {
+    fn acquire() -> Option<Self> {
+        CONFIG_WAITERS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < MAX_CONFIG_WAITERS).then_some(count + 1)
+        }).ok().map(|_| Self)
+    }
+}
+
+impl Drop for ConfigWaiter {
+    fn drop(&mut self) { CONFIG_WAITERS.fetch_sub(1, Ordering::AcqRel); }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Config {
@@ -188,10 +205,13 @@ fn lock_config(p: &Path, wait: std::time::Duration) -> Result<std::fs::File, Str
     }
     // Busy: wait in line (a blocking lock, woken when it is released, so a busy writer cannot starve this one), on a
     // thread of its own so the wait stays bounded. If it gives up, a lock that thread takes later is dropped at once.
+    // A stuck lock must not accumulate a new blocked thread on every subsequent save attempt.
+    let permit = ConfigWaiter::acquire().ok_or_else(|| "another kvm-it is saving them and did not finish".to_string())?;
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    std::thread::Builder::new().name("kvmit-settings-lock".into()).spawn(move || {
+        let _permit = permit;
         let _ = tx.send(f.lock().map(|_| f));
-    });
+    }).map_err(cannot)?;
     match rx.recv_timeout(wait) {
         Ok(Ok(f)) => Ok(f),
         Ok(Err(e)) => Err(cannot(e)),
@@ -283,6 +303,26 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kvmit-cfg-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir.join("config.json")
+    }
+
+    #[test]
+    fn repeated_timeouts_cannot_accumulate_unbounded_lock_workers() {
+        let path = temp_config("bounded-waiters");
+        let held = lock_config(&path, std::time::Duration::from_secs(1)).unwrap();
+        for _ in 0..MAX_CONFIG_WAITERS * 2 {
+            assert!(lock_config(&path, std::time::Duration::from_millis(1)).is_err());
+        }
+        assert!(CONFIG_WAITERS.load(Ordering::Acquire) <= MAX_CONFIG_WAITERS);
+        drop(held);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        // Drain the actual native lock queue, not just the timed-out callers.
+        while CONFIG_WAITERS.load(Ordering::Acquire) != 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let reopened = lock_config(&path, std::time::Duration::from_secs(1)).unwrap();
+        drop(reopened);
+        let _ = std::fs::remove_file(path.with_extension("json.lock"));
+        let _ = std::fs::remove_dir(path.parent().unwrap());
     }
 
     // A bounded save can legitimately report contention while another writer is
