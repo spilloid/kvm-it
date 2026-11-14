@@ -4,6 +4,9 @@ use crate::uistate::Health;
 use kvmit_script::workflow::{TraceEntry, WorkflowEvent};
 use std::collections::BTreeMap;
 
+/// Release-wide evidence limit, shown before a workflow can request credentials or run.
+pub const BETA_NOTICE: &str = "Workflow automation is prerelease beta. It has not been tested end to end on a physical laptop. Password entry, MFA, enrolment and the Autopilot path remain unverified.";
+
 /// The current state, from the trace: the last state entered, and how the run stands.
 pub fn state_chip(trace: &[TraceEntry], running: bool) -> (Health, String) {
     let state = trace.iter().rev().find_map(|t| match &t.event {

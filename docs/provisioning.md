@@ -1,12 +1,16 @@
 # Provision Windows 11 laptops
 
-kvm-it can take a new Windows 11 laptop from the first setup screen to the user's first sign-in, typing only on the
+> **Prerelease beta (0.6).** Workflow automation has not been tested end to end on a physical laptop. Password entry,
+> MFA, enrolment and the Autopilot path remain unverified. The work-account path has VM coverage up to the sign-in page;
+> the engine has automated tests. This beta is included for supervised evaluation, with those limits.
+
+The built-in workflow is designed to take a new Windows 11 laptop from the first setup screen to the user's first sign-in, typing only on the
 screens it recognises and stopping (typing nothing) on anything else. It recognises each screen by **reading its text**
 ("Is this the right country or region?"), so there is nothing to save first: you set it up once for your
 organisation, then run it on each laptop. You plug in the network, approve MFA and choose the privacy settings when it
-asks; it does the rest.
+asks; the workflow attempts the remaining steps it recognises.
 
-It works two ways:
+It includes templates for two paths:
 
 - **Windows Autopilot**: the laptop is registered for Autopilot and shows your organisation's sign-in right after the
   network.

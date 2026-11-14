@@ -35,12 +35,23 @@ enum Scan {
     Error(String),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PairingMode { Reconnect, Pair, Repair }
+
+async fn retire_link_task(mut task: tokio::task::JoinHandle<()>, limit: Duration) -> bool {
+    if tokio::time::timeout(limit, &mut task).await.is_ok() { return true; }
+    task.abort();
+    false
+}
+
 enum Input {
     Down(Key),
     Up(Key),
     Button(u8, bool),
     Scroll(i8),
     ReleaseAll,
+    /// Acknowledged only after older manual input and the outgoing release complete.
+    SwitchBarrier(std_mpsc::Sender<Result<(), String>>),
     /// A "Send keys" chord: all downs, then ups in reverse. Runs inside the pump so it can never interleave
     /// with captured input, a capture's closing RELEASE_ALL, or the Release all button.
     Chord(&'static str, Vec<Key>),
@@ -140,14 +151,21 @@ fn answer(slot: &ConfirmSlot, yes: bool) {
 }
 
 pub struct App {
+    console_key: Option<String>,
+    unavailable_adapters: Vec<String>,
+    unavailable_video: Vec<String>,
+    console_flash_blockers: Vec<String>,
+    bundled_firmware: Option<String>,
     rt: Arc<tokio::runtime::Runtime>,
     cfg: Config,
     link: Arc<Mutex<Link>>,
     link_gen: Arc<AtomicU64>,
+    link_task: Option<tokio::task::JoinHandle<()>>,
     /// Pairings in flight, counted from the moment they are started (a pairing cannot be cancelled, so the flasher waits).
     pairing: Arc<std::sync::atomic::AtomicUsize>,
     scan: Arc<Mutex<Scan>>,
     status: Arc<Mutex<Option<StatusInfo>>>,
+    status_timing: Arc<Mutex<Option<(Instant, Duration)>>>,
     notice: Arc<Mutex<String>>,
     input_tx: Option<InputTx>,
     /// The connection session the current pump drives; a reconnect gets a new pump.
@@ -185,6 +203,7 @@ pub struct App {
     type_text: String,
     type_secret: bool,
     flash: Option<crate::flashwiz::Wizard>,
+    repair_dialog: Option<String>,
     /// The selected workflow (`[workflow]` entries), its prompted secrets, and its latest run.
     workflow: Option<kvmit_script::Workflow>,
     wf_secrets: BTreeMap<String, String>,
@@ -287,20 +306,30 @@ struct WfShared {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> App {
+        Self::with_config(&cc.egui_ctx, Config::load(), None)
+    }
+
+    fn with_config(ctx: &egui::Context, cfg: Config, console_key: Option<String>) -> App {
         let rt = Arc::new(tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(2).build().expect("tokio runtime"));
-        let cfg = Config::load();
-        cc.egui_ctx.set_theme(cfg.theme.preference());
+        ctx.set_theme(cfg.theme.preference());
         let library = library::load_all(&cfg.script_dir());
         let video_devices = kvmit_video::list_devices();
         // only a device chosen before (or the demo source) opens by itself: index 0 is often a webcam
         let remembered_video = crate::video_state::initial_video(&video_devices, cfg.last_video_key.as_deref(), cfg.last_video.as_deref());
         let mut app = App {
+            console_key,
+            unavailable_adapters: Vec::new(),
+            unavailable_video: Vec::new(),
+            console_flash_blockers: Vec::new(),
+            bundled_firmware: kvmit_flash::Image::from_build_dir(std::path::Path::new(&crate::flashwiz::default_firmware_dir())).ok().and_then(|image| image.firmware_version()),
             rt,
             link: Arc::new(Mutex::new(Link::Disconnected)),
             link_gen: Arc::new(AtomicU64::new(0)),
+            link_task: None,
             pairing: Arc::default(),
             scan: Arc::new(Mutex::new(Scan::Idle)),
             status: Arc::default(),
+            status_timing: Arc::default(),
             notice: Arc::default(),
             input_tx: None,
             input_for: None,
@@ -331,6 +360,7 @@ impl App {
             type_text: String::new(),
             type_secret: false,
             flash: None,
+            repair_dialog: None,
             workflow: None,
             wf_secrets: BTreeMap::new(),
             wf_run: None,
@@ -354,8 +384,8 @@ impl App {
             cfg,
         };
         // Zero-step reconnect: the last adapter and capture device come back on their own.
-        if let Some(id) = app.cfg.last_device.clone() {
-            app.start_link(id, cc.egui_ctx.clone(), false);
+        if std::env::var_os("KVMIT_START_DISCONNECTED").is_none() {
+            if let Some(id) = app.cfg.last_device.clone() { app.start_link(id, ctx.clone(), false); }
         }
         if remembered_video.is_some() {
             app.open_video();
@@ -369,28 +399,44 @@ impl App {
 
     /// Change a setting; when the settings file could not be read (and so was left alone), say so in the notice line.
     fn cfg_update(&mut self, f: impl Fn(&mut Config)) {
-        if let Err(e) = self.cfg.update(f) {
+        let result = match &self.console_key { Some(key) => self.cfg.update_console(key, f), None => self.cfg.update(f) };
+        if let Err(e) = result {
             self.set_notice(e);
         }
     }
 
     /// Connect and keep reconnecting until superseded (generation counter) or the app exits.
     fn start_link(&mut self, id: String, ctx: egui::Context, pair_first: bool) {
+        self.start_link_mode(id, ctx, if pair_first { PairingMode::Pair } else { PairingMode::Reconnect });
+    }
+
+    fn start_link_mode(&mut self, id: String, ctx: egui::Context, mode: PairingMode) {
+        if self.pairing.load(Ordering::SeqCst) > 0 { self.set_notice("Wait for the current pairing operation to finish."); return; }
+        if mode == PairingMode::Repair && !self.can_repair(&id) { self.set_notice("Stop this console's input/run before repairing its pairing."); return; }
+        if self.unavailable_adapters.iter().any(|other| other.eq_ignore_ascii_case(&id)) {
+            self.set_notice("This adapter belongs to another console. Switch to its tab, or disconnect it there first.");
+            return;
+        }
         // Register the attempt synchronously, in the same step that supersedes any earlier one: the generation bump and the
         // `Connecting` state happen under the link lock, so a cancel (the flasher opening) always sees this attempt and a
         // superseded one can no longer publish.
+        let previous = self.device();
+        let previous_task = self.link_task.take();
         let generation = {
             let mut l = self.link.lock().unwrap();
             let g = self.link_gen.fetch_add(1, Ordering::SeqCst) + 1;
             *l = Link::Connecting(id.clone());
+            *self.status.lock().unwrap() = None;
+            *self.status_timing.lock().unwrap() = None;
             g
         };
         self.cfg_update(|c| c.last_device = Some(id.clone()));
         let (link, gen_ref, status, notice) = (self.link.clone(), self.link_gen.clone(), self.status.clone(), self.notice.clone());
+        let status_timing = self.status_timing.clone();
         // Registered here, before the task is spawned, and held until the first connection attempt has resolved (Connected
         // published, or failed): from the first click until then the flasher cannot open, so no cancel can find a pairing, or the
         // link it leaves open, without an owner.
-        let mut pairing = pair_first.then(|| PairingGuard::new(&self.pairing));
+        let mut pairing = (mode != PairingMode::Reconnect).then(|| PairingGuard::new(&self.pairing));
         // The only way this attempt touches shared state: run `f` if the attempt is still the current one, while holding the
         // link lock. The cancels (`cancel_pending_link`, `stop_link`) bump the generation and clear the state under that same
         // lock, so a cancelled or superseded attempt can never write after the cancel, not even between a check and a write.
@@ -410,11 +456,32 @@ impl App {
             let with_link = with_link.clone();
             move |state: Link| with_link(&|l: &mut Link| *l = state.clone())
         };
-        self.rt.spawn(async move {
-            if pair_first {
+        self.link_task = Some(self.rt.spawn(async move {
+            if let Some(previous) = previous { previous.shutdown().await; }
+            if let Some(previous_task) = previous_task {
+                with_link(&|_| *notice.lock().unwrap() = "Closing the previous adapter connection before continuing…".into());
+                ctx.request_repaint();
+                if !retire_link_task(previous_task, Duration::from_secs(45)).await {
+                    with_link(&|_| *notice.lock().unwrap() = "The previous connection timed out; continuing with pairing recovery…".into());
+                    ctx.request_repaint();
+                }
+            }
+            if mode == PairingMode::Repair {
+                if gen_ref.load(Ordering::SeqCst) != generation { return; }
+                with_link(&|_| *notice.lock().unwrap() = "Removing this adapter's saved pairing…".into());
+                ctx.request_repaint();
+                if let Err(e) = backend::unpair(&id).await {
+                    with_link(&|l| { *l = Link::Disconnected; *notice.lock().unwrap() = format!("Could not remove the saved pairing: {e}"); });
+                    ctx.request_repaint();
+                    return;
+                }
+            }
+            if mode != PairingMode::Reconnect {
                 if gen_ref.load(Ordering::SeqCst) != generation {
                     return; // superseded before it started
                 }
+                with_link(&|_| *notice.lock().unwrap() = "Pairing with the adapter; keep its BOOT pairing window open…".into());
+                ctx.request_repaint();
                 if let Err(e) = backend::pair(&id).await {
                     with_link(&|l: &mut Link| {
                         *l = Link::Disconnected;
@@ -444,22 +511,29 @@ impl App {
                         let poll = async {
                             let mut last_held = 0u8;
                             loop {
-                                tokio::time::sleep(Duration::from_secs(2)).await;
                                 if gen_ref.load(Ordering::SeqCst) != generation {
                                     break;
                                 }
+                                let requested = Instant::now();
                                 if let Ok(s) = dev.status().await {
                                     if s.keys != last_held {
                                         debug_log(&format!("adapter reports {} key(s) held on the target", s.keys));
                                         last_held = s.keys;
                                     }
                                     with_link(&|_| *status.lock().unwrap() = Some(s.clone()));
+                                    with_link(&|_| *status_timing.lock().unwrap() = Some((Instant::now(), requested.elapsed())));
+                                    ctx.request_repaint();
+                                } else {
+                                    with_link(&|_| *status.lock().unwrap() = None);
+                                    with_link(&|_| *status_timing.lock().unwrap() = None);
                                     ctx.request_repaint();
                                 }
+                                tokio::time::sleep(Duration::from_secs(2)).await;
                             }
                         };
                         tokio::select! { _ = dev.closed() => {}, _ = poll => {} }
                         with_link(&|_| *status.lock().unwrap() = None);
+                        with_link(&|_| *status_timing.lock().unwrap() = None);
                         conn.disconnect().await;
                         if publish(Link::Failed("link lost, reconnecting…".into())) {
                             ctx.request_repaint();
@@ -474,7 +548,7 @@ impl App {
                 pairing.take(); // the first attempt has resolved: whatever pairing left behind is now owned (or closed)
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
-        });
+        }));
     }
 
     /// Cancel any connection attempt or retry loop without forgetting which adapter was last used (the flasher needs the
@@ -485,21 +559,27 @@ impl App {
             self.link_gen.fetch_add(1, Ordering::SeqCst);
             *link = Link::Disconnected;
             *self.status.lock().unwrap() = None;
+            *self.status_timing.lock().unwrap() = None;
         }
     }
 
     fn stop_link(&mut self) {
+        self.stop_transport();
+        self.cfg_update(|c| c.last_device = None);
+    }
+
+    fn stop_transport(&mut self) {
         // bump the generation and replace the state under one lock, so an in-flight attempt cannot publish in between
         let previous = {
             let mut l = self.link.lock().unwrap();
             self.link_gen.fetch_add(1, Ordering::SeqCst);
             *self.status.lock().unwrap() = None;
+            *self.status_timing.lock().unwrap() = None;
             std::mem::replace(&mut *l, Link::Disconnected)
         };
         if let Link::Connected { dev, .. } = previous {
             self.rt.spawn(async move { dev.shutdown().await });
         }
-        self.cfg_update(|c| c.last_device = None);
     }
 
     /// The connected adapter's id: checkpoints belong to a workflow on one adapter.
@@ -558,6 +638,12 @@ impl App {
                                 dev.shutdown().await;
                                 *notice.lock().unwrap() = "Releasing the keys failed: disconnected so the adapter releases them.".into();
                             }
+                            r
+                        }
+                        Input::SwitchBarrier(reply) => {
+                            let r = dev.release_all().await;
+                            if r.is_err() { dev.shutdown().await; }
+                            let _ = reply.send(r.as_ref().map(|_| ()).map_err(ToString::to_string));
                             r
                         }
                         Input::Chord(label, ks) => {
@@ -638,6 +724,10 @@ impl App {
 
     fn open_video(&mut self) {
         let Some(d) = self.video_devices.get(self.video_sel) else { return };
+        if self.unavailable_video.contains(&d.path) {
+            self.set_notice("This capture card belongs to another console. Close it there before assigning it here.");
+            return;
+        }
         match Capture::open(&d.path) {
             Ok(c) => {
                 if !d.path.starts_with(kvmit_video::DEMO_PREFIX) {
@@ -1481,6 +1571,8 @@ impl App {
     /// The selected workflow: what it will do, its secrets, run controls, and the live state, timeline and variables.
     fn workflow_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, wf: kvmit_script::Workflow, sel: usize) {
         ui.separator();
+        ui.strong("Prerelease beta");
+        ui.label(crate::wf_view::BETA_NOTICE);
         ui.strong(if wf.name.is_empty() { "Workflow" } else { wf.name.as_str() });
         if !wf.description.is_empty() {
             ui.label(&wf.description);
@@ -1849,6 +1941,10 @@ impl eframe::App for App {
                     let (h, t) = uistate::adapter_chip(kind);
                     let r = chip(ui, h, t);
                     popup(&r, 380.0, |ui| self.adapter_ui(ui, ctx, &link));
+                    if let Link::Connected { dev, .. } = &link {
+                        let fw = dev.info().fw;
+                        ui.small(format!("Firmware {}.{}.{}", fw[0], fw[1], fw[2]));
+                    }
 
                     // An indicator, not a control: a Label (not a Button), so it is not offered as clickable to screen
                     // readers / UI Automation. egui exposes a Label's text as its accessible value, which UIA reports as
@@ -1935,18 +2031,21 @@ impl eframe::App for App {
         // the flasher window (opened from the Adapter popup); it owns its own progress, so it can stay up while idle
         if self.flash.is_some() && !self.capturing {
             // flashing resets the board, so nothing may be using the adapter: no script, no connection to it
-            let mut external = Vec::new();
+            let mut external = self.console_flash_blockers.clone();
             if running {
                 external.push("A script is running: wait for it to finish or abort it.".to_string());
             }
             if matches!(link, Link::Connected { .. }) {
                 external.push("The controller is connected to an adapter: use Disconnect in the Adapter popup first.".to_string());
+            } else if self.link_task.as_ref().is_some_and(|task| !task.is_finished()) {
+                external.push("Closing the previous Bluetooth connection: wait for it to finish before flashing.".to_string());
             }
             let keep = self.flash.as_mut().is_some_and(|w| w.show(ctx, &external));
             if !keep {
                 self.flash = None;
             }
         }
+        if !self.capturing { self.repair_ui(ctx); }
 
         // confirm dialog from a running script
         if let Some(h) = &self.run_handle {
@@ -2051,9 +2150,29 @@ impl eframe::App for App {
 impl App {
     // ---- popup bodies: what used to be the left sidebar, one method per top-bar button ----
     fn adapter_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, link: &Link) {
+        let mut repair = None;
         match link {
             Link::Connected { name, id, dev } => {
                 ui.label(format!("{name}\n{id}"));
+                let info = dev.info();
+                ui.strong(format!("Firmware {}.{}.{}", info.fw[0], info.fw[1], info.fw[2]));
+                if let Some(bundled) = &self.bundled_firmware {
+                    ui.small(format!("Firmware included with this app: {bundled}"));
+                    if let Some(version) = firmware_triplet(bundled) {
+                        let installed = info.fw.map(u16::from);
+                        if installed < version { ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, "A newer firmware is included. Disconnect and use Flash adapter to update it."); }
+                        else if installed == version { ui.small("Running firmware matches the version included with this app."); }
+                        else { ui.small("This adapter runs a newer firmware version than the one included with this app."); }
+                    }
+                }
+                ui.small(format!("Protocol {}.{} · Bluetooth {}", info.major, info.minor, if dev.is_connected() { "connected" } else { "disconnected" }));
+                if let Some(status) = self.status.lock().unwrap().as_ref() {
+                    ui.label(if status.hid_mounted { "Target USB: connected" } else { "Target USB: not connected" });
+                    ui.small(format!("Held keys: {} · Mouse buttons: {} · Dropped motion: {} · CRC errors: {}", status.keys, status.buttons, status.dropped_motion, status.bad_crc));
+                } else { ui.small("Target status: waiting for a reply"); }
+                if let Some((checked, elapsed)) = self.status_timing.lock().unwrap().as_ref() {
+                    ui.small(format!("Status response: {} ms · checked {} s ago", elapsed.as_millis(), checked.elapsed().as_secs()));
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Release all keys").clicked() {
                         // Through the pump, so it lands after (not between) anything already queued.
@@ -2067,10 +2186,11 @@ impl App {
                     }
                 });
                 self.boot_drive_ui(ui, ctx, dev);
+                if ui.add_enabled(self.can_repair(id), egui::Button::new("Repair pairing…")).on_hover_text("Remove this board's saved pairing and pair again inside kvm-it").clicked() { repair = Some(id.clone()); }
             }
             _ => {
                 let scanning = matches!(&*self.scan.lock().unwrap(), Scan::Scanning);
-                let flashing = self.flash.is_some(); // no new connection while the flasher window is open
+                let flashing = self.flash.is_some() || self.pairing.load(Ordering::SeqCst) > 0;
                 if ui.add_enabled(!scanning && !flashing, egui::Button::new(if scanning { "Scanning…" } else { "Scan for adapters" })).clicked() {
                     *self.scan.lock().unwrap() = Scan::Scanning;
                     let (scan, ctx2) = (self.scan.clone(), ctx.clone());
@@ -2090,13 +2210,15 @@ impl App {
                     Scan::Done(list) => {
                         for f in list {
                             ui.horizontal(|ui| {
-                                ui.label(format!("{} ({} dBm)", f.name, f.rssi.map(|r| r.to_string()).unwrap_or("?".into())));
-                                if ui.add_enabled(!flashing, egui::Button::new("Pair & connect")).clicked() {
+                                let claimed = self.unavailable_adapters.iter().any(|id| id.eq_ignore_ascii_case(&f.id));
+                                ui.label(format!("{} · {} ({} dBm){}", f.name, f.id, f.rssi.map(|r| r.to_string()).unwrap_or("?".into()), if claimed { " · in another console" } else { "" }));
+                                if ui.add_enabled(!flashing && !claimed, egui::Button::new("Pair & connect")).clicked() {
                                     chosen = Some((f.id.clone(), true));
                                 }
-                                if ui.add_enabled(!flashing, egui::Button::new("Connect")).clicked() {
+                                if ui.add_enabled(!flashing && !claimed, egui::Button::new("Connect")).clicked() {
                                     chosen = Some((f.id.clone(), false));
                                 }
+                                if ui.add_enabled(!flashing && !claimed, egui::Button::new("Repair pairing…")).clicked() { repair = Some(f.id.clone()); }
                             });
                         }
                     }
@@ -2108,8 +2230,13 @@ impl App {
                 if let Some((id, pair)) = chosen {
                     self.start_link(id, ctx.clone(), pair);
                 }
+                if let Some(id) = self.cfg.last_device.clone() {
+                    ui.small(format!("Remembered adapter: {id}"));
+                    if ui.add_enabled(self.can_repair(&id), egui::Button::new("Repair remembered pairing…")).clicked() { repair = Some(id); }
+                }
             }
         }
+        if let Some(id) = repair { self.repair_dialog = Some(id); release_local_ui(ctx); }
         ui.separator();
         let pairing = self.pairing.load(Ordering::SeqCst) > 0;
         let hint = if pairing { "A pairing is in progress: wait for it to finish" } else { "Write the adapter's firmware through its COM USB port" };
@@ -2118,6 +2245,31 @@ impl App {
             self.cancel_pending_link();
             self.flash = Some(crate::flashwiz::Wizard::new());
         }
+    }
+
+    fn can_repair(&self, id: &str) -> bool {
+        cfg!(any(windows, target_os = "linux")) && self.flash.is_none() && self.input_idle() && self.pairing.load(Ordering::SeqCst) == 0 && !self.unavailable_adapters.iter().any(|other| other.eq_ignore_ascii_case(id))
+    }
+
+    fn repair_ui(&mut self, ctx: &egui::Context) {
+        let Some(id) = self.repair_dialog.clone() else { return };
+        let mut open = true;
+        let mut start = false;
+        let mut cancel = false;
+        let width = (ctx.screen_rect().width() - 48.0).clamp(240.0, 460.0);
+        egui::Window::new("Repair adapter pairing").collapsible(false).default_width(width).max_width(width).max_height((ctx.screen_rect().height() - 48.0).max(180.0)).vscroll(true).open(&mut open).show(ctx, |ui| {
+            ui.strong(format!("Adapter {id}"));
+            ui.label("kvm-it will remove this adapter's saved pairing from this computer, pair again, and reconnect. Other adapters are left alone.");
+            ui.label("1. Press BOOT briefly on this board to authorize pairing (do not hold it for 10 seconds).\n2. Click Forget and pair again below.");
+            if cfg!(target_os = "macos") { ui.label("macOS does not expose an API to forget a BLE device; that step still needs System Settings on macOS."); }
+            start = ui.add_enabled(self.can_repair(&id), egui::Button::new("Forget and pair again")).clicked();
+            cancel = ui.button("Cancel repair").clicked();
+            if !self.can_repair(&id) { ui.small("Stop this console's input/run and wait for pairing or flashing to finish first. The adapter must not belong to another console."); }
+        });
+        if start {
+            self.repair_dialog = None;
+            self.start_link_mode(id, ctx.clone(), PairingMode::Repair);
+        } else if !open || cancel { self.repair_dialog = None; }
     }
 
     /// The adapter's read-only boot drive: OFF unless you turn it on here. Changing it restarts the adapter (the USB descriptor is fixed for a
@@ -2176,8 +2328,9 @@ impl App {
             let mut chosen = None;
             for (i, d) in self.video_devices.iter().enumerate() {
                 let is_open = open.as_deref() == Some(d.path.as_str());
-                let text = if is_open { format!("{}  (open; click to reopen)", d.name) } else { d.name.clone() };
-                if ui.selectable_label(is_open, text).on_hover_text(&d.path).clicked() {
+                let claimed = self.unavailable_video.contains(&d.path);
+                let text = if claimed { format!("{} (in another console)", d.name) } else if is_open { format!("{}  (open; click to reopen)", d.name) } else { d.name.clone() };
+                if ui.add_enabled(!claimed, egui::Button::selectable(is_open, text)).on_hover_text(&d.path).clicked() {
                     chosen = Some(i);
                 }
             }
@@ -2187,6 +2340,16 @@ impl App {
             if let Some(c) = self.capture.lock().unwrap().as_ref() {
                 let kind = if c.info.path.starts_with("demo:") { "still picture" } else if cfg!(target_os = "macos") { "decoded by macOS" } else if c.mode.mjpeg { "MJPEG" } else { "YUYV" };
                 ui.label(format!("{}×{} @ {} fps {}", c.mode.width, c.mode.height, c.mode.fps, kind));
+            }
+            let running = self.run_handle.as_ref().is_some_and(|h| h.running());
+            let can_close = self.capture.lock().unwrap().is_some() && !running && !self.rec.is_recording();
+            if ui.add_enabled(can_close, egui::Button::new("Close capture device")).on_disabled_hover_text("Stop this console's run and recording before closing its capture device").clicked() {
+                let old = self.capture.lock().unwrap().take();
+                drop(old);
+                self.texture = None;
+                self.video_blank = false;
+                self.last_seq = 0;
+                self.cfg_update(|c| { c.last_video = None; c.last_video_key = None; });
             }
         }
         let block = uistate::input_block_reason(self.device().is_some(), self.run_handle.as_ref().is_some_and(|r| r.running()));
@@ -2474,6 +2637,11 @@ pub fn window_title() -> String {
     format!("kvm-it {}", env!("CARGO_PKG_VERSION"))
 }
 
+fn firmware_triplet(version: &str) -> Option<[u16; 3]> {
+    let parts: Vec<_> = version.split('.').map(str::parse::<u16>).collect::<Result<_, _>>().ok()?;
+    parts.try_into().ok()
+}
+
 pub fn run_gui() -> eframe::Result<()> {
     let opts = eframe::NativeOptions {
         viewport: {
@@ -2485,12 +2653,420 @@ pub fn run_gui() -> eframe::Result<()> {
         },
         ..Default::default()
     };
-    eframe::run_native("kvm-it", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+    eframe::run_native("kvm-it", opts, Box::new(|cc| Ok(Box::new(Console::new(cc)))))
+}
+
+struct ConsoleSession {
+    key: String,
+    label: String,
+    app: App,
+    memory: Option<egui::Memory>,
+}
+
+struct ConsoleSwitch {
+    target: usize,
+    reply: std_mpsc::Receiver<Result<(), String>>,
+    started: Instant,
+}
+
+/// One window, independent adapter/video/workflow sessions. Only the selected
+/// session receives local input; all Bluetooth links keep their own keepalives.
+struct Console {
+    sessions: Vec<ConsoleSession>,
+    active: usize,
+    switching: Option<ConsoleSwitch>,
+}
+
+impl Console {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let mut cfg = Config::load();
+        let mut startup_notice = None;
+        if cfg.consoles.is_empty() {
+            let profile = crate::config::ConsoleProfile { key: "console-1".into(), label: "Adapter 1".into(), device: cfg.last_device.clone(), video: cfg.last_video.clone(), video_key: cfg.last_video_key.clone() };
+            startup_notice = cfg.update(|c| { if c.consoles.is_empty() { c.consoles.push(profile.clone()); } }).err();
+            if cfg.consoles.is_empty() { cfg.consoles.push(profile); }
+        }
+        // Do not open one adapter or capture card twice, including profiles edited by hand.
+        let mut adapters = Vec::<String>::new();
+        let mut videos = Vec::<String>::new();
+        let mut keys = Vec::<String>::new();
+        let devices = kvmit_video::list_devices();
+        let profiles = cfg.consoles.clone();
+        let mut sessions = Vec::new();
+        for profile in profiles {
+            if keys.contains(&profile.key) { continue; }
+            keys.push(profile.key.clone());
+            let mut local = cfg.for_console(&profile.key);
+            if let Some(id) = &local.last_device {
+                if adapters.iter().any(|other| other.eq_ignore_ascii_case(id)) { local.last_device = None; }
+                else { adapters.push(id.clone()); }
+            }
+            let video = crate::video_state::initial_video(&devices, local.last_video_key.as_deref(), local.last_video.as_deref()).and_then(|i| devices.get(i)).filter(|d| !d.path.starts_with(kvmit_video::DEMO_PREFIX)).map(|d| d.path.clone());
+            if let Some(video) = video {
+                if videos.contains(&video) { local.last_video_key = None; local.last_video = None; }
+                else { videos.push(video); }
+            }
+            let app = App::with_config(&cc.egui_ctx, local, Some(profile.key.clone()));
+            if let Some(notice) = &startup_notice { app.set_notice(notice.clone()); }
+            sessions.push(ConsoleSession { key: profile.key, label: profile.label, app, memory: None });
+        }
+        Self { sessions, active: 0, switching: None }
+    }
+
+    fn add(&mut self, ctx: &egui::Context) {
+        let mut cfg = Config::load();
+        let key = format!("console-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        let profile = crate::config::ConsoleProfile { key: key.clone(), label: format!("Adapter {}", self.sessions.len() + 1), ..Default::default() };
+        let result = cfg.update(|c| c.consoles.push(profile.clone()));
+        let mut local = cfg.for_console(&key);
+        local.last_device = None;
+        local.last_video = None;
+        local.last_video_key = None;
+        let app = App::with_config(ctx, local, Some(key.clone()));
+        if let Err(e) = result { app.set_notice(e); }
+        self.sessions.push(ConsoleSession { key, label: profile.label, app, memory: None });
+        self.request_switch(self.sessions.len() - 1, ctx);
+    }
+
+    fn request_switch(&mut self, target: usize, ctx: &egui::Context) {
+        if target == self.active || target >= self.sessions.len() || self.switching.is_some() { return; }
+        let app = &mut self.sessions[self.active].app;
+        app.end_capture(ctx);
+        zeroize::Zeroize::zeroize(&mut app.type_text);
+        // Automated runs own their input and continue in the background. They
+        // cannot overlap manual capture; do not inject a release into a chord.
+        let running = app.run_handle.as_ref().is_some_and(|h| h.running());
+        if !running && app.device().is_some() {
+            if let Some(tx) = app.pump() {
+                let (reply, rx) = std_mpsc::channel();
+                if tx.send(Input::SwitchBarrier(reply)).is_ok() {
+                    self.switching = Some(ConsoleSwitch { target, reply: rx, started: Instant::now() });
+                    ctx.request_repaint();
+                    return;
+                }
+            }
+            // No pump means the session is ending; stop its link before switching.
+            app.stop_transport();
+        }
+        self.activate(target, ctx);
+    }
+
+    fn activate(&mut self, target: usize, ctx: &egui::Context) {
+        self.sessions[self.active].app.end_capture(ctx);
+        let theme = self.sessions[self.active].app.cfg.theme;
+        let options = ctx.memory(|memory| memory.options.clone());
+        self.sessions[self.active].memory = Some(ctx.memory(Clone::clone));
+        let mut incoming = self.sessions[target].memory.take().unwrap_or_default();
+        incoming.options = options;
+        ctx.memory_mut(|memory| *memory = incoming);
+        self.sessions[target].app.cfg.theme = theme;
+        self.active = target;
+        release_local_ui(ctx);
+    }
+
+    fn poll_switch(&mut self, ctx: &egui::Context) {
+        let Some(pending) = &self.switching else { return };
+        let result = pending.reply.try_recv();
+        let ready = !matches!(result, Err(std_mpsc::TryRecvError::Empty));
+        let expired = pending.started.elapsed() > Duration::from_secs(4);
+        if ready || expired {
+            let pending = self.switching.take().unwrap();
+            if !matches!(result, Ok(Ok(()))) {
+                let old = &mut self.sessions[self.active].app;
+                if let Some(dev) = old.device() { dev.close(); }
+                old.stop_transport();
+                old.set_notice("The outgoing input release could not be confirmed; its connection was closed.");
+            }
+            self.activate(pending.target, ctx);
+        } else { ctx.request_repaint_after(Duration::from_millis(25)); }
+    }
+
+    fn refresh_claims(&mut self) {
+        let adapters: Vec<_> = self.sessions.iter().map(|s| match &*s.app.link.lock().unwrap() {
+            Link::Connected { id, .. } | Link::Connecting(id) => Some(id.clone()),
+            Link::Failed(_) => s.app.cfg.last_device.clone(),
+            _ => None,
+        }).collect();
+        let videos: Vec<_> = self.sessions.iter().map(|s| {
+            s.app.capture.lock().unwrap().as_ref().filter(|c| !c.info.path.starts_with(kvmit_video::DEMO_PREFIX)).map(|c| c.info.path.clone())
+        }).collect();
+        let busy: Vec<_> = self.sessions.iter().map(|s| {
+            s.app.device().is_some() || s.app.link_task.as_ref().is_some_and(|task| !task.is_finished()) || matches!(&*s.app.link.lock().unwrap(), Link::Connecting(_)) || s.app.pairing.load(Ordering::SeqCst) > 0 || s.app.run_handle.as_ref().is_some_and(|h| h.running())
+        }).collect();
+        let labels: Vec<_> = self.sessions.iter().map(|s| s.label.clone()).collect();
+        for (i, session) in self.sessions.iter_mut().enumerate() {
+            session.app.unavailable_adapters = adapters.iter().enumerate().filter(|(j, _)| *j != i).filter_map(|(_, id)| id.clone()).collect();
+            session.app.unavailable_video = videos.iter().enumerate().filter(|(j, _)| *j != i).filter_map(|(_, key)| key.clone()).collect();
+            session.app.console_flash_blockers = busy.iter().enumerate().filter(|(j, busy)| *j != i && **busy).map(|(j, _)| format!("{} is using an adapter. Disconnect it and stop its run before flashing.", labels[j])).collect();
+        }
+    }
+}
+
+impl eframe::App for Console {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.poll_switch(ctx);
+        self.refresh_claims();
+        let flashing = self.sessions.iter().any(|s| s.app.flash.as_ref().is_some_and(|w| w.busy()));
+        if ctx.input(|i| i.viewport().close_requested()) {
+            if flashing {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.sessions[self.active].app.set_notice("A board is being flashed. Wait for it to finish before closing the console.");
+            } else {
+                let rt = self.sessions[self.active].app.rt.clone();
+                let mut tasks = Vec::new();
+                for session in &mut self.sessions {
+                    if let Some(run) = &session.app.run_handle { run.abort(); }
+                    session.app.end_capture(ctx);
+                    session.app.link_gen.fetch_add(1, Ordering::SeqCst);
+                    if let Some(dev) = session.app.device() { tasks.push(rt.spawn(async move { dev.shutdown().await; })); }
+                    let _ = session.app.rec.finish_for_exit(Duration::from_secs(20));
+                }
+                rt.block_on(async { let _ = tokio::time::timeout(Duration::from_secs(2), async { for task in tasks { let _ = task.await; } }).await; });
+            }
+        }
+        let mut pick = None;
+        let mut add = false;
+        let mut rename = false;
+        let mut remove = false;
+        let blocked = self.switching.is_some() || flashing || self.sessions[self.active].app.capturing;
+        let session_count = self.sessions.len();
+        egui::TopBottomPanel::top("consoles").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Consoles");
+                for (i, session) in self.sessions.iter().enumerate() {
+                    let state = match &*session.app.link.lock().unwrap() {
+                        Link::Connected { dev, .. } => { let fw = dev.info().fw; format!("connected · fw {}.{}.{}", fw[0], fw[1], fw[2]) },
+                        Link::Connecting(_) => "connecting".into(),
+                        Link::Failed(_) => "reconnecting".into(),
+                        Link::Disconnected => "disconnected".into(),
+                    };
+                    let running = session.app.run_handle.as_ref().is_some_and(|h| h.running());
+                    let waiting = session.app.run_handle.as_ref().is_some_and(|h| h.confirm.lock().unwrap().is_some());
+                    let label = format!("{} · {}{}", session.label, state, if waiting { " · needs attention" } else if running { " · running" } else { "" });
+                    if ui.add_enabled(!blocked, egui::Button::selectable(i == self.active, label)).clicked() { pick = Some(i); }
+                }
+                add = ui.add_enabled(!blocked, egui::Button::new("+ Add adapter")).clicked();
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.label("This console:");
+                let session = &mut self.sessions[self.active];
+                let response = ui.add_enabled(!blocked, egui::TextEdit::singleline(&mut session.label).desired_width(160.0));
+                rename = response.lost_focus();
+                let can_remove = !blocked && session_count > 1 && matches!(&*session.app.link.lock().unwrap(), Link::Disconnected) && session.app.link_task.as_ref().is_none_or(|task| task.is_finished()) && session.app.pairing.load(Ordering::SeqCst) == 0 && session.app.run_handle.as_ref().is_none_or(|h| !h.running()) && !session.app.rec.is_recording() && !session.app.rec.is_finishing() && session.app.flash.is_none();
+                remove = ui.add_enabled(can_remove, egui::Button::new("Remove console")).on_disabled_hover_text("Disconnect this adapter, stop its run/recording and close its flash window first").clicked();
+                if self.switching.is_some() { ui.spinner(); ui.label("Releasing input on the previous target…"); }
+                else { ui.small(format!("{} · Each console keeps its own adapter, video and workflow", crate::syskeys::RELEASE_CHORD)); }
+            });
+        });
+        if rename {
+            let session = &mut self.sessions[self.active];
+            let label = session.label.clone();
+            let key = session.key.clone();
+            session.app.cfg_update(|c| { if let Some(p) = c.consoles.iter_mut().find(|p| p.key == key) { p.label = label.clone(); } });
+        }
+        if let Some(target) = pick { self.request_switch(target, ctx); }
+        if add { self.add(ctx); }
+        if remove {
+            let old = self.active;
+            let key = self.sessions[old].key.clone();
+            self.sessions[old].app.cfg_update(|c| c.consoles.retain(|p| p.key != key));
+            self.activate(if old == 0 { 1 } else { 0 }, ctx);
+            self.sessions.remove(old);
+            if self.active > old { self.active -= 1; }
+        }
+        if self.switching.is_some() {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.spinner();
+                ui.label("Releasing input on the previous target before switching…");
+            });
+            ctx.request_repaint_after(Duration::from_millis(25));
+            return;
+        }
+        self.sessions[self.active].app.update(ctx, frame);
+        ctx.request_repaint_after(Duration::from_millis(250));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retiring_a_stuck_connection_is_bounded_and_cancels_its_task() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let task = tokio::spawn(std::future::pending::<()>());
+            let abort = task.abort_handle();
+            assert!(!retire_link_task(task, Duration::from_millis(10)).await);
+            tokio::time::timeout(Duration::from_secs(1), async { while !abort.is_finished() { tokio::task::yield_now().await; } }).await.unwrap();
+            assert!(abort.is_finished());
+            assert!(retire_link_task(tokio::spawn(async {}), Duration::from_secs(1)).await);
+        });
+    }
+
+    #[test]
+    fn pairing_repair_is_blocked_for_another_console_and_for_queued_input() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_config(&ctx, Config { script_dir: Some(std::env::temp_dir().join("kvmit-repair-fixture")), ..Default::default() }, None);
+        let supported = cfg!(any(windows, target_os = "linux"));
+        assert_eq!(app.can_repair("this-board"), supported);
+        app.unavailable_adapters.push("another-board".into());
+        assert!(!app.can_repair("ANOTHER-BOARD"));
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let pending = Arc::new(AtomicUsize::new(1));
+        app.input_tx = Some(InputTx { tx, pending: pending.clone() });
+        assert!(!app.can_repair("this-board"));
+        pending.store(0, Ordering::SeqCst);
+        assert_eq!(app.can_repair("this-board"), supported);
+        let held = PairingGuard::new(&app.pairing);
+        assert!(!app.can_repair("this-board"));
+        drop(held);
+        assert_eq!(app.can_repair("this-board"), supported);
+    }
+
+    struct MockBoard {
+        dev: Device,
+        held: Arc<AtomicUsize>,
+        fail_release: Arc<AtomicBool>,
+        hold_release: Arc<AtomicBool>,
+        release_waiting: std_mpsc::Receiver<()>,
+        allow_release: Arc<tokio::sync::Notify>,
+    }
+
+    fn mock_board(rt: &tokio::runtime::Runtime) -> MockBoard {
+        use kvmit_protocol::{decode, encode_vec, msg, FLAG_RESPONSE};
+        let (tx, mut input) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (output, rx) = mpsc::unbounded_channel();
+        let held = Arc::new(AtomicUsize::new(0));
+        let fail_release = Arc::new(AtomicBool::new(false));
+        let hold_release = Arc::new(AtomicBool::new(false));
+        let allow_release = Arc::new(tokio::sync::Notify::new());
+        let (waiting, release_waiting) = std_mpsc::channel();
+        let (keys, fail, hold, allow) = (held.clone(), fail_release.clone(), hold_release.clone(), allow_release.clone());
+        rt.spawn(async move {
+            while let Some(bytes) = input.recv().await {
+                let frame = decode(&bytes).unwrap();
+                let mut ty = frame.msg_type;
+                let payload = match ty {
+                    msg::HELLO => {
+                        let mut payload = vec![1, 0, 0, 0, 0, 0, 0, 2, 0];
+                        payload.extend([1; 16]);
+                        payload.push(4);
+                        payload.extend(b"mock");
+                        payload
+                    }
+                    msg::KEY_DOWN => { keys.fetch_add(1, Ordering::SeqCst); Vec::new() }
+                    msg::RELEASE_ALL => {
+                        if hold.swap(false, Ordering::SeqCst) { let _ = waiting.send(()); allow.notified().await; }
+                        if fail.load(Ordering::SeqCst) { ty = msg::ERROR; vec![1, msg::RELEASE_ALL] }
+                        else { keys.store(0, Ordering::SeqCst); Vec::new() }
+                    }
+                    _ => Vec::new(),
+                };
+                let _ = output.send(encode_vec(ty, FLAG_RESPONSE, frame.seq, &payload).unwrap());
+            }
+        });
+        let dev = rt.block_on(Device::connect(kvmit_ble::LinkIo { tx, rx })).unwrap();
+        MockBoard { dev, held, fail_release, hold_release, release_waiting, allow_release }
+    }
+
+    fn mock_console(ctx: &egui::Context, rt: Arc<tokio::runtime::Runtime>, boards: &[&MockBoard]) -> Console {
+        let sessions = boards.iter().enumerate().map(|(i, board)| {
+            let mut app = App::with_config(ctx, Config { script_dir: Some(std::env::temp_dir().join("kvmit-console-fixture")), ..Default::default() }, None);
+            app.rt = rt.clone();
+            *app.link.lock().unwrap() = Link::Connected { dev: board.dev.clone(), id: format!("board-{i}"), name: format!("board-{i}") };
+            ConsoleSession { key: format!("console-{i}"), label: format!("Bench {i}"), app, memory: None }
+        }).collect();
+        Console { sessions, active: 0, switching: None }
+    }
+
+    fn finish_switch(console: &mut Console, ctx: &egui::Context) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while console.switching.is_some() && Instant::now() < deadline {
+            console.poll_switch(ctx);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(console.switching.is_none(), "handoff did not finish");
+    }
+
+    #[test]
+    fn switching_waits_for_the_outgoing_release_and_routes_new_input_only_to_the_selected_board() {
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let old = mock_board(&rt);
+        let new = mock_board(&rt);
+        let ctx = egui::Context::default();
+        ctx.begin_pass(Default::default());
+        let mut console = mock_console(&ctx, rt.clone(), &[&old, &new]);
+        old.hold_release.store(true, Ordering::SeqCst);
+        let tx = console.sessions[0].app.pump().unwrap();
+        tx.send(Input::Down(kvmit_hid::parse_key("a").unwrap())).unwrap();
+        console.request_switch(1, &ctx);
+        old.release_waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        console.poll_switch(&ctx);
+        assert_eq!(console.active, 0, "must not hand over before release ACK");
+        assert_eq!(old.held.load(Ordering::SeqCst), 1);
+        assert_eq!(new.held.load(Ordering::SeqCst), 0);
+        old.allow_release.notify_one();
+        finish_switch(&mut console, &ctx);
+        assert_eq!(console.active, 1);
+        assert_eq!(old.held.load(Ordering::SeqCst), 0);
+        let incoming = console.sessions[1].app.pump().unwrap();
+        incoming.send(Input::Down(kvmit_hid::parse_key("b").unwrap())).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while incoming.pending.load(Ordering::SeqCst) != 0 && Instant::now() < deadline { std::thread::sleep(Duration::from_millis(5)); }
+        assert_eq!(new.held.load(Ordering::SeqCst), 1);
+        assert_eq!(old.held.load(Ordering::SeqCst), 0);
+        console.refresh_claims();
+        assert_eq!(console.sessions[1].app.unavailable_adapters, ["board-0"]);
+        rt.block_on(async { old.dev.shutdown().await; new.dev.shutdown().await; });
+        let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn a_failed_outgoing_release_closes_that_link_before_switching() {
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let old = mock_board(&rt);
+        let new = mock_board(&rt);
+        let ctx = egui::Context::default();
+        ctx.begin_pass(Default::default());
+        let mut console = mock_console(&ctx, rt.clone(), &[&old, &new]);
+        old.fail_release.store(true, Ordering::SeqCst);
+        console.request_switch(1, &ctx);
+        finish_switch(&mut console, &ctx);
+        assert_eq!(console.active, 1);
+        assert!(!old.dev.is_connected(), "keepalives must not preserve unknown held input");
+        assert!(new.dev.is_connected());
+        rt.block_on(new.dev.shutdown());
+        let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn a_stalled_handoff_stops_keepalives_and_widget_state_stays_with_its_console() {
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let old = mock_board(&rt);
+        let new = mock_board(&rt);
+        let ctx = egui::Context::default();
+        ctx.begin_pass(Default::default());
+        let mut console = mock_console(&ctx, rt.clone(), &[&old, &new]);
+        let field = egui::Id::new("same-widget-in-two-consoles");
+        ctx.data_mut(|d| d.insert_temp(field, 17u32));
+        old.hold_release.store(true, Ordering::SeqCst);
+        console.request_switch(1, &ctx);
+        old.release_waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        console.switching.as_mut().unwrap().started = Instant::now() - Duration::from_secs(5);
+        console.poll_switch(&ctx);
+        assert_eq!(console.active, 1);
+        assert!(!old.dev.is_connected());
+        assert_eq!(ctx.data(|d| d.get_temp::<u32>(field)), None);
+        ctx.data_mut(|d| d.insert_temp(field, 29u32));
+        console.activate(0, &ctx);
+        assert_eq!(ctx.data(|d| d.get_temp::<u32>(field)), Some(17));
+        console.activate(1, &ctx);
+        assert_eq!(ctx.data(|d| d.get_temp::<u32>(field)), Some(29));
+        old.allow_release.notify_one();
+        rt.block_on(new.dev.shutdown());
+        let _ = ctx.end_pass();
+    }
 
     #[test]
     fn a_question_is_never_published_after_abort_and_answering_never_clears_the_next_one() {

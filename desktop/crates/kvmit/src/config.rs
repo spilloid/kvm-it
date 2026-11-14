@@ -5,6 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Config {
+    /// Independent consoles: only adapter/card identities and a friendly label, never input or secrets.
+    #[serde(default)]
+    pub consoles: Vec<ConsoleProfile>,
     /// Bluetooth address of the last adapter used; reconnects automatically.
     #[serde(default)]
     pub last_device: Option<String>,
@@ -21,11 +24,57 @@ pub struct Config {
     pub theme: crate::theme::ThemeChoice,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ConsoleProfile {
+    pub key: String,
+    pub label: String,
+    #[serde(default)]
+    pub device: Option<String>,
+    #[serde(default)]
+    pub video: Option<String>,
+    #[serde(default)]
+    pub video_key: Option<String>,
+}
+
 pub fn config_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("KVMIT_CONFIG_PATH").filter(|p| !p.is_empty()) { return PathBuf::from(path); }
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("kvm-it").join("config.json")
 }
 
 impl Config {
+    pub fn for_console(&self, key: &str) -> Self {
+        let mut cfg = self.clone();
+        let profile = self.consoles.iter().find(|p| p.key == key);
+        cfg.last_device = profile.and_then(|p| p.device.clone());
+        cfg.last_video = profile.and_then(|p| p.video.clone());
+        cfg.last_video_key = profile.and_then(|p| p.video_key.clone());
+        cfg
+    }
+
+    /// Apply existing single-console setting edits within this console's profile.
+    /// Other consoles and legacy CLI defaults survive concurrent changes.
+    pub fn update_console(&mut self, key: &str, f: impl Fn(&mut Config)) -> Result<(), String> {
+        self.update_console_at(&config_path(), key, f)
+    }
+
+    fn update_console_at(&mut self, path: &Path, key: &str, f: impl Fn(&mut Config)) -> Result<(), String> {
+        let result = self.update_at(path, |c| {
+            let globals = (c.last_device.clone(), c.last_video.clone(), c.last_video_key.clone());
+            let scoped = c.for_console(key);
+            c.last_device = scoped.last_device;
+            c.last_video = scoped.last_video;
+            c.last_video_key = scoped.last_video_key;
+            f(c);
+            if let Some(p) = c.consoles.iter_mut().find(|p| p.key == key) {
+                p.device = c.last_device.clone();
+                p.video = c.last_video.clone();
+                p.video_key = c.last_video_key.clone();
+            }
+            (c.last_device, c.last_video, c.last_video_key) = globals;
+        });
+        *self = self.for_console(key);
+        result
+    }
     pub fn load() -> Config {
         Config::load_from(&config_path())
     }
@@ -170,6 +219,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn consoles_keep_their_own_assignments_during_concurrent_stale_updates() {
+        let path = temp_config("consoles");
+        let cfg = Config { last_device: Some("CLI-default".into()), consoles: vec![
+            ConsoleProfile { key: "one".into(), label: "Bench 1".into(), device: Some("AA".into()), ..Default::default() },
+            ConsoleProfile { key: "two".into(), label: "Bench 2".into(), device: Some("BB".into()), ..Default::default() },
+        ], ..Default::default() };
+        cfg.save_to(&path).unwrap();
+        std::thread::scope(|s| {
+            for (key, card) in [("one", "card-1"), ("two", "card-2")] {
+                let mut local = cfg.for_console(key);
+                let path = &path;
+                s.spawn(move || {
+                    for _ in 0..4 { retry_save(|| local.update_console_at(path, key, |c| c.last_video_key = Some(card.into()))); }
+                    assert_eq!(local.last_video_key.as_deref(), Some(card));
+                });
+            }
+        });
+        let saved = Config::load_from(&path);
+        assert_eq!(saved.last_device.as_deref(), Some("CLI-default"));
+        assert_eq!(saved.for_console("one").last_device.as_deref(), Some("AA"));
+        assert_eq!(saved.for_console("two").last_device.as_deref(), Some("BB"));
+        assert_eq!(saved.for_console("one").last_video_key.as_deref(), Some("card-1"));
+        assert_eq!(saved.for_console("two").last_video_key.as_deref(), Some("card-2"));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn the_scripts_folder_is_never_relative_to_the_working_directory_when_a_home_exists() {
         let home = PathBuf::from("/home/tech");
         assert_eq!(default_script_dir(Some(PathBuf::from("/home/tech/Dokumente")), Some(home.clone())), PathBuf::from("/home/tech/Dokumente/kvm-it/scripts"));
@@ -189,7 +265,7 @@ mod tests {
 
     #[test]
     fn round_trips_and_ignores_unknown_fields() {
-        let c = Config { last_device: Some("AA:BB".into()), last_video: None, last_video_key: Some("Cam @ usb-1".into()), script_dir: None, theme: crate::theme::ThemeChoice::Dark };
+        let c = Config { last_device: Some("AA:BB".into()), last_video: None, last_video_key: Some("Cam @ usb-1".into()), script_dir: None, theme: crate::theme::ThemeChoice::Dark, consoles: Vec::new() };
         let s = serde_json::to_string(&c).unwrap();
         assert_eq!(serde_json::from_str::<Config>(&s).unwrap(), c);
         assert!(serde_json::from_str::<Config>("{\"last_device\":\"x\",\"future\":1}").is_ok());
@@ -207,6 +283,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kvmit-cfg-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir.join("config.json")
+    }
+
+    // A bounded save can legitimately report contention while another writer is
+    // busy. Retry as a caller can; the separate held-lock test checks the bound.
+    fn retry_save(mut save: impl FnMut() -> Result<(), String>) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while let Err(error) = save() {
+            assert!(std::time::Instant::now() < deadline, "{error}");
+            assert!(error.contains("not saved"), "{error}");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -256,13 +343,13 @@ mod tests {
             s.spawn(move || {
                 let mut c = Config::default();
                 for i in 0..40 {
-                    c.update_at(p, |c| c.last_device = Some(format!("dev-{i}"))).unwrap();
+                    retry_save(|| c.update_at(p, |c| c.last_device = Some(format!("dev-{i}"))));
                 }
             });
             s.spawn(move || {
                 let mut c = Config::default();
                 for i in 0..40 {
-                    c.update_at(p, |c| c.script_dir = Some(PathBuf::from(format!("dir-{i}")))).unwrap();
+                    retry_save(|| c.update_at(p, |c| c.script_dir = Some(PathBuf::from(format!("dir-{i}")))));
                 }
             });
         });

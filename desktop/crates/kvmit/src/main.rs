@@ -33,6 +33,8 @@ enum Cmd {
     },
     /// Pair with an adapter (within 15 s of plugging it in, or after a brief BOOT press)
     Pair,
+    /// Forget this adapter's saved pairing, pair again and reconnect (press BOOT briefly first; requires --device)
+    RepairPairing,
     /// Remove the OS pairing for an adapter (also hold BOOT 10 s on the adapter to erase its side)
     Unpair,
     /// Connect and print adapter info, target-USB state and link round-trip time
@@ -66,6 +68,9 @@ enum Cmd {
         /// Serial port (default: the one adapter UART port found)
         #[arg(long)]
         port: Option<String>,
+        /// Transfer speed after connecting (try 115200 if the default 460800 times out)
+        #[arg(long)]
+        baud: Option<u32>,
         /// Flash through a USB serial port that is not a known adapter UART (the native USB port is still refused)
         #[arg(long)]
         any_port: bool,
@@ -134,7 +139,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: VideoCmd,
     },
-    /// Workflows: make your own copy of a built-in one and set its profile (deployment mode, organisation, ...)
+    /// Prerelease beta workflows: copy a built-in one and set its profile (deployment mode, organisation, ...)
     Workflow {
         #[command(subcommand)]
         cmd: WorkflowCmd,
@@ -229,8 +234,14 @@ fn real_main(cli: Cli) -> R<()> {
             }
             Ok(())
         }),
-        Cmd::Pair => rt().block_on(async {
+        command @ (Cmd::Pair | Cmd::RepairPairing) => rt().block_on(async {
+            let repair = matches!(command, Cmd::RepairPairing);
+            if repair && cli.device.is_none() { return Err("repair-pairing requires --device <adapter-id>, so only the intended board is forgotten".into()); }
             let id = session::resolve(cli.device, None).await?;
+            if repair {
+                println!("removing the saved pairing for {id}…");
+                backend::unpair(&id).await?;
+            }
             println!("pairing with {id} (the adapter must be in its pairing window: first 15 s after plug-in, or BOOT short press)…");
             backend::pair(&id).await?;
             save_settings(&cfg, |c| c.last_device = Some(id.clone()));
@@ -240,8 +251,8 @@ fn real_main(cli: Cli) -> R<()> {
             conn.disconnect().await;
             Ok(())
         }),
-        Cmd::Flash { firmware, port, any_port, erase_all, list, yes } => {
-            kvmit::flashcmd::run(kvmit::flashcmd::Args { firmware, port, any_port, erase_all, yes, list })
+        Cmd::Flash { firmware, port, baud, any_port, erase_all, list, yes } => {
+            kvmit::flashcmd::run(kvmit::flashcmd::Args { firmware, port, baud, any_port, erase_all, yes, list })
         }
         Cmd::Unpair => rt().block_on(async {
             let id = session::resolve(cli.device, cfg.last_device.clone()).await?;
@@ -713,6 +724,7 @@ struct WfRun {
 fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src: &str, a: WfRun) -> R<()> {
     use kvmit::wf_view;
     let wf = kvmit_script::Workflow::parse(src).map_err(|e| format!("{}: {e}", a.file.display()))?;
+    eprintln!("{}", wf_view::BETA_NOTICE);
     let source = wf_view::file_source(&a.file);
     let dir = cfg.script_dir();
     // Secrets first: nothing from the file (or its checkpoint) is printed until it is known not to hold a secret's

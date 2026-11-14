@@ -1,5 +1,9 @@
 # The workflow panel, section by section
 
+> **Prerelease beta (0.6).** Workflow automation has not been tested end to end on physical laptops. Password entry,
+> MFA, enrolment and the Autopilot path remain unverified. See the [provisioning guide](provisioning.md) for the exact
+> automated-test and VM evidence. Use this panel for supervised evaluation.
+
 Select a workflow in **Scripts…** and the panel below the list fills up with everything about it. That is a lot
 of sections, but most of them you set up once and then leave closed. On a normal day you touch four things:
 **This laptop**, the **sign-in and password**, **Run**, and the **Timeline**.

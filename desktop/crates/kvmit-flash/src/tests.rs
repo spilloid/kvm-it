@@ -1,5 +1,47 @@
 use super::*;
 
+#[test]
+fn flashing_errors_keep_the_underlying_cause() {
+    let cause = std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout during FlashDeflBegin");
+    let error = espflash::Error::Connection(cause.into());
+    let message = operation_error("writing the firmware failed", &error).0;
+    assert!(message.contains("writing the firmware failed"));
+    assert!(message.contains("Error while connecting to device"));
+    assert!(message.contains("timeout during FlashDeflBegin"), "{message}");
+}
+
+#[test]
+fn sparse_data_is_written_in_bounded_sector_aligned_regions_without_changing_bytes() {
+    let im = four_parts(0x110000, boot_image((4 << 20) - 17));
+    im.validate().unwrap();
+    im.check_keeps_settings().unwrap();
+    let parts = write_parts(&im);
+    assert_eq!(parts.len(), 3 + 64);
+    for (got, expected) in parts[..3].iter().zip(&im.parts[..3]) {
+        assert_eq!((got.offset, &got.data), (expected.offset, &expected.data));
+    }
+    let mut disk = Vec::new();
+    for p in &parts[3..] {
+        assert_eq!(p.offset, 0x110000 + disk.len() as u32);
+        assert_eq!(p.offset % SECTOR, 0);
+        assert!(p.data.len() <= DATA_WRITE_CHUNK);
+        disk.extend_from_slice(&p.data);
+    }
+    assert_eq!(disk, im.parts[3].data);
+}
+
+#[test]
+fn firmware_version_is_read_from_the_app_descriptor_and_unknown_is_honest() {
+    let mut data = vec![0; 80];
+    assert_eq!(app_version(&data), None);
+    data[32..36].copy_from_slice(&0xabcd5432u32.to_le_bytes());
+    data[48..53].copy_from_slice(b"0.2.1");
+    assert_eq!(app_version(&data).as_deref(), Some("0.2.1"));
+    assert_eq!(app_version(&data[..79]), None);
+    data[48] = b'\n';
+    assert_eq!(app_version(&data), None);
+}
+
 const MANIFEST: &str = r#"{
   "flash_settings": {"flash_mode":"dio","flash_size":"16MB","flash_freq":"80m"},
   "flash_files": {"0x0":"bootloader/bootloader.bin","0x10000":"kvm-it-firmware.bin","0x8000":"partition_table/partition-table.bin"},

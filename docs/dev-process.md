@@ -1366,3 +1366,167 @@ After the sign-off, Linux CI failed `concurrent_updates_lose_no_change_and_a_fai
 contention, polling `try_lock` every 10 ms lost to a writer that re-took the lock at once (starved past the 1 s bound).
 The wait is now a blocking lock (woken when it is released) on a helper thread, bounded by `recv_timeout`; a lock that
 thread takes after the caller gave up is dropped at once. A small change after round 74, to be covered by the next round.
+
+## 2026-11-13 - Windows flashing investigation and 0.6 multi-console work
+
+The installed Windows 0.5.1 GUI failed with `writing the firmware failed: Error while connecting to device`.
+The installed CLI reproduced it on COM3 after bootloader, partition table and application verification, at the start
+of the 4 MiB iPXE disk. Keeping the espflash error sources exposed `Timeout while running FlashDeflData command`.
+The same failure reproduced at 115200 baud; changing baud alone did not fix it.
+
+The shipped disk's first 16 KiB compressed block expands to 1,104,757 bytes; the next expands to 27,469 bytes.
+espflash 4.6.0 budgets the current data wait using the current block's expanded size, while the stub acknowledges
+receipt before it finishes writing. A following small block can therefore wait for a previous large write with a
+timeout too short for that previous write. Compare espflash's `target/flash_target/esp32.rs` with Espressif esptool's
+previous-block timeout handling in `esptool/cmds.py`.
+
+The local fix divides only the optional data image into sector-aligned 64 KiB regions, in one session, retaining
+per-region checksum verification. Full image validation, port/chip/native-USB checks and NVS preservation remain.
+The exact firmware bundle from the installed 0.5.1 was then written and verified on four physical boards:
+
+| Port | Patched flash result |
+|---|---|
+| COM3 | all images/regions verified; restart command succeeded |
+| COM4 | all images/regions verified; restart command succeeded |
+| COM5 | all images/regions verified; restart command succeeded |
+| COM6 | all images/regions verified; restart command succeeded |
+
+These are flash/read-back results, not claims about running firmware, target HID or Secure Boot. Bluetooth pairing
+from this execution environment failed with a WinRT error; status attempts returned `Device not found` or
+`Not connected`. A four-live-link GUI/target pass remains required. No target-facing text was sent.
+
+The user expanded 0.6 scope to named consoles for multiple adapters, visible firmware/board status and transparent
+flashing. The console keeps links, video, workflows and widget memory separate; manual input handoff waits for an
+ordered release barrier and immediately closes a client if its release cannot be confirmed. Assignments are saved
+per profile under the existing settings lock. Automated runs continue in their own consoles.
+
+An initial full workspace run passed after the first handoff tests. Later edge cases and final GUI/build checks
+are recorded below when complete. Concurrent settings tests now retry an explicitly reported bounded lock timeout;
+the separate held-lock test still requires the production save to give up within its documented bound. No production
+lock timeout was increased or bypassed.
+
+### Final validation and limits
+
+- Full native Windows workspace run: **361 tests passed, 1 ignored**, including delayed/failed/stalled input handoffs,
+  per-console widget isolation, concurrent profile saves and ambiguous camera identity. The recorder tests which need
+  ffmpeg do not exercise a real encoder here (ffmpeg is absent).
+- `cargo clippy --workspace --all-targets --offline -- -D warnings`: passed. Both 0.6.0 Windows executables built.
+- Native UI Automation: added four consoles, switched tabs, saved four profiles, opened/cancelled the pairing-repair
+  guide for an isolated remembered test ID, and checked firmware identity and all
+  three UART ports still attached (COM4–COM6). COM3 had been unplugged after its successful flash. The test uses its
+  own settings file and a synthetic target. Screen capture failed with an invalid desktop handle; no visual sign-off.
+- Final 0.6 CLI: COM6's stored application descriptor read as 0.2.0, all image regions verified and reset succeeded.
+  A subsequent UART reset/boot log confirmed firmware 0.2.0 starts TinyUSB and NimBLE, has no trusted controller, opens
+  its pairing window and advertises as `kvm-it-A432`. This is a runtime boot check for COM6, not target HID validation.
+- Windows' original explicit-address pairing returned a null WinRT device as HRESULT 0. Microsoft documents null when an
+  unpaired address is absent from the system cache ([FromBluetoothAddressAsync](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.frombluetoothaddressasync)).
+  The null persisted even after advertisement discovery. Pairing/forgetting now use exact-address association endpoints
+  directly ([Microsoft's pairing sample](https://github.com/microsoft/Windows-universal-samples/tree/main/Samples/DeviceEnumerationAndPairing)),
+  request and validate the address property, serialize Windows pairing operations and bound/cancel slow calls. GUI
+  **Repair pairing** retires the old connection, forgets that board and pairs/connects again after a brief BOOT press.
+  The CLI has the same explicit-target recovery. In this execution context the association API returned
+  `0x80070002` (file not found); its cause remains unresolved. This is reported as a Windows operation failure, never
+  as successful removal or pairing. No physical successful repair, four-live-link switching or target input is claimed.
+- Firmware source hash and all seven bundled firmware checksums passed. The local preview bundles the checkout's
+  existing firmware 0.2.1; the physical flash/runtime checks above deliberately used the installed 0.5.1 bundle's 0.2.0.
+- This remains an unsigned local preview; no installer/release was published and no commit or push was made.
+- An unrestricted-parallel test build ran out of compiler memory; the complete workspace passed with `-j 1`.
+  The GUI harness waits for each added console before invoking Add again, avoiding coalesced accessibility clicks.
+  It uses `KVMIT_START_DISCONNECTED=1` so a remembered fixture ID never initiates Bluetooth discovery.
+- Portable preview: `desktop/target/preview-v0.6.0/`, containing both executables, firmware 0.2.1, notices and checksums.
+  Windows reports both executables **NotSigned**. Source/firmware validation, native builds and strict clippy passed.
+
+### Approved public issue report
+
+After reviewing the public draft, the user explicitly approved posting it. Filed as
+[issue #60](https://github.com/spilloid/kvm-it/issues/60), without board MAC addresses. The following is the approved draft;
+the posted text clarifies that the source comparison indicates the timeout mechanism and the fix is local.
+
+Title: **0.5.1 flash times out sending sparse iPXE image; show real stages and underlying error**
+
+On Windows, the 0.5.1 GUI and CLI can fail when flashing the bundled 4 MiB iPXE disk through the CH343 COM bridge.
+The bootloader, partition table and app verify first. The outer message says only “Error while connecting to device”;
+the source error is `Timeout while running FlashDeflData command`. The failure also reproduces at 115200 baud.
+
+The disk's first compressed block expands to about 1.1 MiB, followed by about 27 KiB. espflash 4.6.0 budgets a wait
+using the current block size, although the stub acknowledges before finishing the previous write. The source comparison
+points to an insufficient previous-block wait. Writing the data image as sector-aligned 64 KiB regions in one session,
+verifying every region, fixes the reproduced failure without changing images or erasing the settings partition.
+
+The local fix wrote and verified the exact installed 0.5.1 firmware on four physical ESP32-S3/16 MiB boards, COM3–COM6.
+Running-firmware, HID and four-link GUI behavior are separate validation steps and are not claimed here.
+The feature release also adds real flash stages, elapsed time, chip/firmware identity and copyable command-level errors.
+
+Automatic approval review initially rejected posting because the specific public debugging/test payload had not been
+approved. The user then approved the draft and destination, and the issue was posted successfully.
+
+## 2026-11-14 - Maintainer hardware confirmation of the 0.6.0 preview
+
+After launching the preview on the maintainer's normal Windows desktop, the maintainer reported:
+
+> repairing worked btw, and new console, and clicking around with multiple adapters
+
+Record **hardware-verified, maintainer-reported** for the GUI pairing-repair flow, adding a console and GUI use with
+multiple physical adapters. This supersedes the earlier lack of a successful interactive-desktop repair test. The
+runner's WinRT errors remain a separate observation; their exact cause was not isolated. The initial invisible launch
+was confirmed to be on `CodexSandboxDesktop`; launching through Windows Explorer opened the preview on the normal
+desktop.
+
+The report does not specify the exact simultaneous adapter count, target-facing keyboard/mouse results, held-input
+switching, forced disconnect recovery, long-run stability or multiple concurrent workflows. Do not extend this pass
+to those cases, to the CLI repair command, or to Linux/macOS. No new code change or release publication follows from
+this confirmation; the README, changelog and platform parity evidence now reflect the reported hardware results.
+
+## 2026-11-14 - Website product pass and workflow beta release scope
+
+The maintainer approved the full website pass and explicitly approved including workflow/OCR/provisioning work as
+**prerelease beta**, without an end-to-end physical-laptop run. The former full-laptop workflow ship gate now governs
+graduation from beta, not the 0.6 release. Independent review, CI, packaging/signing, installation checks and the
+shared-client Linux hardware check are still required. No release was published by this change.
+
+- Added the workflow beta notice before workflow credentials/run controls in the GUI and before workflow prompts in
+  the CLI. The setup, provisioning and workflow-panel guides, README, roadmap, release checklist and changelog use the
+  same evidence limit: automated tests and partial Windows VM coverage; no end-to-end physical-laptop verification;
+  password entry, MFA, enrolment and Autopilot remain unverified.
+- Rebuilt the homepage around one console with several nearby targets, keeping the existing logo and GitHub Pages
+  hosting. Added current screenshots, explicit wiring (BLE control / USB HID / HDMI capture), recovery guidance,
+  platform-specific download requirements, native keyboard-operated FAQs and shared documentation navigation/styles.
+- Downloads use the existing build-time GitHub release metadata and now exclude whole-release prereleases from the
+  primary stable downloads. The preview/version copy changes with that metadata. GitHub's release API was checked:
+  0.5.1 remained the latest stable release with an MSI, ZIP, AppImage and Apple-silicon DMG. No 0.6 asset was invented.
+- Captured a separate 0.6 GUI instance with isolated settings, an invalid remembered adapter ID and synthetic target
+  video. Four disconnected consoles, switching, saved profiles, the repair guide and three COM ports passed the
+  built-in Windows UI Automation smoke pass. No board was flashed or paired and no target input was sent. The public
+  screenshots crop the native window border and redact USB serials. The maintainer's active preview was left alone.
+- A bounded read-only content audit found stale automatic-pairing-window advice, an unqualified workflow handoff
+  claim and a roadmap item still saying the multi-device UI was unbuilt. All were corrected. Firmware 0.2.0 and the
+  unverified 0.2.1 pairing-window change are distinguished; setup recommends unplugging COM before powering from the
+  target rather than endorsing unverified dual-host power.
+- Local preview: LiquidJS templates with the real release metadata, plus rendered Markdown guide previews. This
+  checked the homepage's Jekyll/Liquid expressions and the shared layout; it is **not an exact Jekyll build**. Ruby,
+  containers and WSL were unavailable here. The production GitHub Pages build remains a publication check.
+- Browser verification used the installed Chrome through Playwright Core. Homepage widths 320, 390, 768 and 1440 px,
+  light/dark variants, published/0.6/missing-metadata cases, images, local links/anchors, download destinations,
+  keyboard FAQs and the skip link passed. No page errors, missing assets or horizontal document overflow were found.
+  Axe reported no WCAG 2 A/AA or 2.1 AA violations in the six homepage scenarios.
+- The setup, hardware, provisioning, workflow-panel and roadmap previews passed the same axe checks on mobile in
+  both themes after fixing keyboard focus for overflowing examples and labels on generated checklist boxes.
+  Keyboard arrow scrolling of a focused code example and the current-page navigation marker were exercised.
+  Reports and reviewed screenshots are under `desktop/target/site-qa/` (ignored local QA artifacts).
+- Native `cargo test --workspace --offline -j 1` and strict
+  `cargo clippy --workspace --all-targets --offline -j 1 -- -D warnings` passed. Both site scripts passed Node syntax
+  checks and `git diff --check` passed. This pass did not install an MSI, update the running preview, commit/push,
+  replace the required independent-model release review or publish the public site.
+
+## 2026-11-14 - Documentation-only main publication
+
+The maintainer explicitly requested publishing the documentation and website directly to `main` and verifying the
+live result. The candidate was prepared on a fresh checkout of current remote `main`, separate from the dirty
+0.6 feature workspace. Only documentation, site assets and the existing Pages workflow are included; application
+code, package versions, firmware and release artifacts are unchanged. The site labels 0.6 as a preview and uses
+stable published assets for its download buttons. Full board MAC addresses were removed from the new public
+investigation notes; the flash screenshot's USB serials are redacted.
+
+The prior local browser/accessibility checks cover this design. Publication still requires the real GitHub Pages
+Jekyll build and deployment to succeed, followed by live HTTP, rendered-page, asset and download-link checks. This
+website publication does not publish the 0.6 application or complete its release checklist.

@@ -255,6 +255,11 @@ impl Device {
     pub fn is_connected(&self) -> bool {
         !self.inner.closed.load(Ordering::SeqCst)
     }
+    /// Stop requests and keepalives immediately when a release cannot be confirmed.
+    /// The transport owner observes `closed()` and disconnects the radio link.
+    pub fn close(&self) {
+        self.inner.close();
+    }
     /// Resolves when the link is lost or closed.
     pub async fn closed(&self) {
         let mut rx = self.closed_rx.clone();
