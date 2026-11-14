@@ -10,7 +10,7 @@ struct ConfigWaiter;
 
 impl ConfigWaiter {
     fn acquire() -> Option<Self> {
-        CONFIG_WAITERS.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+        CONFIG_WAITERS.try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
             (count < MAX_CONFIG_WAITERS).then_some(count + 1)
         }).ok().map(|_| Self)
     }
