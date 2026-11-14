@@ -5,6 +5,8 @@ The goal is one kvm-it: the same flows, the same words and the same safety on ev
 the contract working or a gap, and how we know. It is a living page: update the row, and its evidence, whenever platform code
 changes. First written in the cross-platform audit of 2026-10-19 (review round 36 in [dev-process.md](dev-process.md)).
 
+> **Version note:** entries marked 0.6 describe the unreleased preview, not the published 0.5.1 app. Their hardware evidence is limited to the specific maintainer reports named in each row.
+
 ## Evidence key
 
 Labels are as strict as the README's. Nothing below is upgraded because it "should" work.
@@ -56,8 +58,10 @@ visible to CI.
 |---|---|---|---|---|---|
 | Scan | WinRT via btleplug, up to 15 s (stops ~1 s after the first hit) | BlueZ discovery, 5 s | CoreBluetooth via btleplug, up to 15 s | ✅ | Win: hw 10-08; Linux: hw Linux; mac: hw 10-08 |
 | Adapter id (`--device`) | Bluetooth address | Bluetooth address | CoreBluetooth UUID, **different on every Mac** | ⚠️ the multi-adapter examples show addresses only | static (`backend.rs`) |
-| Pair | WinRT custom pairing, no system dialog | BlueZ agent, no dialog | Pairs on first encrypted write; macOS may show its own prompt | ✅ physical pairing window on all | Win: VM + hw 10-08; Linux: hw Linux; mac: hw 10-08 |
+| Pair | WinRT association-endpoint custom pairing (0.6) | BlueZ agent, no dialog | Pairs on first encrypted write; macOS may show its own prompt | ✅ physical pairing window on all | Win: maintainer-reported repair success 2026-11-14; earlier VM + hw 10-08; Linux: hw Linux; mac: hw 10-08 |
 | Unpair / forget | `kvmit unpair` | `kvmit unpair` | Not possible from an app: the error says to use *System Settings > Bluetooth* | ⚠️ OS limitation, explained | static |
+| Repair pairing (0.6) | GUI **Repair pairing**; exact-address forget, pair and reconnect; `kvmit repair-pairing --device` | Same GUI/CLI flow through BlueZ | Forget step still needs System Settings | ⚠️ macOS limitation | Win GUI: hardware-verified, maintainer-reported 2026-11-14; Linux flow and Windows CLI repair not hardware-verified in this pass |
+| Multiple consoles (0.6) | Named sessions with separate links, video and runs | Same GUI code | Same GUI code | ✅ implemented; platform hardware coverage differs | Win: maintainer-reported adding a console and GUI use with multiple adapters, 2026-11-14; exact count and failure-case handoffs not reported; Linux/mac: not run |
 | "Bluetooth is off / blocked / missing" | Off, no adapter | rfkill soft/hard, no adapter, no `bluetoothd` | Off, no adapter | ✅ plain language on all | Win: no-adapter case run on hardware (0.4.8); Linux, mac: test (CI) only |
 | Short connection interval for smooth mouse | Requested (Windows 11 API) | OS default | OS default | ⚠️ pointer smoothness on Linux/macOS is unmeasured | Win: VM-verified; others: static |
 | Permission prompt | none | none (BlueZ over D-Bus) | Bluetooth (`NSBluetoothAlwaysUsageDescription`) | ✅ | mac: hw 10-08 |

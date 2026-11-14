@@ -72,10 +72,27 @@ Cargo workspace with one crate per concern so no layer reaches into another:
 
 (Config, app state and UI live in the single `kvmit` crate for now; split them if a second front end appears.)
 
-Several adapters at once (multi-probe, on the roadmap after 1.0): the script engine (`run` over a `Host`), the BLE `Device` and
-`Capture` are all per instance, with no globals, so independent runs need only one host each. The CLI does this today
-(one `kvmit run --device … --video …` process per adapter). The GUI does not yet: its `App` holds a single link,
-capture and run, and becomes a list of per-probe sessions when multi-probe lands.
+Several adapters at once (0.6 preview, not yet released): the GUI's `Console` owns named sessions, each with its own `App`, BLE link, input pump,
+capture card and workflow/run state. Only the selected session receives local input. Switching queues a release barrier
+after outgoing manual input and waits for its acknowledgement; an error or bounded handoff timeout closes the outgoing
+client and stops its keepalives. Automated runs continue in their own sessions. Widget memory stays per session, so
+popups, focused text boxes and undo history cannot migrate to another target.
+
+Adapter IDs and capture paths in use by another session cannot be selected. Startup rejects duplicate adapter/card
+assignments; an ambiguous remembered capture-card identity opens no card. Profiles save only labels and adapter/card
+identities under the settings lock. `KVMIT_CONFIG_PATH` chooses an isolated settings file for testing or a separate bench.
+The CLI still supports one explicit `kvmit run --device … --video …` process per adapter.
+
+The flasher keeps all images in one session. Its optional disk image is divided into sector-aligned 64 KiB regions,
+with each region verified, to bound the work behind a compressed-block acknowledgement. Structured stages cover
+validation, connection, chip identity, settings checks, stored application version, writes and restart. Verified flash
+and a running-firmware check over Bluetooth are separate outcomes.
+
+Windows pairing/forgetting enumerate **AssociationEndpoint** records by the exact BLE address, using the Windows
+Device Enumeration and Pairing API. The address property is requested and checked again before removing a record.
+Repair does not need a live `BluetoothLEDevice` GATT handle, so it can address missing/stale link state. Windows
+pairing operations are serialized per process, have time limits and request cancellation on timeout. GUI repair
+retires the previous connection task before removing the bond. Physical BOOT authorization remains on the board.
 
 ### UI framework — chosen: egui/eframe
 

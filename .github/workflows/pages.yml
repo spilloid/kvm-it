@@ -1,5 +1,5 @@
 name: docs
-# Builds the site from docs/. The download buttons point at the newest published release that carries the Windows
+# Builds the site from docs/. The download buttons point at the newest stable published release that carries the Windows
 # installer: its assets are looked up at build time (docs/_data/release.json, generated, never committed), and the
 # site rebuilds whenever a release's asset workflows finish, so the buttons follow each release with no manual edit.
 on:
@@ -35,7 +35,7 @@ jobs:
           mkdir -p docs/_data
           gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" > releases.json
           jq '
-            [ .[] | select(.draft | not) | select(any(.assets[]; .name | endswith("-windows-x64.msi"))) ][0]
+            [ .[] | select(.draft | not) | select(.prerelease | not) | select(any(.assets[]; .name | endswith("-windows-x64.msi"))) ][0]
             | if . == null then {} else
               (.assets | map({key: .name, value: .browser_download_url}) | from_entries) as $a
               | def pick(suffix): ($a | to_entries | map(select(.key | endswith(suffix))) | .[0].value // null);

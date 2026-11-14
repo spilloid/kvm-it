@@ -2,13 +2,13 @@
 
 # kvm-it
 
-**A KVM for the machine that has nothing on it yet.**
+**One console. A whole bench of machines.**
 
 See it. Type at it. Install it. No software on the target, no network, no hundred-dollar IP-KVM: an ESP32-S3 dev board (~$10), a cheap
 HDMI capture card, and one app.
 
-<p align="center"><img src="docs/assets/screenshots/tour-overview.png" alt="The kvm-it window: Adapter, Target USB, Video and Capture chips and the Keys, Type and Scripts buttons over a live picture of the target (a synthetic demo)" width="820"></p>
-<p align="center"><sub>The real app (0.4.0, Windows 11). The picture is a synthetic demo target, never a real machine.</sub></p>
+<p align="center"><img src="docs/assets/screenshots/console-06.png" alt="The kvm-it 0.6 preview with four disconnected console tabs and synthetic demo video" width="820"></p>
+<p align="center"><sub>The real 0.6 preview on Windows 11. Disconnected demo consoles; the target picture is synthetic. Downloads remain the published release until 0.6 ships.</sub></p>
 
 ## Three steps
 
@@ -17,13 +17,14 @@ HDMI capture card, and one app.
    `.AppImage` for **Linux**. Double-click or `chmod +x`. That is the whole "dev environment": **no Rust, no Docker, no drivers, no DLLs to hunt down.**
 3. **Plug in.** In the app: **Adapter > Flash adapter…** (one click; the firmware is inside the app), pair once, and drive.
 
-<p align="center"><img src="docs/assets/screenshots/tour-flash.png" alt="The Flash adapter window: the firmware ships with the app, your board's COM port is picked for you, one click flashes it" width="700"></p>
+<p align="center"><img src="docs/assets/screenshots/flash-06.png" alt="The 0.6 Flash adapters window: bundled firmware, COM ports, transfer speed and pairing-preserving defaults" width="700"></p>
 
 ## What you get
 
 - **See and drive the target in one window.** Click the picture and your keyboard and mouse belong to the target; **Ctrl+Alt+Esc** (**Ctrl+Option+Esc** on a Mac) gives
   them back (that chord is never sent). It works from the BIOS splash onward: if the target takes a USB keyboard, kvm-it can drive it.
 - **The keys your PC would swallow.** One-click Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more; on Windows, and on macOS once kvm-it is allowed under *Privacy & Security > Accessibility*, the rest go to the target too while captured (Linux, or a Mac without that permission: use the Keys button for them).
+- **Several adapters in one console (0.6 preview).** Named tabs keep independent Bluetooth links, capture cards and runs. The Adapter popup shows running firmware and board status, with pairing repair on Windows and Linux.
 - **Zero-step reconnect.** Pair once. Move the cables to the next machine and the app reconnects by itself.
 - **Replayable setup scripts.** Native TOML or imported DuckyScript: text, keys, chords, delays, and *wait-for-the-screen* steps, so one slow
   install screen does not wreck everything after it. Preview and dry-run before anything is typed; abort leaves nothing held down.
@@ -45,12 +46,26 @@ Everything the app does is also on the command line:
 `kvmit scan | status | type "text" | key ctrl alt delete | run script.toml [--dry-run] | import payload.txt | flash`.
 
 **[Full walkthrough on the docs site](https://spilloid.github.io/kvm-it/)** or [docs/getting-started.md](docs/getting-started.md).
-Provisioning laptops: [docs/provisioning.md](docs/provisioning.md). Read
+Provisioning laptops: [docs/provisioning.md](docs/provisioning.md), and the app's workflow panel section by section:
+[docs/workflow-panel.md](docs/workflow-panel.md). Read
 the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what the LED and BOOT button mean.
 
 **Hacking on it?** Building from source (that is where Rust and Docker live): [docs/developing.md](docs/developing.md).
 
+<a id="verification"></a>
+
 ## Status: v0.5.1
+
+The source checkout is preparing **0.6.0**: named consoles for several adapters in one window, visible running firmware
+and board status, and flashing with real stages and diagnostics. The sparse boot-drive flash timeout was reproduced
+with the installed Windows 0.5.1 and fixed locally; the same installed firmware then wrote and verified on four
+physical boards. On 2026-11-14 the maintainer confirmed pairing repair, adding a console and using the GUI with multiple
+physical adapters on Windows. The exact simultaneous adapter count and failure-case input handoffs were not reported.
+See the [0.6 console instructions](docs/getting-started.md#several-targets-in-one-console-06).
+
+**Workflow automation is prerelease beta in 0.6.** OCR and provisioning have automated tests and partial Windows VM
+coverage, but have not been tested end to end on physical laptops. Password entry, MFA, enrolment and the Autopilot
+path remain unverified. This beta is for supervised evaluation; see the [evidence and guide](docs/provisioning.md).
 
 Labels are strict: **built** = compiles; **host-tested** = automated tests pass in CI/containers;
 **hardware-verified** = run on a physical board; **VM-verified** = run in a Windows 11 virtual machine on a Linux
@@ -59,6 +74,7 @@ not bare-metal Windows).
 
 | Area | State |
 |---|---|
+| Desktop 0.6 preview: in-app pairing repair, adding consoles and GUI use with multiple adapters | **hardware-verified, maintainer-reported** on Windows (2026-11-14). Exact simultaneous adapter count, held-input switching and forced link-failure recovery were not reported; those handoff cases remain host-tested |
 | Firmware: USB keyboard + mouse (boot HID) | **hardware-verified** (enumeration via `lsusb`; self-test typed) |
 | Firmware: protocol dispatcher, dedup, keepalive, LED language, BOOT gestures | host-tested |
 | Firmware: BLE (bonding, pairing window, GATT), BOOT GPIO | **hardware-verified** (BOOT opens the window; LE SC bond; HELLO/STATUS over GATT; bonded reconnect) |
@@ -80,6 +96,10 @@ not bare-metal Windows).
 | Stateful workflows (engine, app panel, `kvmit run`, saved checkpoints, reference screens) | **host-tested** against simulated targets; **VM-verified** on the first four Windows 11 25H2 setup screens (Proxmox VM, QEMU harness). The app's workflow panel was looked at on screen on Windows 11 (demo video, no adapter): setup form, reference list, secrets; not yet during a live run. No capture card or adapter has run a workflow |
 | Setting up a workflow without a text editor (app: Set up your copy, Save profile; `kvmit workflow new/set/show`) | **host-tested**; run in the app and the CLI on Windows 11 (2026-11-06): a copy written with the chosen values only, comments kept, a profile change saved in place |
 | Built-in Windows 11 provisioning workflow (Autopilot or Microsoft Entra join with a work account) | **template**: the work-account path **VM-verified** from the region screen to the work-or-school sign-in page (25H2, driven end to end by the workflow, 2026-11-04); both paths simulated end to end (host-tested); signing in, MFA, enrolment, the tenant check and Autopilot **not verified** |
+| Screens recognised by reading their text (unreleased, 0.6.0: Windows OCR, Apple Vision, Tesseract on Linux) | **host-tested** (real Windows OCR output of nine setup screens as fixtures); **VM-verified** with Windows OCR: the work-account path from the region screen to the work-or-school sign-in page by text alone, through updates and a restart (Windows 11 25H2, 2026-11-07). Apple Vision and Tesseract: **built**, not yet run against setup screens |
+| Sign-in read back before Enter, organisation check by reading the password page (unreleased, 0.6.0) | **host-tested**; **VM-verified**: a typed sign-in read back exactly, and the stop with Caps Lock on. The account check on a real password page **not verified** |
+| Named laptops, a record of every live run, recovering a run cut short (unreleased, 0.6.0) | **host-tested** (including each crash point while a run finishes); the laptop field looked at in the app; not yet through a crash on a real run |
+| Firmware 0.2.1: no pairing window at power-on once paired (unreleased) | **built** in the pinned ESP-IDF container and bundled; **not yet run on a board** |
 | macOS as the controller (Apple silicon; AVFoundation capture, CoreBluetooth link and pairing, Quartz keyboard grab, flasher, recording) | **hardware-verified** on a real Mac (0.4.6, 2026-10-08, maintainer): an adapter and a live picture from an HDMI capture card, every button in the app's menu clicked through, and two boards reflashed from the Mac and working afterwards. **Not exercised:** recording with sound, the YUYV colour and capture-card-unplug cases, wheel/touchpad on a target (issues #31-#34), ISO Apple keyboards. Shipped as `kvm-it-X.Y.Z-macos-arm64.dmg` (named `-preview` up to 0.4.6); ad-hoc signed, not notarized: macOS asks you to allow it |
 | Session recording (GIF / WebM through `ffmpeg`, sound opt-in) | **host-tested** only (v0.4.4: unit tests plus the encoder against a real ffmpeg on synthetic frames); **not run with a real capture card, the capture card's audio, or the GUI button on hardware** |
 

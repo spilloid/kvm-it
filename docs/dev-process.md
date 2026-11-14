@@ -1243,9 +1243,290 @@ provisioning guide: no defect. Open, for the next release:
 
 | # | Sev | Finding | Verdict and fix |
 |---|---|---|---|
-| 1 | Medium | Only a yes/no reaches the run, not the states accepted: a picture removed between the app's check and the run's probe is accepted too, dropping a stop nobody approved | **Open.** Pass the accepted states; refuse unless the run's missing set is within them. |
-| 2 | Medium | Windows path aliases (`pics.` and `pics`) pass the tenant-picture collision check, so a renamed tenant can overwrite a state's picture | **Open.** Refuse trailing-dot/space components; regression test. |
-| 3 | Medium | Save profile replaces the file with default permissions (a `0600` file becomes `0644` on Linux/macOS) | **Open.** Copy the original permissions to the temp file before the rename; fail if that fails. |
+| 1 | Medium | Only a yes/no reaches the run, not the states accepted: a picture removed between the app's check and the run's probe is accepted too, dropping a stop nobody approved | **Fixed** (0.6 branch): `WorkflowOptions::allow_missing_only`; refused otherwise. Test. |
+| 2 | Medium | Windows path aliases (`pics.` and `pics`) pass the tenant-picture collision check, so a renamed tenant can overwrite a state's picture | **Fixed** (0.6 branch): such names refused; the rename compares names as Windows does. Tests. |
+| 3 | Medium | Save profile replaces the file with default permissions (a `0600` file becomes `0644` on Linux/macOS) | **Fixed** (0.6 branch): permissions copied before the rename, temp created owner-only. Test (Unix). |
 
 The same day astra ran a general project review: [reviews/2026-11-07-astra-general.md](reviews/2026-11-07-astra-general.md)
 (26 findings, 6 owner decisions).
+
+## 2026-11-07 - 0.6 text recognition (`main...3226271`): review round 68 (Codex `gpt-6-astra`)
+
+Read-only, over the first three 0.6 commits: screens recognised by text (Windows OCR, Vision, Tesseract), the tenant
+check reading the password page, and the typed sign-in read back before Enter. **NO SIGN-OFF**: 8 High, 2 Medium; all
+confirmed, all fixed in `c9bcb56` and `1072f25`.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | The account check fuzzy-matched: `alexander.smith@contoso.com` passed for `contoso.co` (0.96), so another organisation's password page could get the password | **Confirmed.** Whole addresses are extracted (`accounts_shown`, address punctuation kept) and compared exactly. Test. |
+| 2 | High | A sign-in ending in a newline passed the trimmed domain check, then was typed untrimmed: the newline is Enter, before any read-back | **Confirmed.** `account_in`: printable ASCII, one `@`, a name, the domain equal; checked on the value as typed. Test. |
+| 3 | High | The read-back accepted more than was typed (`...com.evil`, a second copy), a different case, and a label elsewhere on screen | **Confirmed.** A whole line must equal the value exactly, case and all; no edit tolerance (an uncertain read is a refusal and another look). Tests. |
+| 4 | High | The read-back ignored frame time and the latency window, and submit followed a separate look that did not re-check the value | **Confirmed.** The read-back runs on `still_on`'s settled look and that frame; submit follows directly. |
+| 5 | High | Where text cannot be read, the sign-in was sent unchecked, and the tenant check fell back to pictures | **Confirmed.** A live run of a workflow that checks the sign-in by reading does not start there; `TypedNotChecked` removed. Tests. |
+| 6 | High | OCR calls were unbounded, and a slow read of an older frame could approve the password | **Confirmed.** Every read bounded (4 s; Tesseract killed); a check refuses evidence older than `evidence_age` (3 s). |
+| 7 | High | Detect phrases, `submit` and `verify_typed` were not in the secret scan; observation references were published unscrubbed | **Confirmed.** Scanned; references scrubbed. Test. |
+| 8 | High | Vision copied `width * height` bytes from a frame whose public fields could disagree (undefined behaviour from safe code) | **Confirmed.** `read_text` refuses a mismatched frame; Vision copies bounds-checked rows. Test. |
+| 9 | Medium | Hyphenated domains never matched (prose normalisation split them) | **Confirmed.** Fixed by #1. Test. |
+| 10 | Medium | The text-reader probe error was published unscrubbed | **Confirmed.** Scrubbed (and the event removed with #5). |
+
+Also found while VM-verifying the fixes: Windows OCR drops the letter under the text cursor, so the built-in workflow
+presses Home after typing the sign-in; text failures now have their own error (`WorkflowError::Text`).
+
+## 2026-11-07 - Round-68 fixes (`c9bcb56`, `1072f25`): review round 69 (Claude Opus 5.5, standing in for Codex)
+
+**STD-001 deviation:** Codex `gpt-6-astra` hit its usage limit mid-round (reset 1:44 PM); Opus stood in (operator
+standing permission, logged per the rule). A cross-model round over the 0.6 branch is owed when Codex is back.
+Read-only plus probe crates. All ten round-68 fixes verified (fix 5 with the gap in finding 1). **NO SIGN-OFF**:
+2 Medium, 7 Low; all confirmed, all fixed in the next commit.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Medium | A workflow recognising screens by picture with a sign-in domain never probed the reader: it typed the sign-in, then failed at the password page | **Confirmed** (probe). Probed whenever the tenant check reads the page. Test. |
+| 2 | Medium | `evidence_age` held only for the account and read-back checks: a 3.5 s classify read let the user name be typed after the screen moved on | **Confirmed** (probe). `still_on` refuses an old settling frame before every burst. Test. |
+| 3 | Low | The read-back searched the whole screen: a label elsewhere could stand in for the field | **Confirmed.** Checks read only the state's region. |
+| 4 | Low | The comment said a late success does not count; the code accepts it (freshness is bounded per frame) | **Confirmed.** Comment fixed. |
+| 5 | Low | Doubling frames up to 4000 px could exceed older Windows OCR's 2600 px limit and block every sign-in | **Confirmed.** The region is enlarged only within 2600 px. |
+| 6 | Low | The control-character guard covered only the account: another read-back value could type Enter or Tab first | **Confirmed.** Any read-back value with one is refused at start. Test. |
+| 7 | Low | `evidence_age` unbounded; a frame without a capture time was aged by the read alone | **Confirmed.** Bounded to 30 s; a live check needs the capture time. Test. |
+| 8 | Low | No test of the age refusal; the template sim passed with or without Home and ignored navigation keys | **Confirmed.** Tests; the sim hides the last letter until Home and records navigation keys. |
+| 9 | Low | Tesseract's stderr drained only after exit: a full pipe looked like "too slow" | **Confirmed.** Drained on its own thread. |
+
+## 2026-11-09 - 0.6 branch since round 68 (`3226271..efa6545`): review round 70 (Codex `gpt-6-astra`)
+
+The Codex round owed after round 69's stand-in. Read-only, over everything since round 68: the round-68/69 fixes,
+first-use choices, round-67 fixes, laptop names and run records, the run journal and Recover, firmware 0.2.1 and its
+rebuilt bundle. **NO SIGN-OFF**: 7 High, 2 Medium; all confirmed, all fixed in the next commit. Round-68/69 fixes,
+first-use gates, the round-67 changes and laptop file naming held; the firmware gate distinguishes bonded and fresh
+adapters, and the rebuilt bundle's source hash and checksums match (pairing not exercised on hardware).
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | The account check trimmed and split words: `other!jane@contoso.com` or `-jane@contoso.com` passed as `jane@contoso.com` | **Confirmed.** An address must be a whole word made only of address characters (only a sentence's full stop is dropped); the entered sign-in must be one by the same rule. Tests through the password path. |
+| 2 | High | The journal was written (and synced) from the trace sink after the last look and before the keys, and after the read-back before Enter: a slow disk reopened the stale-screen window | **Confirmed.** The engine records send intent through `Host::persist` *before* the last look; the sink journals nothing. Right before any keys, the evidence age is checked again, so nothing after the check (sink, journal, reader) can let the screen move on unseen. Test that stalls the sink fails without it. |
+| 3 | High | Recover removed any lock without knowing its owner: it could pull the slot from under a live run, and two recoverers could race | **Confirmed.** A live run holds an OS lock on the (now permanent) lock file for its lifetime; run state is a `.running` marker made and removed only under that lock. Recover takes the same lock, so it is refused while a run is going and serialised with other recoverers and new runs. Tests. |
+| 4 | High | A same-state resume journalled `attempted = 0` before restoring the checkpoint's count: crash at "Send them again?", recover, and the next resume sent unasked | **Confirmed.** `enter` takes the visit's carried-over count and wait and records them before announcing the state. Test. |
+| 5 | High | Journal write failures were ignored, so keys could go out with an older record on disk | **Confirmed.** A failed record stops the run before the keys (`WorkflowError::Journal`). Without a journal, a run sent nothing, so Recover may put the set-aside checkpoint back. Test. |
+| 6 | High | Finishing deleted the journal before saving the final checkpoint or removing `.claimed`: a crash in between recovered an obsolete checkpoint | **Confirmed.** The final state goes into the journal first (a completed run's marked `ended`), the set-aside checkpoint is removed before the journal becomes the checkpoint, and the marker goes last; a failed step leaves the run to Recover. Recover goes by the journal, and never puts an older checkpoint over a newer one. Tests of each crash point. |
+| 7 | High | The run record's header repeated a workflow name the refusal said holds the password | **Confirmed.** The whole record withholds it. Test from a real engine refusal. |
+| 8 | Medium | The laptop's name was never checked against the secrets, though it is saved and names files | **Confirmed.** A name containing a secret's value is refused before anything (`SecretInName`, the value never echoed) and withheld from the record. Tests. |
+| 9 | Medium | A manual step's wait was never journalled: a crash while the operator did it resumed without its transition | **Confirmed.** The wait is recorded before the step is handed over. Test. |
+
+Also: a lock file left by 0.5 (empty, no journal) is recovered the same way, warning that keys it sent were not
+recorded.
+
+## 2026-11-09 - Round-70 fixes (`48302a7`): review round 71 (Claude Opus 5.5, standing in for Codex)
+
+**STD-001 deviation:** Codex `gpt-6-astra` hit its usage limit again (reset 4:21 AM); Opus stood in (operator
+standing permission, logged per the rule). A Codex round over these fixes is owed. Read-only, tests and probes on a
+clean `git archive` of `48302a7`. Eight of round 70's nine fixes held (#8 only in part: finding 1). **NO SIGN-OFF**:
+2 Medium, 3 Low; all confirmed, all fixed in the next commit.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Medium | With the password in both the workflow's name and the laptop's, the refusal was `SecretInFile` (checked first) and the run record kept the laptop's name, in its header and file names | **Confirmed** (probe). Any refusal over a secret withholds the laptop's name too. Test with both at once. |
+| 2 | Medium | Journal records were renamed into place without making the rename durable: a power cut right after the keys could lose the "sent" record, and Recover then Resume could re-send without asking | **Confirmed.** Renames are written through (`MoveFileExW` with `MOVEFILE_WRITE_THROUGH` on Windows; the folder is synced elsewhere), and creating or removing the run's files syncs their folder. Not testable by a crash here: by construction. |
+| 3 | Low | `ActionAttempted` ("Sent N steps") was emitted before the last look, so a look that refused (another tenant's page) left a trace saying the Enter went there | **Confirmed** (probe). The progress record stays before the look; the trace event follows the keys (also when a burst is cut short). Test. |
+| 4 | Low | A crash after the final checkpoint was saved but before the run's marker went made Recover say "recorded nothing"; the test built a state no real crash produces | **Confirmed.** Its own message ("had saved its checkpoint, which is kept"); tested by a real `keep_checkpoint` then the marker put back. |
+| 5 | Low | The lock file was created empty and written after locking: losing that race left an empty file, read ever after as 0.5's crash | **Confirmed** (probe). The lock file is written whole under a private name and hard-linked into place, so it never exists empty. Test. |
+
+## 2026-11-09 - Round-71 fixes, Screen wording, general-review #14-#24 (`48302a7..8b29dcd`): review round 72 (Codex `gpt-6-astra`)
+
+The Codex round owed after round 71's stand-in. Read-only. Round 71's five fixes held; firmware 0.2.1's bundle and the
+licence listing check out. **NO SIGN-OFF**: 1 High, 6 Medium; all confirmed, all fixed in the next commit.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | High | The action deadline was checked only between characters: a slow Shift could be followed by its character, a chord's later keys still went, and a final press that overran returned success | **Confirmed.** Every key-down and button-down checks the deadline first (releases never wait), and an operation that pressed something checks again after it. Tests: expiry after Shift, between chord keys, on a last key. |
+| 2 | Medium | Screen wording could save the sign-in (read off the screen and clicked) into the file as a phrase | **Confirmed.** `wf_view::save_wording` refuses a phrase holding any secret entered for the workflow, without repeating it. Test. |
+| 3 | Medium | The editor joined and split phrases on `+`, so an unchanged `"Terms + conditions"` was saved as two phrases | **Confirmed.** Wordings are edited as lists of phrases (a field each, "and" between); nothing is split. Test. |
+| 4 | Medium | Missing frames did not reset `stable_for`: one frame after a gap could complete it | **Confirmed.** A missing, stale or repeated frame clears the baseline and the count. Test with a gap (passes at look 11, not 8). |
+| 5 | Medium | A match arriving after the wait's timeout (a slow capture) still counted | **Confirmed.** The timeout is checked before each look and before its result is accepted. Test. |
+| 6 | Medium | The settings lock could block the GUI thread indefinitely | **Confirmed.** Bounded to 1 s, then "not saved" with the change kept in memory. Test with a held lock. |
+| 7 | Medium | A lock file that could not be opened fell back to an unlocked write | **Confirmed.** Refused instead; the change is kept in memory. Test. |
+
+## 2026-11-09 - Round-72 fixes (`9f5ddfe`): review round 73 (Codex `gpt-6-astra`)
+
+Read-only re-review. Round 72's fixes 1, 6 and 7 held; 2, 4 and 5 in part. **NO SIGN-OFF**: 2 Medium, 1 Low; all
+confirmed, all fixed in the next commit.
+
+| # | Sev | Finding | Verdict and fix |
+|---|---|---|---|
+| 1 | Medium | A repeated frame reset the count but kept the baseline: frames 1, 1, 2 passed a 250 ms "stable" at once | **Confirmed.** The last frame number is tracked apart from the baseline, and a repeat clears the baseline too. Test (fails without the fix). |
+| 2 | Medium | The timeout was checked after the capture but not after comparing: a slow comparison could still match late | **Confirmed.** A match or a stable result is accepted only if the wait has not run out once compared; the separate post-capture check went, so the slow-capture test now exercises this guard (it fails without it). |
+| 3 | Low | An invalid phrase holding an entered secret was refused by the parser, whose error quotes it | **Confirmed.** Entered secrets are checked before anything else; the editor's rows-to-wordings conversion is a tested function (`wording_sets`). Test. |
+
+## 2026-11-09 - Round-73 fixes (`328fcfd`): review round 74 (Codex `gpt-6-astra`)
+
+Read-only re-review. All three round-73 fixes hold; the tests exercise them (the stall test needs four looks where the
+old code passed after three; the slow-capture test reaches the post-comparison guard; the overlength phrase reaches
+the path that leaked). Not directly tested: a slow comparison itself, and the stability branch's timeout guard.
+**SIGN-OFF**, no findings. This closes the Codex rounds owed for the stand-ins of rounds 69 and 71.
+
+After the sign-off, Linux CI failed `concurrent_updates_lose_no_change_and_a_failed_write_is_reported`: under constant
+contention, polling `try_lock` every 10 ms lost to a writer that re-took the lock at once (starved past the 1 s bound).
+The wait is now a blocking lock (woken when it is released) on a helper thread, bounded by `recv_timeout`; a lock that
+thread takes after the caller gave up is dropped at once. A small change after round 74, to be covered by the next round.
+
+## 2026-11-13 - Windows flashing investigation and 0.6 multi-console work
+
+The installed Windows 0.5.1 GUI failed with `writing the firmware failed: Error while connecting to device`.
+The installed CLI reproduced it on COM3 after bootloader, partition table and application verification, at the start
+of the 4 MiB iPXE disk. Keeping the espflash error sources exposed `Timeout while running FlashDeflData command`.
+The same failure reproduced at 115200 baud; changing baud alone did not fix it.
+
+The shipped disk's first 16 KiB compressed block expands to 1,104,757 bytes; the next expands to 27,469 bytes.
+espflash 4.6.0 budgets the current data wait using the current block's expanded size, while the stub acknowledges
+receipt before it finishes writing. A following small block can therefore wait for a previous large write with a
+timeout too short for that previous write. Compare espflash's `target/flash_target/esp32.rs` with Espressif esptool's
+previous-block timeout handling in `esptool/cmds.py`.
+
+The local fix divides only the optional data image into sector-aligned 64 KiB regions, in one session, retaining
+per-region checksum verification. Full image validation, port/chip/native-USB checks and NVS preservation remain.
+The exact firmware bundle from the installed 0.5.1 was then written and verified on four physical boards:
+
+| Port | Patched flash result |
+|---|---|
+| COM3 | all images/regions verified; restart command succeeded |
+| COM4 | all images/regions verified; restart command succeeded |
+| COM5 | all images/regions verified; restart command succeeded |
+| COM6 | all images/regions verified; restart command succeeded |
+
+These are flash/read-back results, not claims about running firmware, target HID or Secure Boot. Bluetooth pairing
+from this execution environment failed with a WinRT error; status attempts returned `Device not found` or
+`Not connected`. A four-live-link GUI/target pass remains required. No target-facing text was sent.
+
+The user expanded 0.6 scope to named consoles for multiple adapters, visible firmware/board status and transparent
+flashing. The console keeps links, video, workflows and widget memory separate; manual input handoff waits for an
+ordered release barrier and immediately closes a client if its release cannot be confirmed. Assignments are saved
+per profile under the existing settings lock. Automated runs continue in their own consoles.
+
+An initial full workspace run passed after the first handoff tests. Later edge cases and final GUI/build checks
+are recorded below when complete. Concurrent settings tests now retry an explicitly reported bounded lock timeout;
+the separate held-lock test still requires the production save to give up within its documented bound. No production
+lock timeout was increased or bypassed.
+
+### Final validation and limits
+
+- Full native Windows workspace run: **361 tests passed, 1 ignored**, including delayed/failed/stalled input handoffs,
+  per-console widget isolation, concurrent profile saves and ambiguous camera identity. The recorder tests which need
+  ffmpeg do not exercise a real encoder here (ffmpeg is absent).
+- `cargo clippy --workspace --all-targets --offline -- -D warnings`: passed. Both 0.6.0 Windows executables built.
+- Native UI Automation: added four consoles, switched tabs, saved four profiles, opened/cancelled the pairing-repair
+  guide for an isolated remembered test ID, and checked firmware identity and all
+  three UART ports still attached (COM4–COM6). COM3 had been unplugged after its successful flash. The test uses its
+  own settings file and a synthetic target. Screen capture failed with an invalid desktop handle; no visual sign-off.
+- Final 0.6 CLI: COM6's stored application descriptor read as 0.2.0, all image regions verified and reset succeeded.
+  A subsequent UART reset/boot log confirmed firmware 0.2.0 starts TinyUSB and NimBLE, has no trusted controller, opens
+  its pairing window and advertises as `kvm-it-A432`. This is a runtime boot check for COM6, not target HID validation.
+- Windows' original explicit-address pairing returned a null WinRT device as HRESULT 0. Microsoft documents null when an
+  unpaired address is absent from the system cache ([FromBluetoothAddressAsync](https://learn.microsoft.com/en-us/uwp/api/windows.devices.bluetooth.bluetoothledevice.frombluetoothaddressasync)).
+  The null persisted even after advertisement discovery. Pairing/forgetting now use exact-address association endpoints
+  directly ([Microsoft's pairing sample](https://github.com/microsoft/Windows-universal-samples/tree/main/Samples/DeviceEnumerationAndPairing)),
+  request and validate the address property, serialize Windows pairing operations and bound/cancel slow calls. GUI
+  **Repair pairing** retires the old connection, forgets that board and pairs/connects again after a brief BOOT press.
+  The CLI has the same explicit-target recovery. In this execution context the association API returned
+  `0x80070002` (file not found); its cause remains unresolved. This is reported as a Windows operation failure, never
+  as successful removal or pairing. No physical successful repair, four-live-link switching or target input is claimed.
+- Firmware source hash and all seven bundled firmware checksums passed. The local preview bundles the checkout's
+  existing firmware 0.2.1; the physical flash/runtime checks above deliberately used the installed 0.5.1 bundle's 0.2.0.
+- This remains an unsigned local preview; no installer/release was published and no commit or push was made.
+- An unrestricted-parallel test build ran out of compiler memory; the complete workspace passed with `-j 1`.
+  The GUI harness waits for each added console before invoking Add again, avoiding coalesced accessibility clicks.
+  It uses `KVMIT_START_DISCONNECTED=1` so a remembered fixture ID never initiates Bluetooth discovery.
+- Portable preview: `desktop/target/preview-v0.6.0/`, containing both executables, firmware 0.2.1, notices and checksums.
+  Windows reports both executables **NotSigned**. Source/firmware validation, native builds and strict clippy passed.
+
+### Approved public issue report
+
+After reviewing the public draft, the user explicitly approved posting it. Filed as
+[issue #60](https://github.com/spilloid/kvm-it/issues/60), without board MAC addresses. The following is the approved draft;
+the posted text clarifies that the source comparison indicates the timeout mechanism and the fix is local.
+
+Title: **0.5.1 flash times out sending sparse iPXE image; show real stages and underlying error**
+
+On Windows, the 0.5.1 GUI and CLI can fail when flashing the bundled 4 MiB iPXE disk through the CH343 COM bridge.
+The bootloader, partition table and app verify first. The outer message says only “Error while connecting to device”;
+the source error is `Timeout while running FlashDeflData command`. The failure also reproduces at 115200 baud.
+
+The disk's first compressed block expands to about 1.1 MiB, followed by about 27 KiB. espflash 4.6.0 budgets a wait
+using the current block size, although the stub acknowledges before finishing the previous write. The source comparison
+points to an insufficient previous-block wait. Writing the data image as sector-aligned 64 KiB regions in one session,
+verifying every region, fixes the reproduced failure without changing images or erasing the settings partition.
+
+The local fix wrote and verified the exact installed 0.5.1 firmware on four physical ESP32-S3/16 MiB boards, COM3–COM6.
+Running-firmware, HID and four-link GUI behavior are separate validation steps and are not claimed here.
+The feature release also adds real flash stages, elapsed time, chip/firmware identity and copyable command-level errors.
+
+Automatic approval review initially rejected posting because the specific public debugging/test payload had not been
+approved. The user then approved the draft and destination, and the issue was posted successfully.
+
+## 2026-11-14 - Maintainer hardware confirmation of the 0.6.0 preview
+
+After launching the preview on the maintainer's normal Windows desktop, the maintainer reported:
+
+> repairing worked btw, and new console, and clicking around with multiple adapters
+
+Record **hardware-verified, maintainer-reported** for the GUI pairing-repair flow, adding a console and GUI use with
+multiple physical adapters. This supersedes the earlier lack of a successful interactive-desktop repair test. The
+runner's WinRT errors remain a separate observation; their exact cause was not isolated. The initial invisible launch
+was confirmed to be on `CodexSandboxDesktop`; launching through Windows Explorer opened the preview on the normal
+desktop.
+
+The report does not specify the exact simultaneous adapter count, target-facing keyboard/mouse results, held-input
+switching, forced disconnect recovery, long-run stability or multiple concurrent workflows. Do not extend this pass
+to those cases, to the CLI repair command, or to Linux/macOS. No new code change or release publication follows from
+this confirmation; the README, changelog and platform parity evidence now reflect the reported hardware results.
+
+## 2026-11-14 - Website product pass and workflow beta release scope
+
+The maintainer approved the full website pass and explicitly approved including workflow/OCR/provisioning work as
+**prerelease beta**, without an end-to-end physical-laptop run. The former full-laptop workflow ship gate now governs
+graduation from beta, not the 0.6 release. Independent review, CI, packaging/signing, installation checks and the
+shared-client Linux hardware check are still required. No release was published by this change.
+
+- Added the workflow beta notice before workflow credentials/run controls in the GUI and before workflow prompts in
+  the CLI. The setup, provisioning and workflow-panel guides, README, roadmap, release checklist and changelog use the
+  same evidence limit: automated tests and partial Windows VM coverage; no end-to-end physical-laptop verification;
+  password entry, MFA, enrolment and Autopilot remain unverified.
+- Rebuilt the homepage around one console with several nearby targets, keeping the existing logo and GitHub Pages
+  hosting. Added current screenshots, explicit wiring (BLE control / USB HID / HDMI capture), recovery guidance,
+  platform-specific download requirements, native keyboard-operated FAQs and shared documentation navigation/styles.
+- Downloads use the existing build-time GitHub release metadata and now exclude whole-release prereleases from the
+  primary stable downloads. The preview/version copy changes with that metadata. GitHub's release API was checked:
+  0.5.1 remained the latest stable release with an MSI, ZIP, AppImage and Apple-silicon DMG. No 0.6 asset was invented.
+- Captured a separate 0.6 GUI instance with isolated settings, an invalid remembered adapter ID and synthetic target
+  video. Four disconnected consoles, switching, saved profiles, the repair guide and three COM ports passed the
+  built-in Windows UI Automation smoke pass. No board was flashed or paired and no target input was sent. The public
+  screenshots crop the native window border and redact USB serials. The maintainer's active preview was left alone.
+- A bounded read-only content audit found stale automatic-pairing-window advice, an unqualified workflow handoff
+  claim and a roadmap item still saying the multi-device UI was unbuilt. All were corrected. Firmware 0.2.0 and the
+  unverified 0.2.1 pairing-window change are distinguished; setup recommends unplugging COM before powering from the
+  target rather than endorsing unverified dual-host power.
+- Local preview: LiquidJS templates with the real release metadata, plus rendered Markdown guide previews. This
+  checked the homepage's Jekyll/Liquid expressions and the shared layout; it is **not an exact Jekyll build**. Ruby,
+  containers and WSL were unavailable here. The production GitHub Pages build remains a publication check.
+- Browser verification used the installed Chrome through Playwright Core. Homepage widths 320, 390, 768 and 1440 px,
+  light/dark variants, published/0.6/missing-metadata cases, images, local links/anchors, download destinations,
+  keyboard FAQs and the skip link passed. No page errors, missing assets or horizontal document overflow were found.
+  Axe reported no WCAG 2 A/AA or 2.1 AA violations in the six homepage scenarios.
+- The setup, hardware, provisioning, workflow-panel and roadmap previews passed the same axe checks on mobile in
+  both themes after fixing keyboard focus for overflowing examples and labels on generated checklist boxes.
+  Keyboard arrow scrolling of a focused code example and the current-page navigation marker were exercised.
+  Reports and reviewed screenshots are under `desktop/target/site-qa/` (ignored local QA artifacts).
+- Native `cargo test --workspace --offline -j 1` and strict
+  `cargo clippy --workspace --all-targets --offline -j 1 -- -D warnings` passed. Both site scripts passed Node syntax
+  checks and `git diff --check` passed. This pass did not install an MSI, update the running preview, commit/push,
+  replace the required independent-model release review or publish the public site.
+
+## 2026-11-14 - Documentation-only main publication
+
+The maintainer explicitly requested publishing the documentation and website directly to `main` and verifying the
+live result. The candidate was prepared on a fresh checkout of current remote `main`, separate from the dirty
+0.6 feature workspace. Only documentation, site assets and the existing Pages workflow are included; application
+code, package versions, firmware and release artifacts are unchanged. The site labels 0.6 as a preview and uses
+stable published assets for its download buttons. Full board MAC addresses were removed from the new public
+investigation notes; the flash screenshot's USB serials are redacted.
+
+The prior local browser/accessibility checks cover this design. Publication still requires the real GitHub Pages
+Jekyll build and deployment to succeed, followed by live HTTP, rendered-page, asset and download-link checks. This
+website publication does not publish the 0.6 application or complete its release checklist.

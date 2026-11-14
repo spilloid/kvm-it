@@ -31,6 +31,11 @@ to the same release. Treat this file as a checklist: each numbered step is a ste
 
 ## 1. Merge and tag
 
+**0.6 scope decision (2026-11-14):** workflow automation, OCR and provisioning may ship as **prerelease beta** without
+the full physical-laptop provisioning run. Keep that label and the unverified steps visible in the GUI, CLI, website,
+guides and release notes. The physical-laptop run remains a gate for graduating workflows from beta, not for 0.6.
+This does not waive independent review, CI, signing, installation checks or the shared-client Linux hardware check.
+
 1. Merge the PR into `main` (squash or merge commit; keep the review log).
 2. Tag the merge commit: `git tag -a vX.Y.Z -m "kvm-it X.Y.Z"` and push the tag.
 

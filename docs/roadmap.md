@@ -49,9 +49,17 @@ written down instead of open-ended. Direction, not commitments; each release onl
 | **0.4.8** (shipped 2026-10-08) | Polish and housekeeping | Icon and version information on `kvmit.exe`, `kvmit-gui.exe` and the MSI; plain-language Bluetooth errors (off, blocked, no adapter, no `bluetoothd`); the generated licence listing of every Rust dependency (`THIRD_PARTY_LICENSES.html`) and the firmware's components in `THIRD_PARTY_NOTICES.md`; the Secure Boot boot drive from PR #15 (VM-verified only; real PCs are #40); this roadmap. |
 | **0.4.9** (shipped 2026-10-30) | Cross-platform UX audit | Windows settings no longer reset when two processes save at once; X11 pointer grab tries confined then locked; per-OS capture messages and the Mac chord in the docs; Homebrew/MacPorts ffmpeg found from Finder; plain-language COM-port advice; Linux scripts-folder fallback; small-window layout (STD-008). See `docs/platform-parity.md`. |
 | **0.5.0** (2026-11-04) | Stateful workflows | Workflows in the engine, the app and `kvmit run` (issue #46): screens recognised from your own reference pictures, verified transitions, manual steps, guards and a tenant check, saved checkpoints shared by the app and the CLI. A built-in Windows 11 provisioning workflow (Autopilot, or Microsoft Entra join with a work account), a template beyond the network screen until it runs on real machines. Reconnect after the adapter loses power without clicking Connect. |
-| **0.5.1** | Workflows without a text editor | Set up the Windows 11 provisioning workflow in the app (**Set up your copy**, **Save profile**) or with `kvmit workflow new/set/show`: deployment method, organisation and licence as choices, nothing else in the file changed. A provisioning guide (`docs/provisioning.md`): every screen, who does it, what each stop means. The workflow panel looked at on screen and fixed (it scrolls; secrets in typing order). |
+| **0.5.1** (shipped 2026-11-07) | Workflows without a text editor | Set up the Windows 11 provisioning workflow in the app (**Set up your copy**, **Save profile**) or with `kvmit workflow new/set/show`: deployment method, organisation and licence as choices, nothing else in the file changed. A provisioning guide (`docs/provisioning.md`): every screen, who does it, what each stop means. The workflow panel looked at on screen and fixed (it scrolls; secrets in typing order). |
+| **0.6.0** (in preparation) | One console, several adapters | Named console tabs, independent adapters and video, visible running firmware and status, clearer flashing and in-app pairing repair. **Workflow automation is prerelease beta:** OCR, provisioning, named laptop runs and recovery have automated tests and partial VM coverage, but no end-to-end physical-laptop run. Firmware 0.2.1 is bundled; its changed pairing-window behaviour has not been verified on a board. |
 | **0.5.2** | Your own boot server, input ordering, review debt | **Point the boot drive at your own server from the app:** enter a boot URL in the Adapter popup (or `kvmit boot-drive --url`), the app writes it into the drive's `autoexec.ipxe` and reflashes only the drive partition, keeping the pairing; the drive stays safe by default (nothing runs without a key press), and the docs get a worked example with an object-storage bucket behind a custom domain, IP-restricted, since anything on the drive is readable by whoever holds the adapter. One ordered stream for keyboard and mouse so modifier+click can never reorder (review round 4, finding 6); Enter vs keypad Enter on held-key seeding (round 5, finding 4); the pairing UI follow-ups (disable *Pair & connect* / *Connect* while a pairing runs, disconnect on early errors, a timeout on the pairing guard); the cross-model review rounds still owed where Opus stood in for Codex (rounds 13-16). |
 | **1.0.0** | Finished | When the checklist below is done. |
+
+### Workflow beta graduation
+
+The maintainer approved including workflows as **prerelease beta** in 0.6 on 2026-11-14. The former physical-laptop
+ship gate now applies to graduating this feature from beta: run a physical laptop from region selection through
+sign-in, password, MFA, enrolment and handoff; verify the Autopilot path separately. Until then, the app, CLI, website
+and guides must keep the beta label and evidence limits visible. This does not waive the rest of the release checklist.
 
 ### 1.0 checklist
 
@@ -79,7 +87,7 @@ checkpoints, keep run evidence, and avoid tying a workflow to one machine, techn
 | Theme | Notes |
 |---|---|
 | **Wired link over COM** | Drive the adapter over its COM (UART) port with no Bluetooth: no BT passthrough in VMs, headless boxes work, lower latency, and it is the same cable the flasher uses. The client already talks over abstract byte-frame channels, so the desktop side is a serial transport plus framing; the firmware needs a second transport into the same dispatcher and the log console moved off UART0 (or wrapped). Open questions to settle first: opening the port must not toggle DTR/RTS (they are wired to the chip's reset and boot pins, so a careless open reboots the adapter and the target sees its USB device vanish); and a wire link has no pairing, so physical access to the cable is the trust, which means off by default, enabled deliberately and shown on the LED. Natural fit for multi-probe. |
-| **Multi-probe** | One running app attaches several adapters and capture cards, associates each adapter with its capture card, switches between the pairs and coordinates script runs across them (an IP-KVM-style fleet view). Builds on the multi-controller/multi-device groundwork noted below. |
+| **Fleet coordination** | Basic multi-adapter console tabs and capture-card assignments are implemented for 0.6. A fleet overview and coordination of runs across targets remain future work; no simultaneous-adapter limit has been established. |
 | **Phone and tablet controllers** | A kvm-it **Android and iPhone/iPad app**: the phone becomes the controller, over the same Bluetooth LE link, with the target's picture from a USB capture card where the platform allows it (Android can read a UVC card over USB-C OTG; iOS/iPadOS external-camera support is a question to settle, not an assumption). The Bluetooth client, protocol and script engine are already separate crates, so the plan would be to share them with the mobile apps and redo only the interface. It is a big piece of work, deliberately after multi-probe, and nothing about it is started. |
 
 ## Small lifts still open
@@ -107,7 +115,8 @@ Cheap, user-visible or debt-paying, none of them a theme on its own (done ones a
   signed images + `ota_0/ota_1` partition layout (needs a custom partition table), then optional USB DFU.
 - Boot-compatible 4-byte mouse report fallback if BIOS testing shows it is needed.
 - PSRAM enablement, if ever needed.
-- Multi-controller trust and multi-device UI (architecture avoids singletons; not built; see multi-probe above).
+- Multi-controller trust and fleet coordination remain future work; basic multi-adapter console tabs are implemented
+  for 0.6 (see Fleet coordination above).
 - Windows Secure Attention Sequence (Ctrl+Alt+Del): the macro will send it as an ordinary USB HID chord.
   Whether a given Windows/secure-desktop environment honours it is unverified and will be documented per
   environment once tested on real hardware.

@@ -30,6 +30,10 @@ COM port. The silkscreen names above are from the board vendor's documentation; 
 
 ### Buttons
 
+**Firmware version matters:** the automatic windows below describe released firmware 0.2.0. Firmware 0.2.1,
+bundled for desktop 0.6, suppresses the power-on/RESET pairing window when a bond exists: press BOOT briefly to pair
+again. That change is built and bundled, but has not yet been verified on a physical board.
+
 - **BOOT** (GPIO0, read by the firmware at run time):
   - short press (< 3 s): open the **pairing window** for 300 s (a 15 s window also opens by itself at every
     power-on or RESET; with a bond stored, crash/watchdog reboots do not open it);
@@ -178,7 +182,7 @@ Still unverified on hardware until you report:
 ## BLE troubleshooting
 
 - **Opening the COM port resets the board** (the CH343's DTR/RTS lines drive EN/IO0). That reset closes a BOOT
-  window but opens the 15 s power-on window, so pair right after opening the serial monitor, or press BOOT.
+  window. Firmware 0.2.0 opens a 15 s power-on window afterward; a bonded 0.2.1 board requires a brief BOOT press.
 - **The controller PC can't see the adapter** (`kvmit scan` empty, phone sees it): check the PC's scanner
   before the firmware. Run `sudo btmon -w /tmp/bt.log` during `bluetoothctl --timeout 20 scan le` and count
   `LE Advertising Report`s with `btmon -r /tmp/bt.log`. A healthy scan in a normal room gets hundreds in 20 s.

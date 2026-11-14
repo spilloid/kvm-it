@@ -1,5 +1,7 @@
 # Get started
 
+> **Version note:** this guide includes the 0.6 preview. Multiple console tabs, detailed flash diagnostics and in-app pairing repair require 0.6; use the [download page](index.html#download) to check the published version.
+
 Three things to do: **get the parts, install the app, plug in.** No toolchains, no terminal, no yak.
 
 ## 1. The parts
@@ -33,13 +35,13 @@ for the video, *Settings > Privacy & security > Camera > Let desktop apps access
 
 ## 3. Flash the adapter (once, in the app)
 
-<img src="assets/screenshots/tour-flash.png" alt="The Flash adapter window with callouts: the firmware ships with the app, your board's COM port is picked for you, and one click flashes it" style="max-width:100%">
+<img src="assets/screenshots/flash-06.png" alt="The 0.6 preview flash window, showing bundled firmware, COM ports and pairing-preserving defaults" style="max-width:100%">
 
 1. Plug the board's **COM** port into your PC. **Leave the other one (USB) unplugged.** That one is a real keyboard and mouse
    that takes orders from kvm-it, and plugged into the computer you are flashing from it would be typing into your own machine.
    (kvm-it refuses to flash if it spots one.)
 2. Open **kvm-it**, click the **Adapter** chip, **Flash adapter…**, **Flash adapter**.
-3. Wait for *Flashed and verified.* That is the whole job.
+3. Choose the board's COM port, then wait for *Flashed and verified*. In 0.6, the dialog shows each write and verification stage and lets you copy diagnostics if it fails. Reconnect over Bluetooth afterward to confirm the **running** firmware version; verified flash alone does not prove the app is running.
 
 The firmware ships inside the app, so there is nothing to download. If your adapter was already running kvm-it, its pairing
 survives; if it is straight out of the bag, tick *Erase everything first* (there is no pairing to lose yet). Command-line
@@ -48,16 +50,18 @@ tell us how it goes.)
 
 ## 4. Pair (once)
 
-1. Move the cable: plug the adapter's **USB** port into the **target**. (COM can stay plugged in or not.)
-2. For **15 seconds** after it powers up, it accepts a new pairing. Missed it? Press **BOOT** briefly: that reopens the window
-   for 5 minutes. No physical access, no pairing. That is the entire security model, and it is a feature.
+1. Unplug **COM**, then plug the adapter's **USB** port into the **target**. Powering the board from two computers at
+   once has not been verified for the documented board revision.
+2. Pairing-window behaviour depends on firmware: 0.2.0 opens a **15-second** window at physical power-on or RESET
+   (a bonded crash/watchdog restart does not). Firmware 0.2.1 suppresses that window once paired. In either case,
+   press **BOOT** briefly to open pairing for 5 minutes. See the [hardware guide](hardware.md) for the full behaviour.
 3. In kvm-it: **Adapter** chip, **Scan for adapters**, **Pair & connect**. On Windows this pairs with no system dialog at all.
 
 From then on, move the cables to the next machine and the app reconnects by itself.
 
 ## 5. Drive
 
-<img src="assets/screenshots/tour-overview.png" alt="The kvm-it window with numbered callouts on the Adapter, Target USB, Video and Capture chips and the Keys, Type and Scripts buttons" style="max-width:100%">
+<img src="assets/screenshots/console-06.png" alt="The 0.6 preview with four disconnected console tabs, status chips and synthetic demo video" style="max-width:100%">
 
 The top bar is the whole control panel; the picture is the rest of the window. Green is working, amber is in progress, red is
 broken, grey is idle.
@@ -144,36 +148,46 @@ project's signed shim and iPXE; but then iPXE only starts signed things (Windows
 Violation"), and some locked-down PCs turn that CA off and refuse the drive. All of that has been run in a virtual machine, not yet on a real PC. And the boot script on the
 drive is the demo until editing it from the app lands (developers can change it today: [developing.md](developing.md)).
 
-## 7. Set up Windows 11 with a workflow (new in 0.5.0)
+## 7. Set up Windows 11 with a workflow (new in 0.5.0, reads the screen since 0.6.0)
 
-A **workflow** drives Windows setup screen by screen: it recognises each screen from a picture of it, types only on the
-screen it expects, checks that the next screen arrived, and stops (typing nothing) on anything it does not recognise.
-The built-in one, `windows-11-oobe-provisioning.toml`, goes from the region screen to the user's first sign-in, by
-**Windows Autopilot** or by **joining Microsoft Entra with a work or school account**. It is a template: the screens after
-the work-or-school sign-in page have not yet been run on any machine (up to there it has run in a virtual machine).
-Try it on one machine, with a dry run first. The full guide, with every screen and what to do when it stops, is
-[Provision Windows 11 laptops](provisioning.md).
+> **Prerelease beta in 0.6.** Workflows have automated tests and partial Windows VM coverage, but no end-to-end run
+> on a physical laptop. Password entry, MFA, enrolment and the Autopilot path remain unverified. Use for supervised
+> evaluation; the intended full path below is not a claim of verified provisioning.
+
+A **workflow** drives Windows setup screen by screen: it recognises each screen by **reading its text** ("Is this the
+right country or region?"), types only on the screen it expects, checks that the next screen arrived, and stops (typing
+nothing) on anything it does not recognise. The built-in one, `windows-11-oobe-provisioning.toml`, is designed to go from the region
+screen to the user's first sign-in, by **Windows Autopilot** or by **joining Microsoft Entra with a work or school
+account**. Up to the work-or-school sign-in page it has run in a virtual machine; the screens after it have not yet run
+on any machine. Try it on one machine, with a dry run first. The full guide, with every screen and what to do when it
+stops, is [Provision Windows 11 laptops](provisioning.md); what each part of the panel is for, and which ones you can
+leave closed, is [The workflow panel](workflow-panel.md).
+
+Reading text needs nothing extra on Windows (with English among its languages) or macOS; on Linux install Tesseract
+(`sudo apt install tesseract-ocr`).
 
 1. **Make it yours.** In **Scripts…**, select **[built-in workflow] windows-11-oobe-provisioning.toml** and fill in
-   **Set up your copy**: Windows Autopilot or a work or school account, your organisation's short name, and whether to
-   accept the licence terms. **Save my copy** writes your copy into the scripts folder and selects it (from a terminal:
+   **Set up your copy**: Windows Autopilot or a work or school account, your organisation's short name and sign-in
+   domain (`fabrikam.com`), and whether to accept the licence terms. The method and the licence have no default.
+   **Save my copy** writes your copy into the scripts folder and selects it (from a terminal:
    `kvmit workflow new windows-11-oobe-provisioning`). No text editor needed; change it later in its
    **Approved profile**.
-2. **Save its screens once.** Select it in the Scripts list and open **Reference screens**: every screen it needs is
-   listed, marked missing. Take one machine through setup by hand. At each screen, choose that screen's name under
-   **Save this screen as** and click it. For the organisation's picture, save the password page (with your branding)
-   under the tenant's name. `kvmit run <file> --check` lists the same from a terminal; `kvmit video snap <path>` saves one.
-3. **Dry run.** Reset the machine to the first setup screen and click **Dry run**: it watches the screen and sends
-   nothing (no sign-in or password needed). Click through setup by hand and check that the timeline names each screen as you reach it.
-4. **Run.** Enter the user's sign-in and password (held in memory only, never saved), tick that you reviewed the file and
-   click **Run**. The timeline says **Your turn** at the steps a person must do: connect the network, approve the
-   sign-in on a phone, choose privacy settings. Do those at the target; the run sees the screen move on and continues.
-   It ends at Windows Hello or the desktop, for the user to take over.
-5. **If it stops**, it says why and saves a checkpoint. Fix the target, then click **Resume** (or `kvmit run <file>
-   --resume`): it looks at the screen first and carries on only from the state it stopped in or the next one.
+2. **Dry run.** Reset the machine to the first setup screen and click **Dry run**: it watches the screen and sends
+   nothing (no sign-in or password needed). Click through setup by hand and check that the timeline names each screen
+   as you reach it.
+3. **Run.** Name the laptop under **This laptop** (its asset tag or serial), enter the user's sign-in and password
+   (held in memory only, never saved), tick that you reviewed the file and click **Run**. The timeline says **Your
+   turn** at the steps a person must do: connect the network, approve the sign-in on a phone, choose privacy settings.
+   Do those at the target; the run sees the screen move on and continues. Before the password it checks that the page
+   shows that very account in your domain. Its intended handoff is Windows Hello or the desktop, for the user to take over. Every
+   live run saves a record (no secrets) in `runs/` in the scripts folder.
+4. **If it stops**, it says why and saves a checkpoint. Fix the target, then click **Resume** (or `kvmit run <file>
+   --resume --laptop <name>`): it looks at the screen first and carries on only from the state it stopped in or the
+   next one. If the app or the computer stopped mid-run, click **Recover the interrupted run** first.
    [What each stop means](provisioning.md#when-it-stops).
 
-From a terminal the whole run is `kvmit run <your copy>.toml` (add `--save-trace` for a record for the ticket).
+Where text cannot be read, screens can still be recognised from saved pictures (**Reference screens**), but a run that
+checks the sign-in does not start there. From a terminal the whole run is `kvmit run <your copy>.toml --laptop <name>`.
 
 ## When something is off
 
@@ -185,7 +199,8 @@ From a terminal the whole run is `kvmit run <your copy>.toml` (add `--save-trace
   reconnects once the adapter is back; the chip says *not connected (retrying)* meanwhile, and there is no need to click
   Connect. (Since 0.5.0 a stuck attempt gives up after 15 s and the next one starts. Reconnecting after a real power
   cycle has not been timed on hardware yet.)
-- **The adapter never appears in a scan:** replug it (15-second window) or press **BOOT**, then scan again. More in the
+- **The adapter never appears in a scan:** press **BOOT** briefly, then scan again. Automatic power-on windows depend
+  on the firmware version and whether it is already paired (see step 4). More in the
   [hardware guide](hardware.md).
 - **Keys stuck on the target:** *Release all keys* in the **Adapter** popup. If the app crashes, the adapter lets go of everything by
   itself within a few seconds (designed that way; not yet verified on hardware).
@@ -194,6 +209,35 @@ From a terminal the whole run is `kvmit run <your copy>.toml` (add `--save-trace
   signed (see step 6).
 - **Flashing says an Espressif USB device is plugged in:** that is the safety check. Unplug the board's **USB** port (and any other ESP
   board) from this computer; keep only **COM**.
+
+## Several targets in one console (0.6)
+
+Choose **+ Add adapter** to add a console tab. Give it a useful name, connect its adapter from **Adapter**, and choose
+its HDMI capture card from **Video**. Repeat for each target. Each tab shows its connection and reported firmware
+version, and keeps its own video, script and workflow. Assignments are remembered when you reopen the app.
+
+Release captured input with **Ctrl+Alt+Esc** (**Ctrl+Option+Esc** on a Mac), then select another tab. The console waits
+for the previous target's queued manual input and release-all before switching. Scripts already running in another
+tab continue there; a tab says **needs attention** when a run is waiting for your answer. An adapter or capture card
+already used by another console cannot be selected. To move a card, stop its run/recording and choose **Close capture
+device** first. To remove a console, disconnect its adapter and stop its run/recording first.
+
+The **Adapter** popup shows running firmware, the firmware included with the app, protocol version, target USB and
+held-input/link counters. A missing status reply is shown as waiting, rather than retaining a stale successful status.
+The popup also shows the measured response time and when the status was last checked.
+
+If a board only works after you forget it in system settings, use **Adapter > Repair pairing…** (or **Repair remembered
+pairing…** when it cannot connect). Press **BOOT briefly** on that board, then **Forget and pair again**. kvm-it removes
+that board's saved pairing, pairs again and reconnects; it leaves the other consoles alone. Do not hold BOOT for ten
+seconds for an ordinary repair: that is a separate full trust reset. Windows and Linux support this in the app; macOS
+does not expose a forget API, so its forget step still needs System Settings. The CLI equivalent is
+`kvmit repair-pairing --device <adapter-id>` and requires the ID explicitly.
+
+**Flash adapters** shows the chosen COM port and USB serial, image firmware version, speed, board MAC, exact write and
+verification stages, elapsed time and **Copy flash diagnostics**. After success, **Flash another board** returns to
+the port list. Flash success means the flash checksums match; reconnect over Bluetooth to check the running firmware.
+Disconnect the console links and stop their runs before flashing. **Try again** preserves pairing/settings by default;
+full erase is a separate choice that also removes pairing. If a transfer times out, a 115200-baud retry is available.
 
 ## Treat it with care
 
