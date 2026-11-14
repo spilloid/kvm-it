@@ -1551,3 +1551,12 @@ archive verified against its published SHA-256), then stamped and checked. The r
 package versions 0.5.1 to 0.6.0 and the matching content/input hashes; the external dependency licence texts are
 unchanged. Initial Windows CI passed; macOS tests/package construction passed before the stale-licence smoke check.
 The subsequent licence-corrected Mac and Windows jobs passed.
+
+### Round 76 - Astra re-review of ownership teardown
+
+The public-only re-review of `dde9175` found a second confirmed path: a retiring wrapper could finish normally after
+its own predecessor timed out, so a retry waiting for that wrapper could proceed while the underlying predecessor
+was still executing. The completed-wrapper regression exercises that case. Retirement now requires both task
+completion and the absence of any other strong owners of every predecessor lease; the check is shared by connection
+replacement and disconnect wrappers. A timeout or surviving predecessor keeps the adapter reserved and refuses
+reconnection. The workspace checks and follow-up review cover this final change before release.

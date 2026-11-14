@@ -44,6 +44,12 @@ async fn retire_link_task(mut task: tokio::task::JoinHandle<()>, limit: Duration
     false
 }
 
+async fn retire_link_with_claims(task: tokio::task::JoinHandle<()>, limit: Duration, claims: &[Arc<()>]) -> bool {
+    // A wrapper may finish after aborting an older, non-cooperative task. Its
+    // completion alone is insufficient: no predecessor may still own a lease.
+    retire_link_task(task, limit).await && claims.iter().all(|claim| Arc::strong_count(claim) == 1)
+}
+
 enum Input {
     Down(Key),
     Up(Key),
@@ -471,7 +477,7 @@ impl App {
             if let Some(previous_task) = previous_task {
                 with_link(&|_| *notice.lock().unwrap() = "Closing the previous adapter connection before continuing…".into());
                 ctx.request_repaint();
-                if !retire_link_task(previous_task, Duration::from_secs(45)).await {
+                if !retire_link_with_claims(previous_task, Duration::from_secs(45), &previous_claims).await {
                     with_link(&|l| { *l = Link::Disconnected; *notice.lock().unwrap() = "The previous adapter connection could not finish closing. Wait before trying again; its adapter stays reserved until teardown ends.".into(); });
                     ctx.request_repaint();
                     return;
@@ -605,7 +611,7 @@ impl App {
             let _claims = claims;
             if let Link::Connected { dev, .. } = previous { dev.shutdown().await; }
             if let Some(task) = previous_task {
-                if !retire_link_task(task, Duration::from_secs(45)).await {
+                if !retire_link_with_claims(task, Duration::from_secs(45), &_claims).await {
                     *notice.lock().unwrap() = "The adapter is still closing. It stays reserved until its previous transport finishes.".into();
                 }
             }
@@ -3089,6 +3095,26 @@ mod tests {
         assert!(!retired);
         assert_eq!(generation, 0, "a quarantined adapter must not start another connection");
         assert!(notice.contains("still closing"));
+    }
+
+    #[test]
+    fn a_completed_wrapper_cannot_retire_a_still_running_predecessor() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let predecessor_claim = Arc::new(());
+            let retirement_claims = vec![predecessor_claim.clone()];
+            let (finish, done) = tokio::sync::oneshot::channel::<()>();
+            let predecessor = tokio::spawn(async move {
+                let _claim = predecessor_claim;
+                let _ = done.await;
+            });
+            let wrapper = tokio::spawn(async {});
+            assert!(!retire_link_with_claims(wrapper, Duration::from_secs(1), &retirement_claims).await,
+                "finishing a wrapper must not permit reconnect while its predecessor still owns the adapter");
+            let _ = finish.send(());
+            predecessor.await.unwrap();
+            assert!(retire_link_with_claims(tokio::spawn(async {}), Duration::from_secs(1), &retirement_claims).await);
+        });
     }
 
     #[test]
