@@ -34,15 +34,15 @@ foreach ($file in $Files) {
     $sig = Get-AuthenticodeSignature -FilePath $path
 
     if ($sig.Status -ne 'Valid') {
-        $failed += "$path — signature status $($sig.Status): $($sig.StatusMessage)"
+        $failed += "$path - signature status $($sig.Status): $($sig.StatusMessage)"
         continue
     }
     if (-not $sig.TimeStamperCertificate) {
-        $failed += "$path — signed but not timestamped; the signature expires with the 3-day signing certificate"
+        $failed += "$path - signed but not timestamped; the signature expires with the 3-day signing certificate"
         continue
     }
     if ($ExpectedSubject -and $sig.SignerCertificate.Subject -notlike "*$ExpectedSubject*") {
-        $failed += "$path — signed by '$($sig.SignerCertificate.Subject)', expected it to contain '$ExpectedSubject'"
+        $failed += "$path - signed by '$($sig.SignerCertificate.Subject)', expected it to contain '$ExpectedSubject'"
         continue
     }
 

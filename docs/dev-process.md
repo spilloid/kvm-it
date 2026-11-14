@@ -1596,3 +1596,51 @@ fast native try-lock path. A persistent lock cannot create further workers once 
 remain bounded. Worker creation uses the fallible thread builder, so resource exhaustion is reported as an unsaved-
 settings error rather than panicking. A regression drives repeated timeouts under a real native file lock and checks
 that the queue can drain and reopen afterward. Final review and checks include this guard.
+
+## 2026-11-14 - 0.6.0 publication and downloaded-package validation
+
+PR #59 merged as `588bff1`; annotated tag **v0.6.0** points to that merge. The public release is
+https://github.com/spilloid/kvm-it/releases/tag/v0.6.0. All four release workflows completed successfully:
+Windows build/sign/package/verify (43622572143), Linux AppImage (43622572151), Mac test/package/smoke (43622572120),
+and corresponding iPXE source archive (43622572218).
+
+### Round 79 - Final settings-lock re-review
+
+The public-source-only Astra re-review of `7733e69` signed off: **no further concrete blocking findings**. It checked
+the 32-worker lifetime bound, fallible spawning and permit/file release on spawn failure, timeout, lock error, normal
+handoff and late delivery after receiver disconnection. Other console profiles remain preserved by the locked update.
+Static review only. The reviewer noted a nonblocking test gap: the drain loop does not assert that the process-global
+permit count becomes zero; the real-lock bound and reopening are tested, and complete permit reclamation also has
+static lifetime coverage. Other concurrent tests can use the same process-wide counter.
+
+The final Windows CI run (43621706229) passed **365 tests, 1 ignored**, and strict lint. Final Linux/container tests,
+lint and cross-build plus firmware builds passed (43621706188); final Mac tests/package/smoke passed (43621706152).
+The duplicate local workspace rerun after the final config guard was stopped once these exact-candidate CI checks
+passed; it is not counted as an additional completed local run. Earlier local 364-test and strict-lint results stand
+for their earlier revisions only.
+
+### Public artifacts, installation and site
+
+- Downloaded all **12 public assets**, matching every GitHub SHA-256 digest and each published per-file checksum.
+  This includes the MSI, Windows ZIP, AppImage, Apple-silicon DMG and the exact GPL iPXE source archive.
+- `verify-release.py --require-signed`: PASS on downloaded Windows assets, including PE versions/resources/subsystems,
+  ZIP contents/CRCs, licence texts and all nine bundled firmware files (seven covered by their manifest checksums).
+- Windows' own Authenticode check: both executables and the MSI are **Valid**, timestamped, with the expected publisher.
+  CI and this Windows 11 machine independently checked the public bytes.
+- The stock Windows PowerShell 5.1 parser exposed UTF-8 error-message dashes in `verify-signature.ps1` without a BOM.
+  Explicit UTF-8 loading verified all signatures; its error-message separators are now ASCII so the same source helper
+  also runs directly on PowerShell 5.1. This is a verification-helper text fix, not a change to tagged application bytes.
+- Windows 11 MSI smoke: silent upgrade from installed **0.5.1**, uninstall, and fresh install of **0.6.0** all returned 0.
+  Administrator consent was used through the normal Windows prompt; settings were preserved and active consoles were
+  not interrupted. Installed executables, firmware and licences match the signed ZIP. CLI version, Start menu entry
+  and machine PATH passed. 0.6.0 remains installed.
+- Released installed GUI: isolated settings and synthetic video, four disconnected consoles, switching, saved profiles,
+  repair guide and image firmware identity passed. No COM ports were visible in this run; no board was flashed/paired
+  or sent target input. Portable CLI and visible workflow-beta help passed too. This was an existing Windows host,
+  not a fresh OS image, physical target pass or provisioning run.
+- Production Pages deployment 43623077966 passed. The live site advertises **0.6.0** and links to its actual MSI/ZIP,
+  AppImage and DMG. Live browser checks passed at 320/390/768/1440 px, light/dark, with no detected WCAG A/AA violations,
+  missing assets, page errors, broken checked guide anchors or horizontal document overflow.
+- Workflow/provisioning prerelease beta and the explicitly approved Linux hardware deferral remain disclosed in the
+  public notes. Firmware 0.2.1's new pairing-window behaviour is still not board-verified; no earlier hardware label
+  is broadened by this release.
