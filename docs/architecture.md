@@ -72,7 +72,7 @@ Cargo workspace with one crate per concern so no layer reaches into another:
 
 (Config, app state and UI live in the single `kvmit` crate for now; split them if a second front end appears.)
 
-Several adapters at once (0.6 preview, not yet released): the GUI's `Console` owns named sessions, each with its own `App`, BLE link, input pump,
+Several adapters at once (0.6): the GUI's `Console` owns named sessions, each with its own `App`, BLE link, input pump,
 capture card and workflow/run state. Only the selected session receives local input. Switching queues a release barrier
 after outgoing manual input and waits for its acknowledgement; an error or bounded handoff timeout closes the outgoing
 client and stops its keepalives. Automated runs continue in their own sessions. Widget memory stays per session, so

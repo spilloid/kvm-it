@@ -1,6 +1,6 @@
 # Get started
 
-> **Version note:** this guide includes the 0.6 preview. Multiple console tabs, detailed flash diagnostics and in-app pairing repair require 0.6; use the [download page](index.html#download) to check the published version.
+> **Version note:** this guide describes 0.6. Multiple console tabs, detailed flash diagnostics and in-app pairing repair require 0.6; use the [download page](index.html#download) to check the published version.
 
 Three things to do: **get the parts, install the app, plug in.** No toolchains, no terminal, no yak.
 
@@ -35,7 +35,7 @@ for the video, *Settings > Privacy & security > Camera > Let desktop apps access
 
 ## 3. Flash the adapter (once, in the app)
 
-<img src="assets/screenshots/flash-06.png" alt="The 0.6 preview flash window, showing bundled firmware, COM ports and pairing-preserving defaults" style="max-width:100%">
+<img src="assets/screenshots/flash-06.png" alt="The 0.6 flash window, showing bundled firmware, COM ports and pairing-preserving defaults" style="max-width:100%">
 
 1. Plug the board's **COM** port into your PC. **Leave the other one (USB) unplugged.** That one is a real keyboard and mouse
    that takes orders from kvm-it, and plugged into the computer you are flashing from it would be typing into your own machine.
@@ -61,7 +61,7 @@ From then on, move the cables to the next machine and the app reconnects by itse
 
 ## 5. Drive
 
-<img src="assets/screenshots/console-06.png" alt="The 0.6 preview with four disconnected console tabs, status chips and synthetic demo video" style="max-width:100%">
+<img src="assets/screenshots/console-06.png" alt="The 0.6 app with four disconnected console tabs, status chips and synthetic demo video" style="max-width:100%">
 
 The top bar is the whole control panel; the picture is the rest of the window. Green is working, amber is in progress, red is
 broken, grey is idle.

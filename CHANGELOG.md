@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased] (0.6.0: multiple consoles, clearer flashing, screens recognised by their text)
+## [0.6.0] - 2026-11-14
+
+Multiple consoles, clearer flashing and pairing repair; workflow automation is prerelease beta.
 
 **Release scope:** multiple consoles, adapter status, flashing and pairing recovery are the core of 0.6.
 Workflow automation, OCR and provisioning are included as **prerelease beta**, without end-to-end physical-laptop
