@@ -1,5 +1,131 @@
 # Changelog
 
+## [0.6.0] - 2026-11-14
+
+Multiple consoles, clearer flashing and pairing repair; workflow automation is prerelease beta.
+
+**Release scope:** multiple consoles, adapter status, flashing and pairing recovery are the core of 0.6.
+Workflow automation, OCR and provisioning are included as **prerelease beta**, without end-to-end physical-laptop
+verification. Automated tests and the partial Windows VM run are evidence for the steps they cover; password entry,
+MFA, enrolment and the Autopilot path remain unverified. The GUI, CLI and guides disclose this before workflow use.
+
+### Known verification limits
+- The maintainer approved releasing with the Linux hardware regression deferred and explicitly disclosed. Linux CI does not establish hardware behaviour.
+- Workflow automation remains prerelease beta without end-to-end physical-laptop verification.
+- Bundled firmware 0.2.1 is built/source-verified, but its changed pairing-window behaviour has not been verified on a board.
+- macOS is ad-hoc signed and not notarized; its forget step still needs System Settings.
+
+### Added
+- **A full product pass on the website:** the multi-adapter bench story, current real-GUI demo screenshots, a wiring
+  diagram that separates BLE control from HDMI video, setup/recovery guidance, consistent documentation navigation,
+  responsive light/dark layouts and explicit workflow beta evidence. Downloads follow stable published assets;
+  the site labels 0.6 as a preview until the corresponding release is available.
+- **Several adapters in one window:** named console tabs keep independent Bluetooth links, capture cards, scripts,
+  workflows and status. Switching waits for queued manual input and release-all on the outgoing target; automated
+  runs continue in their own console. Adapter and video assignments are remembered per console, and the same adapter
+  or capture card cannot be assigned to two live consoles. Release captured input before selecting another tab.
+- **Firmware and board status are visible:** the adapter chip and console tabs show the firmware version reported by
+  the connected board; the Adapter popup also shows protocol version, target USB, held input, link counters, measured
+  status-response time and how long ago that status was checked.
+- **Repair pairing inside the console** (Windows/Linux): the chosen adapter's saved pairing is removed, it is paired
+  again and its console reconnects. Press BOOT briefly to authorize the new pairing; a 10-second trust reset is not
+  normally needed. Recovery is also available for the remembered adapter when it will not connect. Other consoles'
+  adapters cannot be repaired from the wrong console. macOS still requires System Settings for forgetting a BLE bond.
+- **`kvmit repair-pairing --device <id>`**: the same recovery from the CLI, requiring the exact target ID.
+- **Flashing explains its work:** selected COM port, USB serial, firmware version from the image, speed, chip MAC,
+  preparation/write/verification/restart stages, elapsed time and copyable diagnostics; retry at 115200 baud and flash
+  another board without closing the window. Success distinguishes verified flash from a running-firmware check.
+- `kvmit flash --baud <rate>` and the small `kvmit-flash` diagnostic example, for testing without building the GUI.
+
+### Fixed
+- **Sparse boot-drive images could time out on otherwise working boards.** espflash 4.6 waits for a previous
+  compressed block to finish using the next block's timeout; the disk's long empty regions can expand one block to
+  more than 1 MiB. Write the data image as sector-aligned 64 KiB regions in one session, verifying every region.
+  Reproduced with the installed 0.5.1 on COM3 at 460800 and 115200 baud; the patched flasher wrote and verified the
+  same installed firmware on all four physical boards (COM3–COM6), preserving the settings partition.
+- Flash errors retain the underlying command and cause, rather than only “Error while connecting to device”.
+- Windows pairing and forgetting use the device's **association endpoint**, rather than needing a working GATT device
+  handle to repair a broken pairing. Saved/offline pairing records can be removed directly. Pairing operations are
+  serialized within the app and bounded; a previous connection attempt is retired before repair. The endpoint's
+  Bluetooth address is checked before any pairing is removed. **Hardware-verified, maintainer-reported on Windows
+  (2026-11-14):** pairing repair worked in the 0.6.0 preview.
+
+### Hardware verification
+- **Windows, 0.6.0 preview (2026-11-14, maintainer report):** pairing repair, adding a console and using the GUI with
+  multiple physical adapters worked. The exact simultaneous adapter count and held-input/failure-case handoffs were
+  not reported; the latter remain host-tested. Linux and macOS were not part of this pass.
+
+### Added (workflow changes already in progress)
+- **The workflow panel, section by section** ([docs/workflow-panel.md](docs/workflow-panel.md)): what each part is
+  for, which four you use on a normal day, what to leave closed, and the words the panel uses.
+- **Workflow screens are recognised by their text**, read with the operating system's own recogniser: Windows OCR
+  (built in), Apple Vision on macOS, Tesseract on Linux if installed. A state lists the phrases its screen shows
+  (`detect.text`, one set or alternative sets); its pictures become optional. The built-in Windows 11 provisioning
+  workflow has phrases for every screen and needs **no saved pictures** where text can be read. Windows OCR was tried
+  against `ocrs` first: it read every setup screen essentially perfectly in 20-40 ms, `ocrs` misread headings in 1-9 s.
+  The phrases from the region screen to the work sign-in page were read off Windows 11 25H2; VM-verified from REGION to
+  WORK_SIGNIN by text alone. Apple Vision is compiled, not yet run on a Mac; Tesseract is host-tested.
+- **The organisation check reads the password page**: a new setup value, your sign-in domain (`tenant_domain`). The
+  sign-in entered must be an account in it before anything is typed, and the password is typed only when the password
+  page shows that very account (compared whole and exactly). Branding pictures are used only where no sign-in domain
+  is set.
+- **The sign-in is read back before Enter** (`verify_typed`, `submit`): with Caps Lock on at the laptop the run stops
+  naming it; with another keyboard layout (a `"` for the `@`) it stops before Enter. VM-verified both ways.
+- **Each laptop has its own run** (general review #8): name it under **This laptop** (`kvmit run --laptop`). The
+  checkpoint records the name and when it was saved; Resume says both, and is refused on a laptop with another name
+  (moving the adapter to the next laptop no longer offers the last one's checkpoint). **Every live run saves its
+  record** (trace and notes, no secrets) in `runs/`, named by the time and the laptop, headed by the laptop, the
+  adapter and the result. The laptop's name may not contain the password (it is saved), and a record never repeats a
+  name that a refusal says holds one.
+- **A run that never ends cleanly can be recovered** (general review #10): a live run records its progress before it
+  depends on it (a state entered, a step handed to you, keys about to be sent), and stops before the keys if it cannot
+  record it. If the app or the computer stops mid-run, the panel says which step it reached and offers **Recover the
+  interrupted run** (`kvmit run --recover`): what it recorded becomes the checkpoint. Resume then looks at the screen
+  first and asks before sending again what may have been sent. Recover is refused while the run is still going (the
+  run holds an operating-system lock that ends with it), and a crash while a run finishes recovers what it ended
+  with. No more deleting `.lock` files by hand; one left by 0.5 is recovered the same way, with a warning.
+- **Screen wording in the app:** a screen your laptops word differently gets its wording added under **Screen
+  wording** (pick the screen, read the current video's text and click a line, **Save wording**): only that screen's
+  phrases change in your copy, comments kept. It also says whether the screen on the video shows a screen's wording.
+  Host-tested; not yet looked at on screen.
+- **Scripts no longer act on a frozen picture** (general review #14): a `wait_for` passes only on what the capture
+  shows now. A picture older than 3 s never matches, the same captured frame seen again (a stalled capture) restarts
+  "stable for", and the timeout counts real time. Host-tested.
+- **A key release that fails is recovered like a chord's** (general review #16, desktop half): if a key-up or button-up
+  may not have arrived, every key is released, and if that fails too the link is closed so the adapter releases
+  them; input queued behind it is dropped. A script or workflow whose final release fails closes the link the same
+  way. Host-tested (builds and clippy); not yet forced on hardware. The firmware half (#17) is still open.
+- **Settings are never lost or silently unsaved** (general review #24): updates from the app and from `kvmit` runs
+  happen one at a time under a lock beside the settings file, so one never overwrites another's change, and a
+  settings file that cannot be written says so instead of looking saved. Host-tested.
+- **Secrets typed by hand are handled like a workflow's** (general review #22, in part): `kvmit type --secret` refuses
+  text given on the command line (it would stay in the shell's history) and always asks for it hidden; the app's Type
+  box is wiped, with its undo history, once the text is sent. Secrets still pass through ordinary strings inside a run.
+- **A burst of keys has a real deadline** (general review #15): once a workflow starts sending after its last look,
+  the keys stop part-way if they run past 5 s by the clock (a slow or retrying link), every key is released, and the
+  run stops saying so; a resume asks before sending them again. Host-tested.
+- **A run stops as soon as the adapter's link drops** (general review #18): it no longer watches on (a manual step,
+  updates) and fails at its next key. It says so and keeps its checkpoint; after reconnecting, Resume looks at the
+  screen first and asks before sending again. Host-tested.
+- Review round 72 (Codex): the key deadline holds between a modifier and its key and between a chord's keys; a gap
+  in the capture restarts "stable for", and a match after a wait's timeout does not count; Screen wording never saves
+  an entered secret and keeps a `+` inside its phrase; a settings save waits at most 1 s for another and never writes
+  without the lock.
+- `kvmit run --check` and the app's Reference screens say which screens are recognised by text on this computer and
+  which pictures are not needed.
+
+### Changed
+- **The built-in provisioning workflow no longer assumes Windows Autopilot and an accepted licence**: both are left
+  for you to choose (Set up your copy, `kvmit workflow new`), and no run starts until they are. A `[[setup]]` choice
+  whose `[config]` value is empty is "not chosen yet" (`Workflow::unchosen`).
+- A live run of a workflow that checks the sign-in by reading the screen does not start on a computer that cannot read
+  text (it never sends the sign-in unchecked). A dry run still runs.
+- **Firmware 0.2.1: a paired adapter no longer opens a pairing window when it powers on.** Before, every power-on accepted a
+  new controller for 15 s, so an adapter carried from laptop to laptop was open to pairing each time. Now the 15 s
+  boot window opens only while no controller is trusted (a new adapter, or after a 10 s BOOT hold); replacing the
+  controller takes a BOOT press. Your paired controller reconnects as before. Reflash the adapter to get it
+  (Adapter > Flash adapter). The app bundles 0.2.1; **not yet run on a board**.
+
 ## [0.5.1] - 2026-11-06 (set up workflows without a text editor, provisioning guide)
 
 ### Added

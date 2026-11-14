@@ -8,7 +8,7 @@ See it. Type at it. Install it. No software on the target, no network, no hundre
 HDMI capture card, and one app.
 
 <p align="center"><img src="docs/assets/screenshots/console-06.png" alt="The kvm-it 0.6 preview with four disconnected console tabs and synthetic demo video" width="820"></p>
-<p align="center"><sub>The real 0.6 preview on Windows 11. Disconnected demo consoles; the target picture is synthetic. Downloads remain the published release until 0.6 ships.</sub></p>
+<p align="center"><sub>The real 0.6 app on Windows 11. Disconnected demo consoles; the target picture is synthetic.</sub></p>
 
 ## Three steps
 
@@ -24,7 +24,7 @@ HDMI capture card, and one app.
 - **See and drive the target in one window.** Click the picture and your keyboard and mouse belong to the target; **Ctrl+Alt+Esc** (**Ctrl+Option+Esc** on a Mac) gives
   them back (that chord is never sent). It works from the BIOS splash onward: if the target takes a USB keyboard, kvm-it can drive it.
 - **The keys your PC would swallow.** One-click Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more; on Windows, and on macOS once kvm-it is allowed under *Privacy & Security > Accessibility*, the rest go to the target too while captured (Linux, or a Mac without that permission: use the Keys button for them).
-- **Several adapters in one console (0.6 preview).** Named tabs keep independent Bluetooth links, capture cards and runs. The Adapter popup shows running firmware and board status, with pairing repair on Windows and Linux.
+- **Several adapters in one console (0.6).** Named tabs keep independent Bluetooth links, capture cards and runs. The Adapter popup shows running firmware and board status, with pairing repair on Windows and Linux.
 - **Zero-step reconnect.** Pair once. Move the cables to the next machine and the app reconnects by itself.
 - **Replayable setup scripts.** Native TOML or imported DuckyScript: text, keys, chords, delays, and *wait-for-the-screen* steps, so one slow
   install screen does not wreck everything after it. Preview and dry-run before anything is typed; abort leaves nothing held down.
@@ -54,14 +54,16 @@ the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what t
 
 <a id="verification"></a>
 
-## Status: v0.5.1
+## Status: v0.6.0
 
-The source checkout is preparing **0.6.0**: named consoles for several adapters in one window, visible running firmware
+Desktop **0.6.0** adds named consoles for several adapters in one window, visible running firmware
 and board status, and flashing with real stages and diagnostics. The sparse boot-drive flash timeout was reproduced
 with the installed Windows 0.5.1 and fixed locally; the same installed firmware then wrote and verified on four
 physical boards. On 2026-11-14 the maintainer confirmed pairing repair, adding a console and using the GUI with multiple
 physical adapters on Windows. The exact simultaneous adapter count and failure-case input handoffs were not reported.
 See the [0.6 console instructions](docs/getting-started.md#several-targets-in-one-console-06).
+
+**Linux hardware regression was not rerun for 0.6.** The maintainer approved shipping with that gap disclosed; Linux CI is software coverage, not a physical-controller/board pass.
 
 **Workflow automation is prerelease beta in 0.6.** OCR and provisioning have automated tests and partial Windows VM
 coverage, but have not been tested end to end on physical laptops. Password entry, MFA, enrolment and the Autopilot

@@ -1,0 +1,36 @@
+name: Windows
+
+# The Windows controller's tests, run on Windows itself. The Linux CI job cross-builds for Windows but cannot run
+# anything there: Media Foundation capture, Windows OCR (workflows read setup screens with it), the settings and file
+# rules that differ on Windows. General review 2026-11-07, finding 1.
+on:
+  push: {branches: [main]}
+  pull_request:
+    paths:
+      - desktop/**
+      - .github/workflows/windows.yml
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain (same version as the containers)
+        run: rustup toolchain install 1.99.0 --profile minimal --component clippy && rustup default 1.99.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/target
+          key: windows-cargo-${{ hashFiles('desktop/Cargo.lock') }}
+          restore-keys: windows-cargo-
+      - name: Test
+        working-directory: desktop
+        run: cargo test --workspace --locked
+      - name: Lint
+        working-directory: desktop
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings

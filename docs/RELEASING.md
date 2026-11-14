@@ -36,6 +36,11 @@ the full physical-laptop provisioning run. Keep that label and the unverified st
 guides and release notes. The physical-laptop run remains a gate for graduating workflows from beta, not for 0.6.
 This does not waive independent review, CI, signing, installation checks or the shared-client Linux hardware check.
 
+**0.6 Linux hardware exception (2026-11-14):** after reviewing the candidate and its evidence limits, the maintainer
+explicitly approved: "Ship with Linux hardware gap disclosed." The 0.6 Linux physical-controller/board regression may
+therefore be deferred, provided the release notes and verification table state it was not rerun. This exception is
+limited to 0.6; automated cross-platform CI, independent review, signing and package checks still apply.
+
 1. Merge the PR into `main` (squash or merge commit; keep the review log).
 2. Tag the merge commit: `git tag -a vX.Y.Z -m "kvm-it X.Y.Z"` and push the tag.
 

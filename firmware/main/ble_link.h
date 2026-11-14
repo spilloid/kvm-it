@@ -1,7 +1,8 @@
 /* BLE peripheral link (controller <-> adapter only; target-facing input is USB HID).
  *
  * Trust model (docs/security.md): LE Secure Connections bonding, Just Works, gated by physical presence.
- *  - Every power-on opens a short pairing window (CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S; plug-in = presence).
+ *  - With no trusted controller yet, boot opens a short pairing window (CONFIG_KVMIT_BOOT_PAIRING_WINDOW_S).
+ *    Once one is trusted, only BOOT opens a window.
  *  - Outside a window only the bonded controller may connect; others are disconnected at once.
  *  - BOOT short press reopens the window (new pairing replaces the old bond); BOOT 10 s hold erases the bond.
  * Both GATT characteristics require an encrypted link, so an unbonded peer can never reach the protocol. */

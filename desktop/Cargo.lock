@@ -2272,7 +2272,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kvmit"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "clap",
  "ctrlc",
@@ -2301,7 +2301,7 @@ dependencies = [
 
 [[package]]
 name = "kvmit-ble"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "bluer",
  "btleplug",
@@ -2311,11 +2311,12 @@ dependencies = [
  "tokio",
  "uuid",
  "windows",
+ "windows-collections",
 ]
 
 [[package]]
 name = "kvmit-flash"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "espflash",
  "md-5 0.11.0",
@@ -2328,18 +2329,18 @@ dependencies = [
 
 [[package]]
 name = "kvmit-hid"
-version = "0.5.1"
+version = "0.6.0"
 
 [[package]]
 name = "kvmit-layout"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "kvmit-hid",
 ]
 
 [[package]]
 name = "kvmit-protocol"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2347,14 +2348,14 @@ dependencies = [
 
 [[package]]
 name = "kvmit-record"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "kvmit-video",
 ]
 
 [[package]]
 name = "kvmit-script"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "kvmit-hid",
  "kvmit-layout",
@@ -2367,7 +2368,7 @@ dependencies = [
 
 [[package]]
 name = "kvmit-video"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
@@ -2377,9 +2378,11 @@ dependencies = [
  "kvmit-script",
  "objc2 0.6.4",
  "objc2-av-foundation",
+ "objc2-core-foundation",
  "objc2-core-media",
  "objc2-core-video",
  "objc2-foundation 0.3.2",
+ "objc2-vision",
  "serde_json",
  "v4l",
  "windows",
@@ -3031,6 +3034,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-ml"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "201b055e6acfa0f9f15568255d3f03ce2b54bc86d1814442dc69138e36813e18"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-core-video"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3223,6 +3236,25 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-core-location",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-vision"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfc194758a2d5d7540b1ad283bfb9ca318ec608991892326e95b428230b2689b"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-av-foundation",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-image 0.3.2",
+ "objc2-core-media",
+ "objc2-core-ml",
+ "objc2-core-video",
+ "objc2-foundation 0.3.2",
+ "objc2-image-io",
 ]
 
 [[package]]

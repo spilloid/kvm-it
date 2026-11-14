@@ -25,6 +25,8 @@ pub enum RunError {
     Reference(String),
     Host(String),
     Cancelled,
+    /// The keys took longer than the deadline allows: stopped part-way (what was sent stays sent; every key is released).
+    Overran,
 }
 
 impl std::fmt::Display for RunError {
@@ -55,6 +57,10 @@ impl std::fmt::Display for RunError {
             RunError::Reference(s) => write!(f, "cannot load reference image: {s}"),
             RunError::Host(s) => write!(f, "device error: {s}"),
             RunError::Cancelled => write!(f, "aborted"),
+            RunError::Overran => write!(
+                f,
+                "the keys took longer than allowed after the last look at the screen; stopped part-way (what was sent stays sent, every key released)"
+            ),
         }
     }
 }
@@ -124,8 +130,25 @@ pub trait Host {
     fn reference_missing(&mut self, _name: &str) -> bool {
         false
     }
+    /// Every line of text on `frame` and where it is. An error means this computer cannot read text (no recogniser),
+    /// not that the screen has none. Hosts without a recogniser keep this default.
+    fn read_text(&mut self, _frame: &Frame) -> Result<Vec<crate::text::TextLine>, String> {
+        Err("this host cannot read text".into())
+    }
+    /// A live workflow's progress, recorded durably before what depends on it: a state entered, a wait begun, keys
+    /// about to be sent (a journal a crash cannot lose). An error stops the run before those keys. Hosts that keep no
+    /// journal record nothing.
+    fn persist(&mut self, _checkpoint: &crate::workflow::Checkpoint) -> Result<(), String> {
+        Ok(())
+    }
     fn confirm(&mut self, message: &str) -> bool;
     fn cancelled(&self) -> bool;
+    /// Why keys can no longer reach the target (the adapter's link dropped), if so. A live workflow stops at once
+    /// rather than watch on and fail at its next key: resuming after a reconnect looks at the screen first. Hosts
+    /// without a link report nothing.
+    fn link_lost(&self) -> Option<String> {
+        None
+    }
     fn event(&mut self, ev: RunEvent);
 }
 
@@ -138,6 +161,9 @@ pub struct RunOptions {
     pub poll: Duration,
     /// Walk the script and emit events without sending anything or sleeping.
     pub dry_run: bool,
+    /// Stop before any further key or button once this moment has passed (a workflow's bound on how long keys may
+    /// go on after its last look at the screen, whatever the link's latency). `None`: no bound.
+    pub deadline: Option<std::time::Instant>,
 }
 
 impl Default for RunOptions {
@@ -148,6 +174,7 @@ impl Default for RunOptions {
             default_delay: Duration::ZERO,
             poll: Duration::from_millis(250),
             dry_run: false,
+            deadline: None,
         }
     }
 }
@@ -351,14 +378,36 @@ impl Runner<'_> {
         }
     }
     fn check(&self) -> Result<(), RunError> {
-        if self.host.cancelled() { Err(RunError::Cancelled) } else { Ok(()) }
+        if self.host.cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        if self.opts.deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return Err(RunError::Overran);
+        }
+        Ok(())
     }
     fn h<T>(r: Result<T, String>) -> Result<T, RunError> {
         r.map_err(RunError::Host)
     }
 
+    /// Before anything is pressed: not cancelled, and within the deadline. Releases never wait on this (a key pressed
+    /// is always let go, and the run ends with `release_all` whatever happens).
+    fn down(&mut self, key: Key) -> Result<(), RunError> {
+        self.check()?;
+        Self::h(self.host.key_down(key))
+    }
+
+    /// After an operation that pressed something: a press that itself ran past the deadline is reported, so nothing
+    /// after it goes on as if in time.
+    fn in_time(&self) -> Result<(), RunError> {
+        if self.opts.deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return Err(RunError::Overran);
+        }
+        Ok(())
+    }
+
     fn tap(&mut self, key: Key) -> Result<(), RunError> {
-        Self::h(self.host.key_down(key))?;
+        self.down(key)?;
         self.pause(self.opts.key_hold);
         Self::h(self.host.key_up(key))?;
         self.pause(self.opts.key_gap);
@@ -388,7 +437,7 @@ impl Runner<'_> {
                     self.check()?;
                     if !dry {
                         if s.shift {
-                            Self::h(self.host.key_down(Key::LEFT_SHIFT))?;
+                            self.down(Key::LEFT_SHIFT)?;
                         }
                         self.tap(s.key)?;
                         if s.shift {
@@ -405,7 +454,7 @@ impl Runner<'_> {
             Op::Chord(keys) => {
                 if !dry {
                     for k in keys {
-                        Self::h(self.host.key_down(*k))?;
+                        self.down(*k)?;
                     }
                     self.pause(self.opts.key_hold);
                     for k in keys.iter().rev() {
@@ -443,6 +492,7 @@ impl Runner<'_> {
             }
             Op::Click(mask) => {
                 if !dry {
+                    self.check()?;
                     Self::h(self.host.mouse_button(*mask, true))?;
                     self.pause(self.opts.key_hold);
                     Self::h(self.host.mouse_button(*mask, false))?;
@@ -456,9 +506,15 @@ impl Runner<'_> {
             }
             Op::Comment => {}
         }
+        if !dry && matches!(op, Op::Type { .. } | Op::Key(_) | Op::Chord(_) | Op::Click(_)) {
+            self.in_time()?;
+        }
         Ok(())
     }
 
+    /// A `wait_for` passes only on evidence from the capture as it is now: a picture older than [`WAIT_FRAME_MAX_AGE`]
+    /// never matches, the same captured frame seen again (a stalled capture) adds nothing to "stable" and starts it
+    /// over, and the timeout counts real time as well as the polls (a slow host or capture cannot stretch it).
     fn wait(&mut self, idx: usize, w: &WaitSpec) -> Result<(), RunError> {
         let (timeout, cont) = match w {
             WaitSpec::Screen { timeout, on_timeout_continue, .. } | WaitSpec::Stable { timeout, on_timeout_continue, .. } => {
@@ -470,49 +526,88 @@ impl Runner<'_> {
             _ => None,
         };
         let poll = self.opts.poll;
-        let mut elapsed = Duration::ZERO;
+        let started = std::time::Instant::now();
+        let mut polled = Duration::ZERO;
         let mut saw_frames = false;
         let mut best = 0.0f64;
         let mut prev: Option<Frame> = None;
+        // The last frame number looked at, kept apart from the comparison baseline `prev` (which a gap clears).
+        let mut last_seq: Option<u64> = None;
         let mut stable_for = Duration::ZERO;
+        let timed_out = |saw_frames: bool, best: f64| {
+            if cont { Ok(()) } else { Err(RunError::WaitTimeout { step: idx, saw_frames, best_similarity: best }) }
+        };
         loop {
             self.check()?;
-            if let Some(frame) = self.host.screen() {
-                saw_frames = true;
-                match w {
-                    WaitSpec::Screen { threshold, .. } => {
-                        let sim = frame.similarity(reference.as_ref().expect("screen wait has reference"));
-                        best = best.max(sim);
-                        if sim >= *threshold {
-                            return Ok(());
-                        }
-                    }
-                    WaitSpec::Stable { stable_for: need, .. } => {
-                        if let Some(p) = &prev {
-                            let sim = p.similarity(&frame);
-                            best = sim;
-                            if sim >= 0.995 {
-                                stable_for += poll;
-                            } else {
-                                stable_for = Duration::ZERO;
-                            }
-                            if stable_for >= *need {
+            // The timeout holds before a look is asked for, and again once the picture is compared: a slow capture or
+            // comparison cannot deliver a match after the wait has run out.
+            if polled.max(started.elapsed()) >= timeout {
+                self.host.event(RunEvent::WaitPolling { index: idx, elapsed: polled.max(started.elapsed()), best_similarity: best });
+                return timed_out(saw_frames, best);
+            }
+            // What it shows is accepted only if the wait has not run out by the end of comparing it (below).
+            let frame = self.host.screen();
+            let stale = frame.as_ref().is_some_and(|f| f.captured_at.is_some_and(|t| t.elapsed() > WAIT_FRAME_MAX_AGE));
+            // A frame number seen before: the capture delivered nothing new since the last look.
+            let repeated = frame.as_ref().is_some_and(|f| f.seq.is_some() && f.seq == last_seq);
+            if let Some(f) = &frame {
+                last_seq = f.seq;
+            }
+            match frame {
+                // No picture, an old one or the same one again: the screen went unobserved, so "stable" starts over
+                // from the next new picture.
+                None => {
+                    prev = None;
+                    stable_for = Duration::ZERO;
+                }
+                Some(_) if stale => {
+                    prev = None;
+                    stable_for = Duration::ZERO;
+                }
+                // A stalled capture: the screen went unobserved too. The next new picture starts "stable" afresh.
+                Some(_) if repeated => {
+                    prev = None;
+                    stable_for = Duration::ZERO;
+                }
+                Some(frame) => {
+                    saw_frames = true;
+                    match w {
+                        WaitSpec::Screen { threshold, .. } => {
+                            let sim = frame.similarity(reference.as_ref().expect("screen wait has reference"));
+                            best = best.max(sim);
+                            // Comparing takes time too: a match is accepted only within the wait.
+                            if sim >= *threshold && polled.max(started.elapsed()) < timeout {
                                 return Ok(());
                             }
+                            prev = Some(frame);
                         }
-                        prev = Some(frame);
+                        WaitSpec::Stable { stable_for: need, .. } => {
+                            if let Some(p) = &prev {
+                                let sim = p.similarity(&frame);
+                                best = sim;
+                                if sim >= 0.995 {
+                                    stable_for += poll;
+                                } else {
+                                    stable_for = Duration::ZERO;
+                                }
+                                if stable_for >= *need && polled.max(started.elapsed()) < timeout {
+                                    return Ok(());
+                                }
+                            }
+                            prev = Some(frame);
+                        }
                     }
                 }
             }
-            self.host.event(RunEvent::WaitPolling { index: idx, elapsed, best_similarity: best });
-            if elapsed >= timeout {
-                return if cont { Ok(()) } else { Err(RunError::WaitTimeout { step: idx, saw_frames, best_similarity: best }) };
-            }
+            self.host.event(RunEvent::WaitPolling { index: idx, elapsed: polled.max(started.elapsed()), best_similarity: best });
             self.host.sleep(poll);
-            elapsed += poll;
+            polled += poll;
         }
     }
 }
+
+/// The oldest a captured picture may be and still satisfy a script's `wait_for`: older, the screen may have changed.
+pub const WAIT_FRAME_MAX_AGE: Duration = Duration::from_secs(3);
 
 /// Run a compiled script. Always ends with `release_all` (success, error or abort) unless dry-running.
 pub fn run(ops: &[(usize, Op)], host: &mut dyn Host, opts: &RunOptions) -> Result<(), RunError> {
@@ -555,15 +650,28 @@ mod tests {
         sleeps: usize,
         confirm: bool,
         events: Vec<RunEvent>,
+        /// Looks (1-based) at which the capture delivers nothing.
+        gaps: Vec<usize>,
+        looks: usize,
+        /// Each look, and each key press, really takes this long.
+        look_cost: Duration,
+        key_cost: Duration,
     }
     impl Host for Mock {
-        fn key_down(&mut self, k: Key) -> Result<(), String> { self.log.push(format!("dn {:02x}", k.0)); Ok(()) }
+        fn key_down(&mut self, k: Key) -> Result<(), String> {
+            std::thread::sleep(self.key_cost);
+            self.log.push(format!("dn {:02x}", k.0));
+            Ok(())
+        }
         fn key_up(&mut self, k: Key) -> Result<(), String> { self.log.push(format!("up {:02x}", k.0)); Ok(()) }
         fn release_all(&mut self) -> Result<(), String> { self.log.push("release_all".into()); Ok(()) }
         fn mouse_move(&mut self, dx: i32, dy: i32) -> Result<(), String> { self.log.push(format!("mv {dx} {dy}")); Ok(()) }
         fn mouse_button(&mut self, m: u8, d: bool) -> Result<(), String> { self.log.push(format!("btn {m} {d}")); Ok(()) }
         fn sleep(&mut self, d: Duration) { self.slept += d; self.sleeps += 1; }
         fn screen(&mut self) -> Option<Frame> {
+            std::thread::sleep(self.look_cost);
+            self.looks += 1;
+            if self.gaps.contains(&self.looks) { return None; }
             if self.frames.is_empty() { return None; }
             let f = self.frames[self.frame_pos.min(self.frames.len() - 1)].clone();
             self.frame_pos += 1;
@@ -578,6 +686,75 @@ mod tests {
     }
 
     fn solid(v: u8) -> Frame { Frame::new(64, 36, vec![v; 64 * 36]).unwrap() }
+
+    #[test]
+    fn a_gap_in_the_capture_restarts_stable_and_a_late_match_does_not_count() {
+        // Three stable looks, then the capture delivers nothing, then one more matching frame: not stable yet.
+        let s = script("[[steps]]\nwait_for = { stable_for = \"1s\", timeout = \"5s\" }\n[[steps]]\nkey = \"A\"\n");
+        let mut m = Mock { gaps: vec![4, 5, 6], frames: (1..60).map(|n| solid(9).with_seq(Some(n))).collect(), ..Default::default() };
+        run(&compiled(&s, &Vars::new()), &mut m, &fast()).unwrap();
+        // Stability is rebuilt after the gap: a new baseline (look 7) and four more stable looks. Carried over, the
+        // three looks before the gap would have passed it at look 8.
+        assert_eq!(m.looks, 11);
+        // A wait that runs out while a slow capture is answering: its late match does not count.
+        let s = script("[[steps]]\nwait_for = { screen = \"ref.png\", timeout = \"200ms\" }\n[[steps]]\nkey = \"A\"\n");
+        let mut m = Mock { look_cost: Duration::from_millis(300), frames: vec![solid(200).with_seq(Some(1))], ..Default::default() };
+        let r = run(&compiled(&s, &Vars::new()), &mut m, &fast());
+        assert!(matches!(r, Err(RunError::WaitTimeout { .. })), "{r:?}");
+        assert!(!m.log.iter().any(|l| l == "dn 04"));
+    }
+
+    #[test]
+    fn a_capture_that_stalls_and_recovers_starts_stable_afresh() {
+        // Frames 1, 1 (stalled), 2: the stall is a gap, so 2 is a new baseline, not the end of a 250 ms "stable".
+        let s = script("[[steps]]\nwait_for = { stable_for = \"250ms\", timeout = \"5s\" }\n[[steps]]\nkey = \"A\"\n");
+        let frames = [1, 1, 2, 3, 4].into_iter().map(|n| solid(9).with_seq(Some(n))).collect();
+        let mut m = Mock { frames, ..Default::default() };
+        run(&compiled(&s, &Vars::new()), &mut m, &fast()).unwrap();
+        assert_eq!(m.looks, 4, "passes on frame 3 (baseline 2), not on frame 2");
+    }
+
+    #[test]
+    fn the_deadline_holds_between_a_modifier_and_its_key_and_between_chord_keys() {
+        // The deadline passes while Shift is being pressed: the character's own key never goes down.
+        let s = script("[[steps]]\ntext = \"A\"\n");
+        let o = RunOptions { deadline: Some(std::time::Instant::now() + Duration::from_millis(50)), ..fast() };
+        let mut m = Mock { key_cost: Duration::from_millis(80), ..Default::default() };
+        assert_eq!(run(&compiled(&s, &Vars::new()), &mut m, &o), Err(RunError::Overran));
+        assert_eq!(m.log, ["dn e1", "release_all"], "Shift only, then everything released");
+        // Between chord keys likewise; and a last press that overran is reported, not taken as in time.
+        let s = script("[[steps]]\nchord = [\"CTRL\", \"ALT\", \"DELETE\"]\n");
+        let o = RunOptions { deadline: Some(std::time::Instant::now() + Duration::from_millis(50)), ..fast() };
+        let mut m = Mock { key_cost: Duration::from_millis(80), ..Default::default() };
+        assert_eq!(run(&compiled(&s, &Vars::new()), &mut m, &o), Err(RunError::Overran));
+        assert_eq!(m.log, ["dn e0", "release_all"]);
+        let s = script("[[steps]]\nkey = \"ENTER\"\n");
+        let o = RunOptions { deadline: Some(std::time::Instant::now() + Duration::from_millis(50)), ..fast() };
+        let mut m = Mock { key_cost: Duration::from_millis(80), ..Default::default() };
+        assert_eq!(run(&compiled(&s, &Vars::new()), &mut m, &o), Err(RunError::Overran));
+    }
+
+    #[test]
+    fn a_frozen_or_old_picture_never_satisfies_a_wait() {
+        // A stalled capture: the same numbered frame over and over never becomes "stable".
+        let s = script("[[steps]]\nwait_for = { stable_for = \"1s\", timeout = \"3s\" }\n[[steps]]\nkey = \"A\"\n");
+        let mut m = Mock { frames: vec![solid(9).with_seq(Some(7))], ..Default::default() };
+        let r = run(&compiled(&s, &Vars::new()), &mut m, &fast());
+        assert!(matches!(r, Err(RunError::WaitTimeout { .. })), "{r:?}");
+        assert!(!m.log.iter().any(|l| l == "dn 04"), "nothing typed after a frozen capture");
+        // New frames of the same screen do.
+        let mut m = Mock { frames: (1..40).map(|n| solid(9).with_seq(Some(n))).collect(), ..Default::default() };
+        run(&compiled(&s, &Vars::new()), &mut m, &fast()).unwrap();
+        assert!(m.log.iter().any(|l| l == "dn 04"));
+        // A matching picture captured long ago is not the screen now.
+        let s = script("[[steps]]\nwait_for = { screen = \"ref.png\", timeout = \"1s\" }\n[[steps]]\nkey = \"A\"\n");
+        let old = std::time::Instant::now().checked_sub(Duration::from_secs(10));
+        let mut m = Mock { frames: vec![solid(200).with_seq(Some(1)).with_captured_at(old)], ..Default::default() };
+        let r = run(&compiled(&s, &Vars::new()), &mut m, &fast());
+        assert!(matches!(r, Err(RunError::WaitTimeout { saw_frames: false, .. })), "{r:?}");
+        let mut m = Mock { frames: vec![solid(200).with_seq(Some(1)).with_captured_at(Some(std::time::Instant::now()))], ..Default::default() };
+        run(&compiled(&s, &Vars::new()), &mut m, &fast()).unwrap();
+    }
     fn script(toml: &str) -> Script { Script::parse(&format!("format = 1\n{toml}")).unwrap() }
     fn compiled(s: &Script, vars: &Vars) -> Vec<(usize, Op)> { compile(s, vars, &UsAnsi).unwrap() }
     fn fast() -> RunOptions { RunOptions { key_hold: Duration::ZERO, key_gap: Duration::ZERO, ..Default::default() } }

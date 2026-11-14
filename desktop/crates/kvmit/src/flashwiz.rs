@@ -1,9 +1,10 @@
 //! The "Flash adapter" wizard (0.3.0): a window that walks through the safety checks and writes the adapter's firmware
 //! through its UART (COM) port. All the rules are in [`blockers`] (tested) and in `kvmit-flash`; the flashing runs on its
 //! own thread and the window only reads its progress.
-use kvmit_flash::{check_no_native_adapter, check_port, flash, list_ports, usb_devices, Image, Options, PortInfo, PortKind, ProgressCallbacks, Report};
+use kvmit_flash::{check_no_native_adapter, check_port, flash, list_ports, usb_devices, FlashStage, Image, Options, PortInfo, PortKind, ProgressCallbacks, Report};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 
 #[derive(Clone, Default)]
@@ -13,6 +14,15 @@ struct Progress {
     done: usize,
     total: usize,
     verifying: bool,
+    phase: String,
+    log: Vec<String>,
+    started: Option<Instant>,
+    changed: Option<Instant>,
+    completed_bytes: usize,
+    part_bytes: usize,
+    total_bytes: usize,
+    mac: Option<String>,
+    part_name: String,
 }
 
 type Outcome = Option<Result<Report, String>>;
@@ -29,6 +39,10 @@ pub struct Wizard {
     progress: Arc<Mutex<Progress>>,
     outcome: Arc<Mutex<Outcome>>,
     running: bool,
+    baud: u32,
+    history: Vec<String>,
+    recorded: bool,
+    attempt: String,
 }
 
 /// Where the firmware to flash is looked for: `KVMIT_FIRMWARE`, then the `firmware` folder that ships beside the program
@@ -79,23 +93,53 @@ struct Bar {
     ctx: egui::Context,
 }
 impl ProgressCallbacks for Bar {
+    fn stage(&mut self, stage: &FlashStage) {
+        let mut p = self.p.lock().unwrap();
+        p.phase = stage.to_string();
+        p.changed = Some(Instant::now());
+        let seconds = p.started.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let line = format!("{seconds:>4}s  {stage}");
+        p.log.push(line);
+        if let FlashStage::Preparing { name, index, count, bytes, .. } = stage {
+            p.part_name = name.clone();
+            p.part = *index;
+            p.parts = *count;
+            p.part_bytes = *bytes;
+            p.done = 0;
+            p.total = 0;
+            p.verifying = false;
+        }
+        if let FlashStage::Identified { mac, .. } = stage { p.mac = mac.clone(); }
+        self.ctx.request_repaint();
+    }
     fn init(&mut self, _addr: u32, total: usize) {
         let mut p = self.p.lock().unwrap();
-        p.part += 1;
         p.done = 0;
         p.total = total;
         p.verifying = false;
+        p.phase = format!("Writing {} (region {} of {})", p.part_name, p.part, p.parts);
+        p.changed = Some(Instant::now());
         self.ctx.request_repaint();
     }
     fn update(&mut self, current: usize) {
-        self.p.lock().unwrap().done = current;
+        let mut p = self.p.lock().unwrap();
+        p.done = current;
+        p.changed = Some(Instant::now());
         self.ctx.request_repaint();
     }
     fn verifying(&mut self) {
-        self.p.lock().unwrap().verifying = true;
+        let mut p = self.p.lock().unwrap();
+        p.verifying = true;
+        p.phase = format!("Verifying {} (region {} of {})", p.part_name, p.part, p.parts);
+        p.changed = Some(Instant::now());
         self.ctx.request_repaint();
     }
-    fn finish(&mut self, _skipped: bool) {
+    fn finish(&mut self, skipped: bool) {
+        let mut p = self.p.lock().unwrap();
+        p.completed_bytes += p.part_bytes;
+        p.part_bytes = 0;
+        let line = format!("Region {}: {}", p.part, if skipped { "already matches; verified without rewriting" } else { "written and verified" });
+        p.log.push(line);
         self.ctx.request_repaint();
     }
 }
@@ -120,6 +164,10 @@ impl Wizard {
             progress: Arc::default(),
             outcome: Arc::default(),
             running: false,
+            baud: 460_800,
+            history: Vec::new(),
+            recorded: false,
+            attempt: String::new(),
         };
         w.refresh();
         w
@@ -151,10 +199,12 @@ impl Wizard {
 
     fn start(&mut self, ctx: &egui::Context) {
         let (Ok(image), Some(port)) = (self.image.clone(), self.selected().cloned()) else { return };
-        *self.progress.lock().unwrap() = Progress { parts: image.parts.len(), ..Progress::default() };
+        *self.progress.lock().unwrap() = Progress { parts: image.parts.len(), total_bytes: image.total_bytes(), started: Some(Instant::now()), ..Progress::default() };
         *self.outcome.lock().unwrap() = None;
         self.running = true;
-        let (opts, p, o, ctx2) = (Options { erase_all: self.erase_all, allow_other_port: false, baud: None }, self.progress.clone(), self.outcome.clone(), ctx.clone());
+        self.recorded = false;
+        self.attempt = format!("{} · USB serial {} · firmware {} · {} baud · {}", port.name, port.serial.as_deref().unwrap_or("unavailable"), image.firmware_version().unwrap_or_else(|| "unknown".into()), self.baud, if self.erase_all { "full erase" } else { "keep pairing/settings" });
+        let (opts, p, o, ctx2) = (Options { erase_all: self.erase_all, allow_other_port: false, baud: Some(self.baud) }, self.progress.clone(), self.outcome.clone(), ctx.clone());
         std::thread::spawn(move || {
             let mut bar = Bar { p, ctx: ctx2.clone() };
             let r = flash(&port, &image, opts, &mut bar).map_err(|e| e.0);
@@ -170,28 +220,41 @@ impl Wizard {
         let finished = self.outcome.lock().unwrap().clone();
         if finished.is_some() {
             self.running = false;
+            if !self.recorded {
+                let result = match &finished { Some(Ok(_)) => "verified".to_string(), Some(Err(e)) => format!("failed: {e}"), _ => unreachable!() };
+                let mac = self.progress.lock().unwrap().mac.clone().unwrap_or_else(|| "identity not read".into());
+                self.history.push(format!("{} · {mac} · {result}", self.attempt));
+                self.recorded = true;
+            }
         }
-        let window = egui::Window::new("Flash adapter").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]);
+        let width = (ctx.screen_rect().width() - 48.0).clamp(240.0, 660.0);
+        let height = (ctx.screen_rect().height() - 48.0).max(180.0);
+        let window = egui::Window::new("Flash adapters").collapsible(false).resizable(true).default_width(width).max_width(width).max_height(height).vscroll(true).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]);
         // no close button while a flash is being written: an interrupted write can leave the board unbootable
         let window = if self.running { window } else { window.open(&mut open) };
         window.show(ctx, |ui| {
-            ui.set_max_width(520.0);
+            ui.set_max_width(width);
             if self.running {
                 let p = self.progress.lock().unwrap().clone();
-                ui.strong("Flashing… do not unplug the board");
-                let frac = if p.total == 0 { 0.0 } else { p.done as f32 / p.total as f32 };
-                ui.add(egui::ProgressBar::new(frac).text(format!(
-                    "part {} of {}{}",
-                    p.part.max(1),
-                    p.parts,
-                    if p.verifying { ", verifying" } else { "" }
-                )));
+                ui.strong(&self.attempt);
+                ui.horizontal(|ui| { ui.spinner(); ui.label(&p.phase); });
+                let current = if p.total == 0 { 0.0 } else { p.part_bytes as f32 * p.done as f32 / p.total as f32 };
+                let frac = (p.completed_bytes as f32 + current) / p.total_bytes.max(1) as f32;
+                ui.add(egui::ProgressBar::new(frac.min(0.99)).text(format!("Region {} of {} · {} blocks acknowledged", p.part, p.parts, p.done)));
+                ui.label(format!("Elapsed: {} s · Keep the COM cable connected", p.started.map(|t| t.elapsed().as_secs()).unwrap_or(0)));
+                if p.changed.is_some_and(|t| t.elapsed() > Duration::from_secs(10)) {
+                    ui.weak("Waiting for the board. Erasing and checksumming can take time; the flash worker is still running.");
+                }
+                self.details(ui, &p, None);
+                ctx.request_repaint_after(Duration::from_millis(250));
                 return;
             }
             match finished {
                 Some(Ok(report)) => {
                     ui.colored_label(crate::theme::palette(ui.visuals().dark_mode).good_text, format!("Flashed and verified{}.", report.mac.map(|m| format!(" ({m})")).unwrap_or_default()));
-                    ui.label("The adapter restarts by itself. Unplug the COM cable and plug the board into the target when you are ready, then connect from the Adapter chip. If it was paired before, it keeps its pairing; if you erased everything, pair it again.");
+                    ui.label("All image checksums match. A restart command was sent; connect over Bluetooth to confirm the running firmware version and target USB status.");
+                    if ui.button("Flash another board").clicked() { *self.outcome.lock().unwrap() = None; self.port = None; self.refresh(); }
+                    self.details(ui, &self.progress.lock().unwrap().clone(), None);
                     if ui.button("Close").clicked() {
                         close = true;
                     }
@@ -199,10 +262,14 @@ impl Wizard {
                 Some(Err(e)) => {
                     ui.colored_label(crate::theme::palette(ui.visuals().dark_mode).bad_text, "Flashing failed.");
                     ui.label(&e);
+                    ui.strong("This attempt did not complete. Retry and verify before using the board.");
                     ui.weak("The board can be recovered: flash again. If it is not found, hold BOOT while plugging in the COM cable, then flash again.");
                     if ui.button("Try again").clicked() {
                         *self.outcome.lock().unwrap() = None;
+                        self.refresh();
                     }
+                    if ui.button("Use slower speed (115200 baud)").clicked() { self.baud = 115_200; *self.outcome.lock().unwrap() = None; self.refresh(); }
+                    self.details(ui, &self.progress.lock().unwrap().clone(), Some(&e));
                 }
                 None => self.form(ui, ctx, external),
             }
@@ -210,9 +277,15 @@ impl Wizard {
         open && !close
     }
 
+    fn details(&self, ui: &mut egui::Ui, p: &Progress, error: Option<&str>) {
+        let mut text = format!("kvm-it {}\n{}\n{}\n{}", env!("CARGO_PKG_VERSION"), self.attempt, p.log.join("\n"), error.unwrap_or(""));
+        if ui.button("Copy flash diagnostics").clicked() { ui.ctx().copy_text(text.clone()); }
+        ui.collapsing("Flash details", |ui| { egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| { ui.add(egui::TextEdit::multiline(&mut text).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY).interactive(false)); }); });
+    }
+
     fn form(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, external: &[String]) {
         ui.label("Writes the firmware onto an adapter through the board's COM USB port.");
-        ui.horizontal(|ui| {
+        ui.collapsing("Firmware location (advanced)", |ui| {
             ui.label("Firmware folder");
             if ui.text_edit_singleline(&mut self.firmware).lost_focus() {
                 self.refresh();
@@ -220,7 +293,8 @@ impl Wizard {
         });
         match &self.image {
             Ok(im) => {
-                ui.colored_label(crate::theme::palette(ui.visuals().dark_mode).good_text, format!("Firmware OK: {} parts, {} bytes", im.parts.len(), im.total_bytes()));
+                ui.colored_label(crate::theme::palette(ui.visuals().dark_mode).good_text, format!("Firmware {} · ESP32-S3 · {} MiB flash · {} images", im.firmware_version().unwrap_or_else(|| "version unavailable".into()), im.flash_bytes / (1024 * 1024), im.parts.len()));
+                ui.small(format!("{:.1} MiB to check/write, including the boot drive", im.total_bytes() as f32 / (1024.0 * 1024.0)));
             }
             Err(e) if e.is_empty() => {}
             Err(e) => {
@@ -247,7 +321,7 @@ impl Wizard {
                 PortKind::NativeUsb => "native USB: never flash through this",
                 PortKind::Other => "not an adapter port",
             };
-            if ui.selectable_label(self.port.as_deref() == Some(p.name.as_str()), format!("{}  {}  ({tag})", p.name, p.description)).clicked() {
+            if ui.selectable_label(self.port.as_deref() == Some(p.name.as_str()), format!("{} · {tag} · USB serial {}", p.name, p.serial.as_deref().unwrap_or("unavailable"))).on_hover_text(&p.description).clicked() {
                 pick = Some(p.name.clone());
             }
         }
@@ -258,6 +332,10 @@ impl Wizard {
             ui.weak("This USB bridge reports no serial number, so two identical boards cannot be told apart: do not swap cables after choosing.");
         }
         ui.separator();
+        egui::ComboBox::from_label("Transfer speed").selected_text(format!("{} baud", self.baud)).show_ui(ui, |ui| {
+            ui.selectable_value(&mut self.baud, 460_800, "460800 baud (fast)");
+            ui.selectable_value(&mut self.baud, 115_200, "115200 baud (slower, for unreliable links)");
+        });
         ui.checkbox(&mut self.erase_all, "Erase everything first (also erases the pairing and settings)");
         if self.erase_all {
             ui.checkbox(&mut self.erase_ack, "I understand the adapter must be paired again afterwards");
@@ -273,6 +351,9 @@ impl Wizard {
         ui.weak("Keep the board's native USB port unplugged from this computer: it acts as a keyboard and mouse.");
         if ui.add_enabled(reasons.is_empty(), egui::Button::new("Flash adapter")).clicked() {
             self.start(ctx);
+        }
+        if !self.history.is_empty() {
+            ui.collapsing("Boards tested in this window", |ui| { for line in &self.history { ui.label(line); } });
         }
     }
 }

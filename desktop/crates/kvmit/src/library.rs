@@ -91,7 +91,7 @@ mod tests {
         let b = builtin("windows-11-oobe-provisioning").unwrap();
         let wf = Workflow::parse(b.source).unwrap();
         let keys: Vec<&str> = wf.setup.iter().map(|f| f.key.as_str()).collect();
-        assert_eq!(keys, ["deployment_mode", "tenant", "accept_license"]);
+        assert_eq!(keys, ["deployment_mode", "tenant", "tenant_domain", "accept_license"]);
         let set = |pairs: &[(&str, &str)]| {
             kvmit_script::setup::apply(b.source, &pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())
         };
@@ -117,6 +117,39 @@ mod tests {
     /// The provisioning template's safety rules: both paths are guarded by the approved profile, the password is typed
     /// only after the tenant check, secrets are only typed as secret text, and only screens a person must handle wait
     /// for one.
+    #[test]
+    fn the_provisioning_templates_phrases_recognise_what_windows_ocr_read_off_real_setup_screens() {
+        // `tests/oobe-text/<STATE>.txt`: Windows OCR's lines (x y w h|text) for Windows 11 25H2's setup screens in a VM,
+        // read on 2026-11-07. Each must be its state, clearly ahead of every other state.
+        let wf = Workflow::parse(builtin("windows-11-oobe-provisioning").expect("built in").source).unwrap();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/oobe-text");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let want = path.file_stem().unwrap().to_string_lossy().split('-').next().unwrap().to_string();
+            let lines: Vec<kvmit_script::text::TextLine> = std::fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .filter(|l| !l.is_empty())
+                .map(|l| {
+                    let (r, text) = l.split_once('|').unwrap();
+                    let v: Vec<f64> = r.split(' ').map(|x| x.parse().unwrap()).collect();
+                    kvmit_script::text::TextLine { text: text.into(), rect: [v[0], v[1], v[2], v[3]] }
+                })
+                .collect();
+            let mut scores: Vec<(&str, f64)> =
+                wf.states.iter().filter_map(|s| s.detect.text_score(&lines).map(|(v, _)| (s.name.as_str(), v))).collect();
+            scores.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let (best, runner) = (scores[0], scores[1]);
+            assert_eq!(best.0, want, "{}: {scores:?}", path.display());
+            let state = wf.state(&want).unwrap();
+            assert!(best.1 >= state.detect.text_threshold, "{want}: {best:?}");
+            assert!(best.1 - runner.1 >= 0.2, "{want} is ambiguous: {scores:?}");
+            seen += 1;
+        }
+        assert_eq!(seen, 9);
+    }
+
     #[test]
     fn the_provisioning_template_keeps_its_safety_rules() {
         let b = BUILTINS.iter().find(|b| b.file == "windows-11-oobe-provisioning.toml").unwrap();
@@ -180,11 +213,18 @@ mod tests {
             seq: u64,
             /// The screen each typed character (not Enter, not a modifier) landed on.
             pub typed: Vec<&'static str>,
+            /// What a sign-in field shows once typed into (the test's sign-in, or how the target mangled it).
+            pub echo: &'static str,
+            /// The text cursor is at the start of the field (Home after typing): until then it sits on the last letter,
+            /// which the reader drops, as Windows OCR does.
+            home: bool,
+            /// The screen each navigation key (Home, End, arrows, Page Up/Down, Delete) landed on.
+            pub nav: Vec<&'static str>,
         }
 
         impl Target {
             pub fn new(screens: Vec<(&'static str, Next)>) -> Target {
-                Target { screens, pos: 0, looks_here: 0, seq: 0, typed: Vec::new() }
+                Target { screens, pos: 0, looks_here: 0, seq: 0, typed: Vec::new(), echo: "ada@contoso.com", home: false, nav: Vec::new() }
             }
             fn here(&self) -> &'static str {
                 self.screens[self.pos].0
@@ -204,9 +244,14 @@ mod tests {
                         self.pos += 1;
                         self.looks_here = 0;
                     }
-                } else if !(0xe0..=0xe7).contains(&k.0) && k.0 != 0x51 {
+                } else if (0x4a..=0x52).contains(&k.0) {
+                    let here = self.here();
+                    self.nav.push(here);
+                    self.home = k.0 == 0x4a;
+                } else if !(0xe0..=0xe7).contains(&k.0) {
                     let here = self.here();
                     self.typed.push(here);
+                    self.home = false;
                 }
                 Ok(())
             }
@@ -231,6 +276,42 @@ mod tests {
                 self.seq += 1;
                 Some(pattern(self.here()).with_seq(Some(self.seq)).with_captured_at(Some(std::time::Instant::now())))
             }
+            fn read_text(&mut self, _: &Frame) -> Result<Vec<kvmit_script::text::TextLine>, String> {
+                // What each Windows 11 setup screen says (as Windows OCR reads it: headings wrap), and on a sign-in
+                // page, once something was typed there, the sign-in the field shows.
+                let text = match self.here() {
+                    "region" => "Is this the right country or region?|United States|Afghanistan",
+                    "keyboard" => "Is this the right keyboard layout or input|method?|US",
+                    "second-keyboard" => "Want to add a second keyboard layout?|Add layout|Skip",
+                    "network" => "Let's connect you to a network|Install driver",
+                    "updates" => "Checking for updates",
+                    "license" => "License agreement|Accept",
+                    "device-name" => "Name your device|Make this device yours with unique names.|Skip",
+                    "setup-choice" => "How would you like to set up this|device?|Set up for work or school",
+                    "autopilot-signin" => "Welcome to Contoso|Sign in",
+                    "work-signin" => "Let's set things up for your work or|school|Sign in",
+                    "tenant-contoso" => "\u{2190} ada@contoso.com|Enter password",
+                    "tenant-fabrikam" => "\u{2190} ada@fabrikam.com|Enter password",
+                    "mfa" => "Approve sign in request",
+                    "privacy" => "Choose privacy settings for your device",
+                    "esp" => "Setting up your device for work",
+                    "hello" => "Windows Hello",
+                    "desktop" => "Recycle Bin",
+                    _ => "",
+                };
+                let echo = match (self.here(), self.typed_on(self.here())) {
+                    ("autopilot-signin" | "work-signin", n) if n > 0 && self.home => self.echo,
+                    ("autopilot-signin" | "work-signin", n) if n > 0 => &self.echo[..self.echo.len() - 1],
+                    _ => "",
+                };
+                Ok(text
+                    .split('|')
+                    .chain([echo])
+                    .filter(|l| !l.is_empty())
+                    .enumerate()
+                    .map(|(i, l)| kvmit_script::text::TextLine { text: l.into(), rect: [0.55, 0.2 + 0.05 * i as f64, 0.3, 0.03] })
+                    .collect())
+            }
             fn reference(&mut self, name: &str) -> Result<Frame, String> {
                 // The password page is the organisation's branded page: its reference is the tenant's picture.
                 let name = name.strip_prefix("oobe-win11/").unwrap_or(name).trim_end_matches(".png");
@@ -248,14 +329,28 @@ mod tests {
 
     fn provisioning(mode: &str) -> Workflow {
         let b = BUILTINS.iter().find(|b| b.file == "windows-11-oobe-provisioning.toml").unwrap();
-        // Only the profile's line: the guards say `deployment_mode = "..."` too.
-        let src = b.source.replacen("\ndeployment_mode = \"autopilot\"", &format!("\ndeployment_mode = \"{mode}\""), 1);
-        Workflow::parse(&src).unwrap()
+        // The built-in leaves both choices open: a copy makes them (as Set up your copy does).
+        let values = [("deployment_mode".to_string(), mode.to_string()), ("accept_license".to_string(), "yes".to_string())].into();
+        Workflow::parse(&kvmit_script::setup::apply(b.source, &values).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_built_in_provisioning_workflow_runs_only_once_its_choices_are_made() {
+        let b = BUILTINS.iter().find(|b| b.file == "windows-11-oobe-provisioning.toml").unwrap();
+        let wf = Workflow::parse(b.source).unwrap();
+        let open: Vec<&str> = wf.unchosen().iter().map(|f| f.key.as_str()).collect();
+        assert_eq!(open, ["deployment_mode", "accept_license"], "method and licence are the user's to choose");
+        let mut t = sim::Target::new(vec![("region", sim::Next::Enter)]);
+        let r = provision(&wf, &mut t);
+        assert!(matches!(&r.result, Err(kvmit_script::WorkflowError::Options(m)) if m.contains("set up this workflow first")), "{:?}", r.result);
+        assert!(t.typed.is_empty() && t.pos == 0, "nothing sent");
+        // Choosing them in a copy is all it takes.
+        assert!(provisioning("work_account").unchosen().is_empty());
     }
 
     fn provision(wf: &Workflow, target: &mut sim::Target) -> kvmit_script::WorkflowReport {
         let secrets: kvmit_script::Vars =
-            [("username".to_string(), "ada@contoso.example".to_string()), ("password".to_string(), "pw-123".to_string())].into();
+            [("username".to_string(), "ada@contoso.com".to_string()), ("password".to_string(), "pw-123".to_string())].into();
         let mut opts = kvmit_script::WorkflowOptions::default();
         opts.run.key_hold = std::time::Duration::ZERO;
         opts.run.key_gap = std::time::Duration::ZERO;
@@ -285,9 +380,10 @@ mod tests {
         let r = provision(&provisioning("autopilot"), &mut t);
         assert_eq!(r.result, Ok(()), "{:#?}", r.trace);
         assert_eq!(path(&r), ["KEYBOARD", "SECOND_KEYBOARD", "NETWORK", "UPDATES", "AUTOPILOT_SIGNIN", "PASSWORD", "MFA", "ESP", "HANDOFF"]);
-        assert_eq!(t.typed_on("autopilot-signin"), "ada@contoso.example".len());
+        assert_eq!(t.typed_on("autopilot-signin"), "ada@contoso.com".len());
         assert_eq!(t.typed_on("tenant-contoso"), "pw-123".len(), "the password only on the verified password page");
-        assert_eq!(t.typed.len(), "ada@contoso.example".len() + "pw-123".len(), "nothing typed anywhere else");
+        assert_eq!(t.typed.len(), "ada@contoso.com".len() + "pw-123".len(), "nothing typed anywhere else");
+        assert_eq!(t.nav, ["autopilot-signin"], "Home only on the sign-in page, after typing");
         assert_eq!(r.context.derived["enrolment"].0, "Windows Autopilot");
 
         // Work or school account: licence, device name by hand, "work or school", sign-in, privacy by hand.
@@ -336,8 +432,16 @@ mod tests {
         // Another organisation's sign-in page: the password is never typed.
         let mut t = sim::Target::new(vec![("autopilot-signin", Enter), ("tenant-fabrikam", Enter), ("esp", Looks(1000))]);
         let r = provision(&provisioning("autopilot"), &mut t);
-        assert!(r.result.is_err(), "{:?}", r.result);
+        assert!(matches!(r.result, Err(kvmit_script::WorkflowError::AccountNotShown { .. })), "{:?}", r.result);
         assert_eq!(t.typed_on("tenant-fabrikam"), 0, "no password typed into another organisation's page");
+
+        // Caps Lock on at the target: the sign-in shows in capitals, and Enter is never pressed on it.
+        let mut t = sim::Target::new(vec![("work-signin", Enter), ("tenant-contoso", Enter)]);
+        t.echo = "ADA@CONTOSO.COM";
+        let r = provision(&provisioning("work_account"), &mut t);
+        assert!(matches!(r.result, Err(kvmit_script::WorkflowError::TypedNotShown { caps_lock: true, .. })), "{:?}", r.result);
+        assert_eq!(t.pos, 0, "still on the sign-in page");
+        assert_eq!(t.typed_on("tenant-contoso"), 0);
     }
 
     #[test]

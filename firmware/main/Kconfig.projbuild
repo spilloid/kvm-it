@@ -19,13 +19,13 @@ menu "kvm-it"
             to pair. Physical presence gates pairing; see docs/security.md.
 
     config KVMIT_BOOT_PAIRING_WINDOW_S
-        int "Pairing window at power-on (seconds, 0 = none)"
+        int "Pairing window at boot while no controller is trusted (seconds, 0 = none)"
         range 0 300
         default 15
         help
-            Every power-on (plug-in) opens a short pairing window, bonded or not, so a new controller can pair
-            without pressing BOOT. Plug-in counts as physical presence. After it closes, BOOT short-press opens
-            the full KVMIT_PAIRING_WINDOW_S window. See docs/security.md for the trade-off.
+            An adapter with no trusted controller opens a short pairing window at boot, so the first pairing needs
+            no BOOT press. Once a controller is trusted, no boot opens a window: replacing it takes a BOOT
+            short-press (the full KVMIT_PAIRING_WINDOW_S window). See docs/security.md.
 
     config KVMIT_SELFTEST
         bool "Run the M2 HID self-test at boot (types into the target!)"

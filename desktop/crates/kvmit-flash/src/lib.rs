@@ -15,7 +15,68 @@
 use serde::Deserialize;
 use std::path::{Component, Path, PathBuf};
 
-pub use espflash::target::ProgressCallbacks;
+/// Progress shared by the CLI and GUI, including the work before the first write.
+pub trait ProgressCallbacks {
+    fn stage(&mut self, _stage: &FlashStage) {}
+    fn init(&mut self, addr: u32, total: usize);
+    fn update(&mut self, current: usize);
+    fn verifying(&mut self);
+    fn finish(&mut self, skipped: bool);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlashStage {
+    Validating,
+    Connecting,
+    Identified { mac: Option<String>, flash_bytes: u32 },
+    ReadingSettings,
+    StoredFirmware { version: Option<String> },
+    Erasing,
+    Preparing { name: String, offset: u32, bytes: usize, index: usize, count: usize },
+    Resetting,
+    Complete,
+}
+
+impl std::fmt::Display for FlashStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Validating => write!(f, "Checking firmware, USB connections and selected port"),
+            Self::Connecting => write!(f, "Connecting to the ESP32-S3 bootloader"),
+            Self::Identified { mac, flash_bytes } => write!(f, "ESP32-S3 · {} · {} MiB flash", mac.as_deref().unwrap_or("MAC unavailable"), flash_bytes / (1024 * 1024)),
+            Self::ReadingSettings => write!(f, "Reading partition table; checking that pairing and settings stay intact"),
+            Self::StoredFirmware { version } => write!(f, "Stored factory application: {} (running firmware is checked over Bluetooth)", version.as_deref().unwrap_or("version unavailable")),
+            Self::Erasing => write!(f, "Erasing the entire chip, including pairing and settings"),
+            Self::Preparing { name, offset, bytes, index, count } => write!(f, "Preparing {name} ({index}/{count}), {bytes} bytes at 0x{offset:06x}"),
+            Self::Resetting => write!(f, "All images verified; restarting the adapter"),
+            Self::Complete => write!(f, "Flash verified; restart command sent (running firmware not yet checked)"),
+        }
+    }
+}
+
+struct WriteProgress<'a> {
+    inner: &'a mut dyn ProgressCallbacks,
+    parts: &'a [Part],
+    index: usize,
+}
+
+impl WriteProgress<'_> {
+    fn preparing(&mut self) {
+        let p = &self.parts[self.index];
+        self.inner.stage(&FlashStage::Preparing { name: p.name.clone(), offset: p.offset, bytes: p.data.len(), index: self.index + 1, count: self.parts.len() });
+    }
+}
+
+impl espflash::target::ProgressCallbacks for WriteProgress<'_> {
+    fn init(&mut self, addr: u32, total: usize) { self.inner.init(addr, total); }
+    fn update(&mut self, current: usize) { self.inner.update(current); }
+    fn verifying(&mut self) { self.inner.verifying(); }
+    fn finish(&mut self, skipped: bool) {
+        self.inner.finish(skipped);
+        self.index += 1;
+        if self.index < self.parts.len() { self.preparing(); }
+        else { self.inner.stage(&FlashStage::Resetting); }
+    }
+}
 
 const IMAGE_MAGIC: u8 = 0xE9;
 const CHIP: &str = "esp32s3";
@@ -31,6 +92,11 @@ const MAX_MANIFEST: u64 = 64 * 1024;
 const MAX_ENTRIES: usize = 8;
 const MAX_FLASH: u32 = 16 * 1024 * 1024;
 const PARTITION_TABLE_BYTES: u32 = 0xC00;
+/// Bound how much flash a compressed data block can expand to. The stub ACKs
+/// before finishing a block; espflash 4.6 budgets the *next* wait using the next
+/// block's size. A sparse disk can expand 16 KiB into >1 MiB, then time out on
+/// the following small block while the previous write is still in progress.
+const DATA_WRITE_CHUNK: usize = 64 * 1024;
 
 /// The USB identity of the board's UART bridge (CH343) and of the ESP32-S3's own USB peripheral.
 const UART_VID_PID: (u16, u16) = (0x1a86, 0x55d3);
@@ -46,6 +112,18 @@ impl std::fmt::Display for FlashError {
 impl std::error::Error for FlashError {}
 fn err<T>(m: impl Into<String>) -> Result<T, FlashError> {
     Err(FlashError(m.into()))
+}
+
+// espflash's outer error often only says "Error while connecting to device", even
+// during a write. Keep its sources: they identify the failed command and cause.
+fn operation_error(what: &str, error: &dyn std::error::Error) -> FlashError {
+    let mut message = format!("{what}: {error}");
+    let mut source = error.source();
+    while let Some(cause) = source {
+        message.push_str(&format!(": {cause}"));
+        source = cause.source();
+    }
+    FlashError(message)
 }
 
 /// One region of flash and what goes in it.
@@ -275,6 +353,10 @@ fn nvs_of(table: &[Partition]) -> Vec<&Partition> {
 }
 
 impl Image {
+    /// Version embedded by ESP-IDF in the application image, never the desktop version.
+    pub fn firmware_version(&self) -> Option<String> {
+        app_version(&self.parts.get(2)?.data)
+    }
     /// Load the image set an ESP-IDF build directory describes (`flasher_args.json`, files relative to it).
     pub fn from_build_dir(dir: &Path) -> Result<Image, FlashError> {
         let manifest = dir.join("flasher_args.json");
@@ -404,6 +486,32 @@ impl Image {
     fn flash_size_code(&self) -> u8 {
         (self.flash_bytes / (1024 * 1024)).trailing_zeros() as u8
     }
+}
+
+fn app_version(data: &[u8]) -> Option<String> {
+    // ESP image header (24), first segment header (8), esp_app_desc_t:
+    // magic (4), secure version (4), reserved (8), version (32).
+    if data.get(32..36)? != 0xabcd5432u32.to_le_bytes() { return None; }
+    let field = data.get(48..80)?;
+    let end = field.iter().position(|b| *b == 0)?;
+    let version = std::str::from_utf8(&field[..end]).ok()?;
+    if version.is_empty() || version.chars().any(char::is_control) { return None; }
+    Some(version.to_string())
+}
+
+fn write_parts(image: &Image) -> Vec<Part> {
+    let mut parts = image.parts[..3].to_vec();
+    for part in &image.parts[3..] {
+        let count = part.data.len().div_ceil(DATA_WRITE_CHUNK);
+        for (i, data) in part.data.chunks(DATA_WRITE_CHUNK).enumerate() {
+            parts.push(Part {
+                name: format!("{} (region {}/{count})", part.name, i + 1),
+                offset: part.offset + (i * DATA_WRITE_CHUNK) as u32,
+                data: data.to_vec(),
+            });
+        }
+    }
+    parts
 }
 
 /// An optional data image (the adapter's read-only boot drive): it must be written exactly into a FAT data partition of the table (never the
@@ -640,6 +748,7 @@ pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut d
     use espflash::flasher::Flasher;
     use espflash::image_format::Segment;
     use espflash::target::Chip;
+    progress.stage(&FlashStage::Validating);
     image.validate()?;
     if !opts.erase_all {
         image.check_keeps_settings()?;
@@ -652,7 +761,7 @@ pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut d
         Some(_) => return err(format!("{} is now a different device than the one you chose: choose it again", expected.name)),
         None => return err(format!("{} is gone: plug the board in and choose it again", expected.name)),
     }
-    let fail = |what: &str, e: &dyn std::fmt::Display| FlashError(format!("{what}: {e}"));
+    let fail = operation_error;
     let serial = serialport::new(&expected.name, 115_200)
         .flow_control(serialport::FlowControl::None)
         .open_native()
@@ -662,6 +771,7 @@ pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut d
         })?;
     let usb = serialport::UsbPortInfo { vid: expected.vid, pid: expected.pid, serial_number: expected.serial.clone(), manufacturer: None, product: None };
     let baud = opts.baud.unwrap_or(460_800);
+    progress.stage(&FlashStage::Connecting);
     let conn = Connection::new(serial, usb, ResetAfterOperation::HardReset, ResetBeforeOperation::DefaultReset, 115_200);
     let mut flasher = Flasher::connect(conn, true, true, false, None, Some(baud)).map_err(|e| fail("could not connect to the chip (hold BOOT while plugging in the COM cable if it does not enter the bootloader by itself)", &e))?;
     if flasher.secure_download_mode() {
@@ -674,21 +784,31 @@ pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut d
     if info.flash_size.encode_flash_size().ok() != Some(image.flash_size_code()) {
         return err(format!("the board's flash size does not match the firmware's ({} MB): not the expected board, nothing was written", image.flash_bytes / (1024 * 1024)));
     }
+    progress.stage(&FlashStage::Identified { mac: info.mac_address.clone(), flash_bytes: image.flash_bytes });
     if !opts.erase_all {
+        progress.stage(&FlashStage::ReadingSettings);
         // read the installed partition table and require the settings to stay where they are
         let scratch = Scratch::new().map_err(|e| fail("could not make a private scratch folder", &e))?;
         let file = scratch.path().join("partition-table.bin");
         flasher.read_flash(PARTITION_TABLE_OFFSET, PARTITION_TABLE_BYTES, 0x1000, 64, file.clone()).map_err(|e| fail("could not read the board's partition table", &e))?;
         let table = read_limited(&file, 64 * 1024, "the board's partition table").map_err(|e| fail("could not read the board's partition table", &e))?;
-        drop(scratch);
         image.check_matches_installed(&table)?;
+        let installed = parse_partition_table(&table, image.flash_bytes, false)?;
+        if let Some(app) = installed.iter().find(|p| p.ptype == 0 && p.subtype == 0) {
+            let header = scratch.path().join("app-header.bin");
+            flasher.read_flash(app.offset, 256, 0x1000, 64, header.clone()).map_err(|e| fail("could not read the stored application version", &e))?;
+            let bytes = read_limited(&header, 256, "stored application header")?;
+            progress.stage(&FlashStage::StoredFirmware { version: app_version(&bytes) });
+        }
+        drop(scratch);
     } else {
+        progress.stage(&FlashStage::Erasing);
         flasher.erase_flash().map_err(|e| fail("erase failed", &e))?;
     }
     // One session for all parts: `write_bin_to_flash` resets the chip after every call, so a second part would go to a
     // restarting chip. Data is padded to a multiple of 4 with 0xFF (erased flash) as the library requires.
-    let segments: Vec<Segment<'_>> = image
-        .parts
+    let parts = write_parts(image);
+    let segments: Vec<Segment<'_>> = parts
         .iter()
         .map(|p| {
             let mut data = p.data.clone();
@@ -696,7 +816,13 @@ pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut d
             Segment { addr: p.offset, data: std::borrow::Cow::Owned(data) }
         })
         .collect();
-    flasher.write_bins_to_flash(&segments, progress).map_err(|e| fail("writing the firmware failed", &e))?;
+    let mut writer = WriteProgress { inner: progress, parts: &parts, index: 0 };
+    writer.preparing();
+    flasher.write_bins_to_flash(&segments, &mut writer).map_err(|e| {
+        let context = parts.get(writer.index).map(|p| format!("writing {} at 0x{:06x} failed", p.name, p.offset)).unwrap_or_else(|| "restarting after the verified write failed".into());
+        fail(&context, &e)
+    })?;
+    progress.stage(&FlashStage::Complete);
     Ok(Report { mac: info.mac_address })
 }
 

@@ -1,0 +1,10 @@
+0.53 0.17 0.28 0.03|How would you like to set up this
+0.53 0.20 0.06 0.02|device?
+0.58 0.34 0.13 0.02|Set up for personal use
+0.55 0.37 0.29 0.02|Use a personal Microsoft account to get set up and have full
+0.55 0.40 0.11 0.01|control over this device.
+0.55 0.48 0.17 0.03|t Set up for work or school
+0.55 0.53 0.26 0.02|Get access to your organization's resources like email,
+0.55 0.55 0.28 0.02|netvuork, apps, and services. Your organization will have full
+0.55 0.58 0.11 0.01|control over this device.
+0.81 0.83 0.02 0.01|Next

@@ -5,7 +5,7 @@ The goal is one kvm-it: the same flows, the same words and the same safety on ev
 the contract working or a gap, and how we know. It is a living page: update the row, and its evidence, whenever platform code
 changes. First written in the cross-platform audit of 2026-10-19 (review round 36 in [dev-process.md](dev-process.md)).
 
-> **Version note:** entries marked 0.6 describe the unreleased preview, not the published 0.5.1 app. Their hardware evidence is limited to the specific maintainer reports named in each row.
+> **Version note:** entries marked 0.6 describe changes since 0.5.1. Their hardware evidence is limited to the specific maintainer reports named in each row.
 
 ## Evidence key
 

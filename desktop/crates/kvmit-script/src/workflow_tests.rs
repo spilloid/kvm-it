@@ -65,10 +65,27 @@ struct Sim {
     events: Vec<crate::exec::RunEvent>,
     /// Reference pictures not saved yet.
     missing: Vec<&'static str>,
+    /// The text each screen shows, by its grey level (`None`: this host cannot read text). Lines are `|`-separated.
+    texts: Option<Vec<(u8, &'static str)>>,
+    /// Once anything is typed, the current screen also shows this line (what the field displays).
+    echo: Option<&'static str>,
+    /// Each reading of the screen's text really takes this long (a slow recogniser).
+    read_delay: Duration,
+    /// Every record the run made of its progress, with how many key presses had been sent by then.
+    persisted: Vec<(Checkpoint, usize)>,
+    /// Recording progress fails from the Nth record on (1-based): a full disk.
+    fail_persist_at: Option<usize>,
+    /// Each key press really takes this long (a slow link: acknowledgements and retries).
+    key_cost: Duration,
+    /// The link drops after this many looks at the screen.
+    link_lost_after_looks: Option<usize>,
 }
 
 impl Host for Sim {
     fn key_down(&mut self, k: Key) -> Result<(), String> {
+        if !self.key_cost.is_zero() {
+            std::thread::sleep(self.key_cost);
+        }
         self.keys.push(format!("dn {:02x}", k.0));
         Ok(())
     }
@@ -167,6 +184,28 @@ impl Host for Sim {
     fn reference_missing(&mut self, name: &str) -> bool {
         self.missing.contains(&name)
     }
+    fn read_text(&mut self, frame: &Frame) -> Result<Vec<crate::text::TextLine>, String> {
+        if !self.read_delay.is_zero() {
+            std::thread::sleep(self.read_delay);
+        }
+        let texts = self.texts.as_ref().ok_or("no recogniser")?;
+        let shown = texts.iter().find(|(v, _)| *v == frame.gray[0]).map_or("", |(_, t)| *t);
+        let echo = self.echo.filter(|_| self.typed > 0 && self.enters_seen == 0).unwrap_or("");
+        Ok(shown
+            .split('|')
+            .chain([echo])
+            .filter(|l| !l.is_empty())
+            .enumerate()
+            .map(|(i, l)| crate::text::TextLine { text: l.into(), rect: [0.55, 0.15 + 0.05 * i as f64, 0.3, 0.03] })
+            .collect())
+    }
+    fn persist(&mut self, cp: &Checkpoint) -> Result<(), String> {
+        if self.fail_persist_at.is_some_and(|n| self.persisted.len() + 1 >= n) {
+            return Err("disk full".into());
+        }
+        self.persisted.push((cp.clone(), self.typed));
+        Ok(())
+    }
     fn confirm(&mut self, message: &str) -> bool {
         self.asked.push(message.to_string());
         if let Some((at, f)) = self.during_confirm.take() {
@@ -186,6 +225,9 @@ impl Host for Sim {
     }
     fn cancelled(&self) -> bool {
         self.cancel_after_keys.is_some_and(|n| self.typed >= n)
+    }
+    fn link_lost(&self) -> Option<String> {
+        self.link_lost_after_looks.filter(|n| self.looks >= *n).map(|_| "the adapter disconnected".into())
     }
     fn event(&mut self, e: crate::exec::RunEvent) {
         self.events.push(e);
@@ -602,6 +644,13 @@ fn approval_is_followed_by_a_fresh_look_before_typing() {
     let r = go(&w, &mut sim, &opts(), None);
     assert!(matches!(r.result, Err(WorkflowError::TenantMismatch { .. })), "{:?}", r.result);
     assert_eq!(enters(&sim), 3, "nothing typed on the enrollment screen");
+    // The trace never says keys went that the last look held back (it is the run's record for the ticket).
+    assert!(
+        !events(&r).iter().any(|e| matches!(e, WorkflowEvent::ActionAttempted { state, .. } if state == "AUTOPILOT")),
+        "{:?}",
+        r.trace
+    );
+    assert_eq!(r.checkpoint(&w).unwrap().attempted, Some(0));
     // Pictures from before the decision still queued in the capture (new frame numbers, old screen) are not the fresh
     // look: they arrive within the capture latency and are skipped.
     let mut sim = Sim {
@@ -862,7 +911,7 @@ fn a_secret_anywhere_in_the_definition_is_refused_before_anything_is_published()
     let r = run_workflow(&w, &secrets(), &UsAnsi, &mut sim, &opts(), None, &mut |t, c| {
         seen.push(format!("{t:?} {c:?}"));
     });
-    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "the workflow's name or description".into() }));
+    assert_eq!(r.result, Err(WorkflowError::SecretInFile { place: "the workflow's name, description or account".into() }));
     assert_eq!(r.context, Context::default(), "no context was built");
     for text in seen.iter().chain([trace_jsonl(&r), trace_markdown(&w, &r), format!("{r:?}")].iter()) {
         assert!(!text.contains("hunter2"), "{text}");
@@ -1128,9 +1177,9 @@ fn the_secret_check_reads_decoded_fields() {
     let w = Workflow::parse(&src).unwrap();
     let s: Vars = [("wifi".to_string(), "pass-word".to_string())].into();
     assert!(!src.contains("pass-word"));
-    assert!(matches!(check_secrets(&w, &s, None), Err(WorkflowError::SecretInFile { .. })));
+    assert!(matches!(check_secrets(&w, &s, None, ""), Err(WorkflowError::SecretInFile { .. })));
     let s: Vars = [("wifi".to_string(), "other".to_string())].into();
-    assert_eq!(check_secrets(&w, &s, None), Ok(()));
+    assert_eq!(check_secrets(&w, &s, None, ""), Ok(()));
 }
 
 #[test]
@@ -1186,4 +1235,583 @@ fn the_configured_tenants_picture_or_any_picture_at_all_is_needed_before_startin
     let mut sim = Sim { screens: screens(), missing: all, ..Default::default() };
     let r = go(&wf(), &mut sim, &opts(), None);
     assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("no reference picture")), "{:?}", r.result);
+}
+
+// ---------- recognised by text ----------
+
+const BY_TEXT: &str = r#"
+workflow_format = 1
+name = "by-text"
+start = ["REGION"]
+
+[[states]]
+name = "REGION"
+detect = { text = ["Is this the right country or region?"], region = [0.52, 0.12, 0.40, 0.75] }
+next = ["KEYBOARD"]
+actions = [ { key = "ENTER" } ]
+timeout = "2s"
+
+[[states]]
+name = "KEYBOARD"
+detect = { text = ["Is this the right keyboard layout or input method?"], region = [0.52, 0.12, 0.40, 0.75] }
+next = ["DEVICE_NAME"]
+actions = [ { key = "ENTER" } ]
+timeout = "2s"
+
+[[states]]
+name = "DEVICE_NAME"
+detect = { text = ["Name your device", "Make this device yours"] }
+terminal = true
+"#;
+
+fn oobe_text() -> Vec<(u8, &'static str)> {
+    vec![
+        (20, "Is this the right country or region?|United States|Afghanistan"),
+        // Wrapped onto two lines, as Windows shows it, and one letter misread.
+        (70, "Is this the right keybaard layout or input|method?|US"),
+        (120, "Name your device|Make this device yours with unique names.|Skip"),
+    ]
+}
+
+#[test]
+fn screens_are_recognised_by_their_text_with_no_pictures_at_all() {
+    let w = Workflow::parse(BY_TEXT).expect("a text-only workflow needs no pictures and no `match`");
+    assert!(w.states.iter().all(|s| s.detect.screens.is_empty()));
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(oobe_text()), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()));
+    let path: Vec<_> = r.context.history.iter().map(|t| (t.from.as_str(), t.to.as_str())).collect();
+    assert_eq!(path, [("REGION", "KEYBOARD"), ("KEYBOARD", "DEVICE_NAME")]);
+    assert!(!events(&r).iter().any(|e| matches!(e, WorkflowEvent::PicturesMissing { .. })), "nothing is missing");
+    let seen = events(&r).iter().find_map(|e| match e {
+        WorkflowEvent::StateObserved { observation } if observation.state.as_deref() == Some("KEYBOARD") => Some(observation.clone()),
+        _ => None,
+    });
+    let seen = seen.expect("KEYBOARD observed");
+    assert!(seen.confidence > 0.95 && seen.confidence < 1.0, "one misread letter: {}", seen.confidence);
+    assert_eq!(seen.reference.as_deref(), Some("text: Is this the right keyboard layout or input method?"));
+}
+
+#[test]
+fn a_screen_worded_differently_matches_any_one_of_its_phrase_sets() {
+    let src = BY_TEXT.replace(
+        "detect = { text = [\"Name your device\", \"Make this device yours\"] }",
+        "detect = { text = [[\"Checking for updates\"], [\"Please keep your PC on\"]] }",
+    );
+    let w = Workflow::parse(&src).unwrap();
+    assert_eq!(w.states[2].detect.text, [vec!["Checking for updates".to_string()], vec!["Please keep your PC on".to_string()]]);
+    let mut text = oobe_text();
+    text[2] = (120, "Please keep your PC on");
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(text), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()));
+    assert!(Workflow::parse(&BY_TEXT.replacen("text = [\"Name your device\", \"Make this device yours\"]", "text = [[]]", 1))
+        .unwrap_err()
+        .contains("at least one phrase"));
+}
+
+#[test]
+fn a_screen_whose_phrases_are_not_all_there_is_unknown_and_nothing_is_typed_on_it() {
+    // The device-name screen needs both its phrases: here only the heading is shown.
+    let mut text = oobe_text();
+    text[2] = (120, "Name your device|Skip");
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(text), ..Default::default() };
+    let r = go(&Workflow::parse(BY_TEXT).unwrap(), &mut sim, &opts(), None);
+    assert!(r.result.is_err(), "{:?}", r.result);
+    assert_ne!(r.context.current.as_deref(), Some("DEVICE_NAME"));
+    assert_eq!(enters(&sim), 2, "only REGION and KEYBOARD were acted on");
+}
+
+#[test]
+fn without_a_text_reader_a_text_only_workflow_says_why_before_sending_anything() {
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: None, ..Default::default() };
+    let r = go(&Workflow::parse(BY_TEXT).unwrap(), &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("text cannot be read here (no recogniser)")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing sent");
+}
+
+#[test]
+fn a_state_with_phrases_needs_no_picture_while_text_can_be_read_and_falls_back_to_it_otherwise() {
+    // KEYBOARD has phrases and a picture that is not saved: with a reader it is not missing; without one it is blind.
+    let src = OOBE.replace(
+        "detect = { screen = \"keyboard.png\" }",
+        "detect = { screen = \"keyboard.png\", text = [\"keyboard layout or input method\"] }",
+    );
+    let w = Workflow::parse(&src).unwrap();
+    let text = vec![(70, "Is this the right keyboard layout or input method?")];
+    let allow = WorkflowOptions { allow_missing_pictures: true, ..opts() };
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png"], texts: Some(text), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()), "the keyboard screen was read, not compared");
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png"], ..Default::default() };
+    let r = go(&w, &mut sim, &allow, None);
+    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::PicturesMissing { states, .. } if states == &["KEYBOARD"])), "{:?}", r.result);
+}
+
+#[test]
+fn detect_phrases_are_checked_when_the_file_is_read() {
+    let bad = |from: &str, to: &str| Workflow::parse(&BY_TEXT.replacen(from, to, 1)).unwrap_err();
+    assert!(bad("text = [\"Is this the right country or region?\"]", "text = [\"?!\"]").contains("3 to 200 characters"));
+    assert!(bad("text = [\"Is this the right country or region?\"]", "text = []").contains("needs detect text or at least one detect screen"));
+    assert!(bad("region = [0.52, 0.12, 0.40, 0.75] }
+next = [\"KEYBOARD\"]", "region = [0.52, 0.12, 0.40, 0.75], text_threshold = 0.3 }
+next = [\"KEYBOARD\"]")
+        .contains("text_threshold"));
+    // Pictures still need a comparison method.
+    assert!(bad("detect = { text = [\"Name your device\", \"Make this device yours\"] }", "detect = { screen = \"done.png\" }").contains("`match` is required"));
+}
+
+// ---------- the tenant check reads the password page ----------
+
+const SIGN_IN: &str = r#"
+workflow_format = 1
+name = "sign-in"
+start = ["WORK_SIGNIN"]
+account = "username"
+
+[config]
+tenant_domain = "contoso.com"
+
+[secrets]
+username = { prompt = "Sign-in" }
+password = { prompt = "Password" }
+
+[[states]]
+name = "WORK_SIGNIN"
+detect = { text = ["Let's set things up for your work or school"] }
+next = ["PASSWORD"]
+actions = [ { secret_text = "{{username}}" }, { key = "ENTER" } ]
+timeout = "2s"
+
+[[states]]
+name = "PASSWORD"
+detect = { text = ["Enter password"] }
+verify_tenant = true
+next = ["DONE"]
+actions = [ { secret_text = "{{password}}" }, { key = "ENTER" } ]
+timeout = "2s"
+
+[[states]]
+name = "DONE"
+detect = { text = ["Setting up your device for work"] }
+terminal = true
+"#;
+
+fn sign_in(page: &'static str, user: &str, dry: bool) -> (WorkflowReport, Sim) {
+    let w = Workflow::parse(SIGN_IN).unwrap();
+    let texts = vec![(20, "Let's set things up for your work or school|Sign in"), (70, page), (120, "Setting up your device for work")];
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(texts), ..Default::default() };
+    if dry {
+        sim.timeline = Some(sim.screens.iter().flat_map(|f| std::iter::repeat_n(f.clone(), 12)).collect());
+    }
+    let secrets: Vars = [("username".to_string(), user.to_string()), ("password".to_string(), "Hunter2!pw".to_string())].into();
+    let o = WorkflowOptions { run: RunOptions { dry_run: dry, ..opts().run }, ..opts() };
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &o, None, &mut |_, _| {});
+    (r, sim)
+}
+
+#[test]
+fn the_password_is_typed_only_on_a_page_showing_the_sign_in_entered() {
+    let (r, sim) = sign_in("\u{2190} Jane@Contoso.com|Enter password|Forgot my password", "jane@contoso.com", false);
+    assert_eq!(r.result, Ok(()));
+    assert_eq!(enters(&sim), 2, "sign-in and password");
+    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::TenantVerified { tenant, .. } if tenant == "contoso.com")));
+    let trace = trace_jsonl(&r);
+    assert!(!trace.contains("jane@contoso.com") && !trace.contains("Hunter2"), "secrets stay out of the trace");
+}
+
+#[test]
+fn a_page_showing_another_account_or_organisation_stops_before_the_password() {
+    for page in ["bob@contoso.com|Enter password", "jane@fabrikam.com|Enter password", "Enter password"] {
+        let (r, sim) = sign_in(page, "jane@contoso.com", false);
+        assert!(matches!(&r.result, Err(WorkflowError::AccountNotShown { state, domain }) if state == "PASSWORD" && domain == "contoso.com"), "{page}: {:?}", r.result);
+        assert_eq!(enters(&sim), 1, "{page}: only the sign-in was sent");
+    }
+}
+
+#[test]
+fn a_sign_in_outside_the_profiles_domain_is_refused_before_anything_is_sent() {
+    let (r, sim) = sign_in("jane@fabrikam.com|Enter password", "jane@fabrikam.com", false);
+    assert!(matches!(&r.result, Err(WorkflowError::Options(m)) if m.contains("not an account in contoso.com")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"));
+    // A dry run has no sign-in: the page needs only to show an account in the domain.
+    let (r, _) = sign_in("someone@contoso.com|Enter password", "placeholder", true);
+    assert_eq!(r.result, Ok(()), "{:?}", r.result);
+    let (r, _) = sign_in("someone@fabrikam.com|Enter password", "placeholder", true);
+    assert!(matches!(r.result, Err(WorkflowError::AccountNotShown { .. })), "{:?}", r.result);
+}
+
+#[test]
+fn without_text_the_tenant_check_needs_a_picture_or_refuses_to_start() {
+    let w = Workflow::parse(SIGN_IN).unwrap();
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: None, ..Default::default() };
+    let secrets: Vars = [("username".to_string(), "jane@contoso.com".to_string()), ("password".to_string(), "x".to_string())].into();
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+    assert!(matches!(&r.result, Err(WorkflowError::Text(_))), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"));
+    for (from, to, why) in [
+        ("tenant_domain = \"contoso.com\"", "tenant_domain = \"contoso\"", "must be a domain"),
+        ("account = \"username\"\n", "", "needs `account`"),
+        ("account = \"username\"", "account = \"nobody\"", "must name a secret"),
+    ] {
+        let e = Workflow::parse(&SIGN_IN.replacen(from, to, 1)).unwrap_err();
+        assert!(e.contains(why), "{e}");
+    }
+    assert!(valid_domain("mail.contoso.co.uk") && !valid_domain("-bad.com") && !valid_domain("contoso") && !valid_domain("a..b"));
+}
+
+// ---------- what was typed is read back before Enter ----------
+
+fn typed_back(echo: Option<&'static str>, dry: bool) -> (WorkflowReport, Sim) {
+    let src = SIGN_IN.replace(
+        "actions = [ { secret_text = \"{{username}}\" }, { key = \"ENTER\" } ]",
+        "actions = [ { secret_text = \"{{username}}\" } ]
+verify_typed = \"username\"
+submit = [ { key = \"ENTER\" } ]",
+    );
+    let w = Workflow::parse(&src).unwrap();
+    let texts = vec![
+        (20, "Let's set things up for your work or school|Sign in"),
+        (70, "jane@contoso.com|Enter password"),
+        (120, "Setting up your device for work"),
+    ];
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(texts), echo, ..Default::default() };
+    if dry {
+        sim.timeline = Some(sim.screens.iter().flat_map(|f| std::iter::repeat_n(f.clone(), 12)).collect());
+    }
+    let secrets: Vars = [("username".to_string(), "jane@contoso.com".to_string()), ("password".to_string(), "Hunter2!pw".to_string())].into();
+    let o = WorkflowOptions { run: RunOptions { dry_run: dry, ..opts().run }, ..opts() };
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &o, None, &mut |_, _| {});
+    (r, sim)
+}
+
+#[test]
+fn enter_is_pressed_on_the_sign_in_only_once_it_shows_as_typed() {
+    let (r, sim) = typed_back(Some("jane@contoso.com"), false);
+    assert_eq!(r.result, Ok(()));
+    assert_eq!(enters(&sim), 2);
+    assert!(events(&r).iter().any(|e| matches!(e, WorkflowEvent::TypedVerified { state, key } if state == "WORK_SIGNIN" && key == "username")));
+    assert!(!trace_jsonl(&r).contains("jane@contoso.com"));
+}
+
+#[test]
+fn caps_lock_or_another_layout_at_the_target_stops_before_enter() {
+    for (echo, caps) in [(Some("JANE@CONTOSO.COM"), true), (Some("jane\"contoso.com"), false), (None, false)] {
+        let (r, sim) = typed_back(echo, false);
+        assert!(matches!(&r.result, Err(WorkflowError::TypedNotShown { state, caps_lock }) if state == "WORK_SIGNIN" && *caps_lock == caps), "{echo:?}: {:?}", r.result);
+        assert_eq!(enters(&sim), 0, "{echo:?}: Enter was not pressed");
+        let msg = r.result.unwrap_err().to_string();
+        assert!(!msg.contains("jane"), "the value is never in the message: {msg}");
+    }
+    // A dry run typed nothing to read back.
+    let (r, _) = typed_back(None, true);
+    assert_eq!(r.result, Ok(()), "{:?}", r.result);
+}
+
+#[test]
+fn where_text_cannot_be_read_a_workflow_that_checks_the_sign_in_does_not_start() {
+    // Recognised by pictures, but its sign-in is read back: never sent unchecked. A dry run types nothing and runs.
+    let src = OOBE.replace(
+        "actions = [ { text = \"{{region}}\" }, { key = \"ENTER\" } ]",
+        "actions = [ { text = \"{{region}}\" } ]\nverify_typed = \"region\"\nsubmit = [ { key = \"ENTER\" } ]",
+    );
+    let w = Workflow::parse(&src).unwrap();
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(
+        matches!(&r.result, Err(WorkflowError::Text(m)) if m.contains("checks the sign-in by reading the screen") && m.contains("no recogniser")),
+        "{:?}",
+        r.result
+    );
+    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing sent");
+    let dry = WorkflowOptions { run: RunOptions { dry_run: true, ..opts().run }, ..opts() };
+    let timeline: Vec<Frame> = [20, 70, 120, 170, 225].into_iter().flat_map(|v| std::iter::repeat_n(solid(v), 12)).collect();
+    let mut sim = Sim { timeline: Some(timeline), screens: screens(), ..Default::default() };
+    assert_eq!(go(&w, &mut sim, &dry, None).result, Ok(()));
+    // The same for the account check: the SIGN_IN workflow without a reader.
+    let w = Workflow::parse(SIGN_IN).unwrap();
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), ..Default::default() };
+    let secrets: Vars = [("username".to_string(), "jane@contoso.com".to_string()), ("password".to_string(), "x".to_string())].into();
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+    assert!(matches!(&r.result, Err(WorkflowError::Text(m)) if m.contains("checks the sign-in")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"));
+}
+
+#[test]
+fn a_near_miss_account_or_a_sign_in_with_control_characters_is_refused() {
+    // Another organisation's account that only looks close (contoso.com for contoso.co) never passes.
+    let w = Workflow::parse(&SIGN_IN.replace("contoso.com\"", "contoso.co\"")).unwrap();
+    let texts = vec![
+        (20, "Let's set things up for your work or school|Sign in"),
+        (70, "alexander.smith@contoso.com|Enter password"),
+        (120, "Setting up your device for work"),
+    ];
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(texts), ..Default::default() };
+    let secrets: Vars =
+        [("username".to_string(), "alexander.smith@contoso.co".to_string()), ("password".to_string(), "pw".to_string())].into();
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+    assert!(matches!(r.result, Err(WorkflowError::AccountNotShown { .. })), "{:?}", r.result);
+    assert_eq!(enters(&sim), 1, "the password was not typed");
+    // A newline would be typed as Enter before any check; a tab, a space or a second @ is not a sign-in either.
+    for bad in ["jane@contoso.com\n", "jane@contoso.com\t", "jane doe@contoso.com", "jane@x@contoso.com", "@contoso.com"] {
+        let (r, sim) = sign_in("jane@contoso.com|Enter password", bad, false);
+        assert!(matches!(&r.result, Err(WorkflowError::Options(m)) if m.contains("not an account in contoso.com")), "{bad:?}: {:?}", r.result);
+        assert!(sim.keys.iter().all(|k| k == "release_all"), "{bad:?}");
+    }
+    // Punctuation in the domain is read as such.
+    let w = Workflow::parse(&SIGN_IN.replace("contoso.com\"", "contoso-it.com\"")).unwrap();
+    let texts = vec![
+        (20, "Let's set things up for your work or school|Sign in"),
+        (70, "\u{2190} jane@contoso-it.com|Enter password"),
+        (120, "Setting up your device for work"),
+    ];
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(texts), ..Default::default() };
+    let secrets: Vars = [("username".to_string(), "jane@contoso-it.com".to_string()), ("password".to_string(), "pw".to_string())].into();
+    assert_eq!(run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {}).result, Ok(()));
+}
+
+#[test]
+fn a_detect_phrase_holding_a_secret_is_refused_before_anything_is_shown() {
+    let src = SIGN_IN.replace("detect = { text = [\"Enter password\"] }", "detect = { text = [\"Enter password\", \"jane@contoso.com\"] }");
+    let w = Workflow::parse(&src).unwrap();
+    let mut sim = Sim { screens: [20, 70, 120].into_iter().map(solid).collect(), texts: Some(vec![]), ..Default::default() };
+    let secrets: Vars = [("username".to_string(), "jane@contoso.com".to_string()), ("password".to_string(), "pw".to_string())].into();
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+    assert!(matches!(r.result, Err(WorkflowError::SecretInFile { .. })), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"));
+}
+
+#[test]
+fn verify_typed_needs_its_actions_and_submit() {
+    let base = SIGN_IN.replace(
+        "actions = [ { secret_text = \"{{username}}\" }, { key = \"ENTER\" } ]",
+        "actions = [ { secret_text = \"{{username}}\" } ]
+verify_typed = \"username\"
+submit = [ { key = \"ENTER\" } ]",
+    );
+    assert!(Workflow::parse(&base).is_ok());
+    for (from, to, why) in [
+        ("verify_typed = \"username\"", "verify_typed = \"nobody\"", "must name a secret or a config value"),
+        ("submit = [ { key = \"ENTER\" } ]", "", "needs `actions`"),
+        ("verify_typed = \"username\"
+", "", "`submit` is sent after verify_typed"),
+    ] {
+        let e = Workflow::parse(&base.replacen(from, to, 1)).unwrap_err();
+        assert!(e.contains(why), "{e}");
+    }
+}
+
+// ---------- round 69: evidence age, the reader probe, control characters ----------
+
+#[test]
+fn keys_wait_for_recent_evidence_and_a_slow_reader_stops_the_run_before_typing() {
+    let w = Workflow::parse(SIGN_IN).unwrap();
+    let texts = vec![(20, "Let's set things up for your work or school|Sign in"), (70, "jane@contoso.com|Enter password")];
+    let mut sim = Sim { screens: [20, 70].into_iter().map(solid).collect(), texts: Some(texts), read_delay: Duration::from_millis(120), ..Default::default() };
+    let secrets: Vars = [("username".to_string(), "jane@contoso.com".to_string()), ("password".to_string(), "pw".to_string())].into();
+    let o = WorkflowOptions { evidence_age: Duration::from_millis(50), ..opts() };
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &o, None, &mut |_, _| {});
+    assert!(matches!(&r.result, Err(WorkflowError::Text(m)) if m.contains("ms old by the time it was read")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing typed on old evidence");
+    // The option is bounded: it cannot waive the check.
+    for age in [Duration::ZERO, Duration::from_secs(31)] {
+        let o = WorkflowOptions { evidence_age: age, ..opts() };
+        let mut sim = Sim { screens: screens(), ..Default::default() };
+        assert!(matches!(go(&wf(), &mut sim, &o, None).result, Err(WorkflowError::Options(_))));
+    }
+}
+
+#[test]
+fn a_picture_recognised_workflow_whose_tenant_check_reads_the_page_does_not_start_without_a_reader() {
+    // Screens by picture, but a sign-in domain: the account check reads the password page, so the reader is probed.
+    let src = OOBE
+        .replace("match = \"luma\"\n", "match = \"luma\"\naccount = \"wifi\"\n")
+        .replace("[config]\n", "[config]\ntenant_domain = \"contoso.com\"\n");
+    let w = Workflow::parse(&src).unwrap();
+    let secrets: Vars = [("wifi".to_string(), "a@contoso.com".to_string())].into();
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), ..Default::default() };
+    let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+    assert!(matches!(&r.result, Err(WorkflowError::Text(m)) if m.contains("checks the sign-in")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing sent, the sign-in included");
+}
+
+#[test]
+fn a_read_back_value_with_a_line_break_is_refused_before_anything_is_sent() {
+    let src = OOBE.replace(
+        "actions = [ { secret_text = \"{{wifi}}\" }, { key = \"ENTER\" } ]",
+        "actions = [ { secret_text = \"{{wifi}}\" } ]\nverify_typed = \"wifi\"\nsubmit = [ { key = \"ENTER\" } ]",
+    );
+    let w = Workflow::parse(&src).unwrap();
+    for bad in ["hunter2\n", "hun\tter2"] {
+        let secrets: Vars = [("wifi".to_string(), bad.to_string())].into();
+        let mut sim = Sim { screens: screens(), texts: Some(vec![]), ..Default::default() };
+        let r = run_workflow(&w, &secrets, &UsAnsi, &mut sim, &opts(), None, &mut |_, _| {});
+        assert!(matches!(&r.result, Err(WorkflowError::Options(m)) if m.contains("control character")), "{bad:?}: {:?}", r.result);
+        assert!(sim.keys.iter().all(|k| k == "release_all"));
+    }
+}
+
+#[test]
+fn accepting_missing_pictures_covers_only_the_states_named_when_it_was_accepted() {
+    // Review round 67: the app names KEYBOARD when the box is ticked; by the time the run starts AUTOPILOT's picture is
+    // gone too. That one was never accepted (and the profile's stop there would be lost): refused.
+    let allow = WorkflowOptions {
+        allow_missing_pictures: true,
+        allow_missing_only: Some(["KEYBOARD".to_string()].into()),
+        ..opts()
+    };
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png", "autopilot.png"], ..Default::default() };
+    let r = go(&wf(), &mut sim, &allow, None);
+    assert!(matches!(&r.result, Err(WorkflowError::Reference(m)) if m.contains("AUTOPILOT also cannot be recognised")), "{:?}", r.result);
+    assert!(sim.keys.iter().all(|k| k == "release_all"), "nothing sent");
+    // Exactly what was accepted still runs (to the unknown keyboard screen).
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), missing: vec!["keyboard.png"], ..Default::default() };
+    let r = go(&wf(), &mut sim, &allow, None);
+    assert!(matches!(r.result, Err(WorkflowError::UnknownScreen { .. })), "{:?}", r.result);
+}
+
+#[test]
+fn every_burst_of_keys_is_recorded_before_it_is_sent_and_a_failed_record_sends_nothing() {
+    let w = wf();
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()));
+    // Every state entered, then every attempt, recorded before its keys: REGION's attempt with nothing typed yet.
+    let region: Vec<_> = sim.persisted.iter().filter(|(cp, _)| cp.state == "REGION").collect();
+    assert_eq!(region.iter().map(|(cp, typed)| (cp.attempted, *typed)).collect::<Vec<_>>(), [(Some(0), 0), (Some(1), 0)]);
+    let typed_before_network = sim.persisted.iter().find(|(cp, _)| cp.state == "NETWORK" && cp.attempted == Some(1)).unwrap().1;
+    assert!(typed_before_network > 0 && typed_before_network < sim.typed, "recorded after REGION's keys, before NETWORK's");
+    // Recording the first attempt fails (the second record): nothing at all is sent.
+    let mut sim = Sim { screens: screens(), fail_persist_at: Some(2), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::Journal(m)) if m == "disk full"), "{:?}", r.result);
+    assert_eq!(sim.typed, 0);
+    assert!(r.result.unwrap_err().to_string().contains("stopped before sending anything more"));
+    // A dry run records nothing.
+    let mut sim = Sim { timeline: Some(screens().into_iter().flat_map(|f| std::iter::repeat_n(f, 12)).collect()), screens: screens(), ..Default::default() };
+    let o = WorkflowOptions { run: RunOptions { dry_run: true, ..opts().run }, ..opts() };
+    let _ = go(&w, &mut sim, &o, None);
+    assert!(sim.persisted.is_empty());
+}
+
+#[test]
+fn a_resumed_visit_is_recorded_with_what_it_already_sent_before_anything_is_asked() {
+    let w = wf();
+    let cp = Checkpoint {
+        workflow: "test-oobe".into(),
+        state: "REGION".into(),
+        derived: BTreeMap::new(),
+        attempts: [("REGION".to_string(), 1)].into(),
+        attempted: Some(1),
+        waiting: false,
+        history: vec![],
+    };
+    // The run crashes while "Send them again?" is open: what it recorded must still say the keys were sent.
+    let mut sim = Sim { screens: screens(), pos: 0, confirms: [false].into(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), Some(&cp));
+    assert_eq!(r.result, Err(WorkflowError::ResumeDeclined { state: "REGION".into() }));
+    assert_eq!(sim.asked.len(), 1);
+    assert!(!sim.persisted.is_empty());
+    assert!(sim.persisted.iter().all(|(c, _)| c.state == "REGION" && c.attempted == Some(1)), "{:?}", sim.persisted);
+}
+
+#[test]
+fn a_manual_steps_wait_is_recorded_before_the_operator_does_it() {
+    let w = Workflow::parse(MANUAL).unwrap();
+    let timeline: Vec<Frame> = std::iter::repeat_n(solid(20), 8).chain(std::iter::repeat_n(solid(225), 20)).collect();
+    let mut sim = Sim { timeline: Some(timeline), screens: screens(), ..Default::default() };
+    let r = go(&w, &mut sim, &opts(), None);
+    assert_eq!(r.result, Ok(()));
+    let region: Vec<bool> = sim.persisted.iter().filter(|(c, _)| c.state == "REGION").map(|(c, _)| c.waiting).collect();
+    assert_eq!(region, [false, true], "entered, then waiting before the step is handed to the operator");
+    let at = |pred: &dyn Fn(&WorkflowEvent) -> bool| r.trace.iter().position(|t| pred(&t.event)).unwrap();
+    assert!(at(&|e| matches!(e, WorkflowEvent::ManualStepRequested { .. })) < at(&|e| matches!(e, WorkflowEvent::TransitionVerified { .. })));
+}
+
+#[test]
+fn a_stall_after_the_last_look_stops_before_the_keys() {
+    // The trace sink blocks (a slow terminal, a full pipe) right after the tenant check that ends the last look
+    // before AUTOPILOT's Enter: by the time the keys would go, the picture is older than the evidence allows.
+    let w = wf();
+    let mut sim = Sim { screens: screens(), confirms: [true].into(), ..Default::default() };
+    let o = WorkflowOptions { evidence_age: Duration::from_millis(150), ..opts() };
+    let mut seen = 0;
+    let r = run_workflow(&w, &secrets(), &UsAnsi, &mut sim, &o, None, &mut |t, _| {
+        if matches!(t.event, WorkflowEvent::TenantVerified { .. }) {
+            seen += 1;
+            // The first check is before the gate; the second ends the last look.
+            if seen == 2 {
+                std::thread::sleep(Duration::from_millis(400));
+            }
+        }
+    });
+    assert!(matches!(&r.result, Err(WorkflowError::Text(m)) if m.contains("ms old")), "{:?}", r.result);
+    assert_eq!(enters(&sim), 3, "nothing sent on the enrolment screen");
+}
+
+#[test]
+fn an_address_inside_another_word_is_not_the_account_shown() {
+    for page in ["other!jane@contoso.com|Enter password", "-jane@contoso.com|Enter password", "x'jane@contoso.com|Enter password"] {
+        let (r, sim) = sign_in(page, "jane@contoso.com", false);
+        assert!(matches!(&r.result, Err(WorkflowError::AccountNotShown { .. })), "{page}: {:?}", r.result);
+        assert_eq!(enters(&sim), 1, "{page}: no password");
+    }
+    for page in ["(jane@contoso.com)|Enter password", "Signed in as jane@contoso.com.|Enter password"] {
+        let (r, _) = sign_in(page, "jane@contoso.com", false);
+        assert_eq!(r.result, Ok(()), "{page}");
+    }
+    // An entered sign-in that could never be read as one address is refused before anything is sent.
+    let (r, sim) = sign_in("jane@contoso.com|Enter password", "jane!x@contoso.com", false);
+    assert!(matches!(&r.result, Err(WorkflowError::Options(_))), "{:?}", r.result);
+    assert_eq!(sim.typed, 0);
+}
+
+#[test]
+fn a_laptop_name_holding_a_secret_is_refused_before_anything() {
+    let w = wf();
+    let mut sim = Sim { screens: screens(), ..Default::default() };
+    let o = WorkflowOptions { laptop: "rig hunter2-wifi".into(), ..opts() };
+    let r = go(&w, &mut sim, &o, None);
+    assert_eq!(r.result, Err(WorkflowError::SecretInName));
+    assert_eq!(sim.typed, 0);
+    assert!(sim.persisted.is_empty());
+    assert!(!trace_jsonl(&r).contains("hunter2"));
+    assert_eq!(check_secrets(&w, &secrets(), None, "hunter2-wifi"), Err(WorkflowError::SecretInName));
+    assert_eq!(check_secrets(&w, &secrets(), None, "LT-0042"), Ok(()));
+}
+
+#[test]
+fn keys_stop_part_way_once_they_run_past_the_deadline() {
+    // A slow link: REGION's text ("United States", then Enter) cannot finish within the bound after the last look.
+    let w = wf();
+    let mut sim = Sim { screens: screens(), key_cost: Duration::from_millis(20), ..Default::default() };
+    let o = WorkflowOptions { action_deadline: Duration::from_millis(100), ..opts() };
+    let r = go(&w, &mut sim, &o, None);
+    assert!(
+        matches!(&r.result, Err(WorkflowError::Action { state, error: RunError::Overran }) if state == "REGION"),
+        "{:?}",
+        r.result
+    );
+    let downs = sim.keys.iter().filter(|k| k.starts_with("dn")).count();
+    assert!(downs > 0 && downs < 14, "stopped part-way: {downs} key presses");
+    assert_eq!(enters(&sim), 0, "Enter never went");
+    assert_eq!(sim.keys.last().map(String::as_str), Some("release_all"));
+    // Part-way still counts as sent: a resume asks before sending again.
+    assert_eq!(r.checkpoint(&w).unwrap().attempted, Some(1));
+    assert!(r.result.unwrap_err().to_string().contains("stopped part-way"));
+}
+
+#[test]
+fn a_lost_link_stops_a_waiting_run_at_once() {
+    // A manual step is being watched when the adapter's link drops: the run stops there, not at its next key.
+    let w = Workflow::parse(MANUAL).unwrap();
+    let mut sim = Sim { timeline: Some(vec![solid(20)]), screens: screens(), link_lost_after_looks: Some(5), ..Default::default() };
+    let started = std::time::Instant::now();
+    let r = go(&w, &mut sim, &opts(), None);
+    assert!(matches!(&r.result, Err(WorkflowError::LinkLost(m)) if m.contains("disconnected")), "{:?}", r.result);
+    assert!(started.elapsed() < Duration::from_secs(2), "well before the step's 3 s timeout");
+    assert!(r.result.clone().unwrap_err().to_string().contains("Reconnect, then Resume"));
+    // Its checkpoint still says the step was being waited for.
+    let cp = r.checkpoint(&w).unwrap();
+    assert_eq!((cp.state.as_str(), cp.waiting), ("REGION", true));
 }

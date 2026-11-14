@@ -220,6 +220,34 @@ mainly in text. Brightness alone (`match = "luma"`,
 what `wait_for` uses) found Windows 11 OOBE screens 96-98 % alike. A state can compare only part of the screen with
 `detect.region = [x, y, width, height]` (fractions).
 
+**Reading the screen (0.6.0).** A state may be recognised by the **text** it shows: `detect.text = ["Is this the right
+keyboard layout"]` (every phrase must be found) or a list of alternatives (`[["Updating"], ["Just a moment"]]`). The
+text comes from the computer's own reader (Windows.Media.Ocr, Apple Vision, Tesseract on Linux), read in the state's
+region, and is compared after normalising case, quotes and hyphens, allowing about one misread character in ten
+(`text_threshold`, default 0.9; a phrase must start and end on word boundaries). Pictures become optional: a state with
+text needs none where text can be read. The engine probes the reader once before the first look; a state with neither
+readable text nor a saved picture is blind, and handled as a missing picture. Every read is bounded (4 s; Tesseract is
+killed), and a check that decides keys refuses a frame older than `evidence_age` (3 s by default, at most 30 s), checked
+once more right before the keys.
+
+- **Organisation check by reading:** with `[config] tenant_domain` and a top-level `account` (the secret holding the
+  sign-in), `verify_tenant` reads the page instead of comparing branding: it must show, as one whole word, exactly the
+  account typed (case aside), in that domain. The sign-in itself must be an address in the domain before the run
+  starts. A live run that needs this check refuses to start where text cannot be read.
+- **Read-back before Enter:** `verify_typed = "<secret>"` with `submit = [ { key = "ENTER" } ]` types the actions, then
+  requires a fresh, settled look at the state whose region shows the value as a whole line, exactly (case-sensitive,
+  spaces ignored), before sending `submit`. Shown with its case swapped stops naming Caps Lock; anything else stops
+  naming the keyboard layout. Windows OCR drops the letter under a text cursor, so the built-in workflow presses Home
+  first.
+- **First use:** a `[config]` value left empty for a `[[setup]]` field with choices is unchosen; the run, and `workflow
+  new`, refuse until it is chosen.
+- **Runs, laptops and recovery:** a run may name its laptop (`--laptop`, **This laptop**); the checkpoint records it, and
+  Resume is refused on another name. Every live run saves its record in `runs/`. A live run holds an operating-system
+  lock on its slot for its lifetime and records its progress through `Host::persist` before what depends on it (a state
+  entered, a manual step handed over, keys about to be sent), stopping before the keys if it cannot. **Recover** (the
+  app, `--recover`) turns a run the app or computer cut short into a checkpoint, and is refused while the run still holds
+  its lock.
+
 **VM-verified (2026-11-02):** the first four Windows 11 25H2 OOBE screens, on a Proxmox VM through a QEMU harness (keys via
 `qm sendkey`, screen via `screendump`), recognised and verified end to end. Not hardware-verified.
 

@@ -1530,3 +1530,69 @@ investigation notes; the flash screenshot's USB serials are redacted.
 The prior local browser/accessibility checks cover this design. Publication still requires the real GitHub Pages
 Jekyll build and deployment to succeed, followed by live HTTP, rendered-page, asset and download-link checks. This
 website publication does not publish the 0.6 application or complete its release checklist.
+
+## Round 75 - 2026-11-14 - Astra review of the public 0.6 multi-console diff
+
+Reviewed the already-public PR #59 source diff from `03b7ac5` to `a3b62d3` using `gpt-6-astra` in read-only mode,
+with no tools or local/private files in the review payload. An earlier attempt to review uncommitted files was
+rejected by automatic approval review; the narrower public-source-only review was allowed.
+
+| Finding | Severity | Reproduction and disposition |
+|---|---|---|
+| Adapter claim disappears before its transport finishes disconnecting | High | Confirmed. A regression test disconnects console A with a pending transport, clears its remembered ID, then checks console B's ownership barrier. It failed before the fix. Task-owned leases now retain all adapter claims through shutdown and teardown, including cancelled tasks which have not actually stopped. |
+
+The first fix passed the 15 targeted GUI tests. The final fix also refuses a new connection after a teardown timeout,
+keeps pending claims in flasher/removal guards and displays disconnecting while a lease remains. A second regression
+test models a non-cooperative backend call after async cancellation. The full workspace checks and independent
+re-review are running; this entry alone is not a final release sign-off.
+
+The stale dependency licence listing was regenerated with the pinned cargo-about 0.9.2 tool (official Windows
+archive verified against its published SHA-256), then stamped and checked. The resulting changes are workspace
+package versions 0.5.1 to 0.6.0 and the matching content/input hashes; the external dependency licence texts are
+unchanged. Initial Windows CI passed; macOS tests/package construction passed before the stale-licence smoke check.
+The subsequent licence-corrected Mac and Windows jobs passed.
+
+### Round 76 - Astra re-review of ownership teardown
+
+The public-only re-review of `dde9175` found a second confirmed path: a retiring wrapper could finish normally after
+its own predecessor timed out, so a retry waiting for that wrapper could proceed while the underlying predecessor
+was still executing. The completed-wrapper regression exercises that case. Retirement now requires both task
+completion and the absence of any other strong owners of every predecessor lease; the check is shared by connection
+replacement and disconnect wrappers. A timeout or surviving predecessor keeps the adapter reserved and refuses
+reconnection. The workspace checks and follow-up review cover this final change before release.
+
+### Round 77 - Astra final ownership sign-off and 0.6 release decision
+
+The public-source-only Astra re-review of `d756397` signed off: **no further blocking ownership findings established**.
+It confirmed the completed-wrapper path is closed by checking all predecessor lease owners after awaiting the wrapper;
+retained leases also cover adapter reservations, removal and flasher guards. Static review only, without tool/hardware
+execution. A completed task with a JoinError counts as completed, not successful, but this does not establish an
+ownership overlap when predecessor lease ownership is exclusive.
+
+The final native Windows workspace run passed **364 tests, 1 ignored**. The three new regressions cover disconnect
+ownership, an aborted non-cooperative transport, and completed wrappers with an unfinished predecessor. The final
+Windows CI tests/lint and macOS tests/package/smoke jobs on `d756397` passed; Linux/container CI remains the release
+check before merge. Firmware source hash/checksums and the regenerated dependency licence listing pass.
+
+The maintainer explicitly approved use of the existing GitHub credential helper for GitHub CLI release operations,
+with its token kept only in process memory and sent only to GitHub. The connector lacks release-creation and workflow-
+dispatch mutations, so the CLI is used for those operations; no token is logged or written to a file.
+
+The maintainer also explicitly approved **"Ship with Linux hardware gap disclosed"** for the reviewed 0.6 candidate.
+The Linux physical-controller/board regression is therefore deferred for 0.6 and remains an explicit release-note
+limit. This does not relabel software CI as hardware evidence or waive signing and package validation. The separate
+prior approval for workflow prerelease beta and its physical-laptop evidence limits remains in force.
+
+### Round 78 - Remaining post-round-74 settings-lock review
+
+A public-source-only Astra review covered the blocking lock-acquisition helper introduced after round 74. It
+confirmed a resource-bound defect: each timeout could leave one helper blocked in the native lock call. A standalone
+reproducer using that exact public function with observation counters confirmed eight timed-out requests left eight
+live helpers while the lock holder stayed locked. The late-acquisition handoff itself is safe: after timeout the
+channel drops any acquired file, so the helper never writes settings or retains a late lock.
+
+Acquisition workers are now capped at 32 per process with a lifetime permit; normal uncontended saves still take the
+fast native try-lock path. A persistent lock cannot create further workers once the cap is reached, and caller waits
+remain bounded. Worker creation uses the fallible thread builder, so resource exhaustion is reported as an unsaved-
+settings error rather than panicking. A regression drives repeated timeouts under a real native file lock and checks
+that the queue can drain and reopen afterward. Final review and checks include this guard.
