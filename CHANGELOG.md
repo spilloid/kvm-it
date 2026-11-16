@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.0] - 2026-11-16
+
+Local MCP and agent-assisted workflows.
+
+Regular release. Workflow automation remains prerelease beta with its existing evidence limits.
+
+- Local MCP stdio adapter and an authenticated shared GUI/headless owner, with explicit Observe, Approved workflow and Full control modes.
+- Console, adapter, capture/OCR, bounded input, library/authoring, workflow/recovery, recording/audio, boot-drive and flash operations.
+- Locally approved SHA-256 workflow/reference snapshots, local-only credentials and human gates, counted emergency releases and worker-lifetime hardware claims.
+- Durable run IDs, intent receipts and monotonic progress cursors; duplicate-argument checks, interruption reconciliation and bounded changed-state responses.
+- Local `kvmit watch` for long update/enrollment waits without a model polling loop. No embedded model or API key.
+- Native Windows/macOS CI coverage and an isolated no-target MCP smoke harness. See docs/mcp.md for setup and verification limits.
+
+
 ## [0.6.0] - 2026-11-14
 
 Multiple consoles, clearer flashing and pairing repair; workflow automation is prerelease beta.

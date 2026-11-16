@@ -20,6 +20,9 @@ use std::sync::{mpsc as std_mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+mod agent;
+pub use agent::serve_headless;
+
 #[derive(Clone)]
 enum Link {
     Disconnected,
@@ -100,8 +103,9 @@ impl InputTx {
     }
 }
 
-type ConfirmSlot = Arc<Mutex<Option<(String, std_mpsc::Sender<bool>)>>>;
+type ConfirmSlot = Arc<Mutex<Option<(String, std_mpsc::Sender<bool>, u64)>>>;
 
+#[derive(Clone)]
 struct RunHandle {
     cancel: Arc<AtomicBool>,
     done: Arc<AtomicBool>,
@@ -124,7 +128,7 @@ impl RunHandle {
         // and is never shown (see `ask`).
         let mut slot = self.confirm.lock().unwrap();
         self.cancel.store(true, Ordering::SeqCst);
-        if let Some((_, tx)) = slot.take() {
+        if let Some((_, tx, _)) = slot.take() {
             let _ = tx.send(false);
         }
     }
@@ -140,7 +144,8 @@ fn ask(slot: &ConfirmSlot, cancel: &AtomicBool, msg: &str, wake: impl FnOnce()) 
             return false;
         }
         let (tx, rx) = std_mpsc::channel();
-        *s = Some((msg.to_string(), tx));
+        static QUESTION: AtomicU64 = AtomicU64::new(1);
+        *s = Some((msg.to_string(), tx, QUESTION.fetch_add(1, Ordering::SeqCst)));
         rx
     };
     wake();
@@ -151,7 +156,7 @@ fn ask(slot: &ConfirmSlot, cancel: &AtomicBool, msg: &str, wake: impl FnOnce()) 
 /// this answer is never cleared by it.
 fn answer(slot: &ConfirmSlot, yes: bool) {
     let pending = slot.lock().unwrap().take();
-    if let Some((_, tx)) = pending {
+    if let Some((_, tx, _)) = pending {
         let _ = tx.send(yes);
     }
 }
@@ -295,6 +300,7 @@ struct WfFiles {
     script_dir: std::path::PathBuf,
     saved: crate::wf_view::Source,
     text: String,
+    reference_snapshot: Option<Arc<BTreeMap<String, kvmit_script::Frame>>>,
 }
 
 /// What a workflow run shares with the panel while it runs, and keeps once it ends.
@@ -1058,6 +1064,7 @@ impl App {
                 dev,
                 capture: Some(capture),
                 base_dir,
+                reference_snapshot: None,
                 cancel,
                 confirm: Box::new(move |msg| ask(&confirm, &cancel2, msg, || ctx3.request_repaint())),
                 on_event: Box::new(move |ev| {
@@ -1178,6 +1185,7 @@ impl App {
                 dev,
                 capture: Some(capture),
                 base_dir: files.base_dir.clone(),
+                reference_snapshot: files.reference_snapshot.clone(),
                 cancel,
                 confirm: Box::new(move |msg| ask(&confirm, &cancel2, msg, || ctx3.request_repaint())),
                 // The workflow's own trace says what happened; the nested script runner's step events would only repeat it.
@@ -1688,6 +1696,7 @@ impl App {
             script_dir: self.cfg.script_dir(),
             saved: saved_source(&self.library[sel]),
             text: self.library[sel].source.clone(),
+            reference_snapshot: None,
         };
         // A run of this definition in the app just ended and saved its checkpoint (or left none): read it back now.
         let ended = self.wf_run.as_ref().is_some_and(|s| {
@@ -1950,8 +1959,10 @@ impl eframe::App for App {
         // red = broken, grey = idle. While input is captured every key belongs to the target, so only the
         // capture indicator is live. ----
         // a recording that ended (stopped, duration cap, encoder died, picture gone) reports how
-        if let Some(r) = self.rec.poll_ended() {
-            self.set_notice(crate::rec_ui::describe(&r));
+        if self.console_key.is_none() {
+            if let Some(r) = self.rec.poll_ended() {
+                self.set_notice(crate::rec_ui::describe(&r));
+            }
         }
         if self.rec.is_finishing() {
             ctx.request_repaint_after(Duration::from_millis(200));
@@ -2086,7 +2097,7 @@ impl eframe::App for App {
         // confirm dialog from a running script
         if let Some(h) = &self.run_handle {
             let pending = h.confirm.lock().unwrap().clone();
-            if let Some((msg, tx)) = pending {
+            if let Some((msg, tx, _)) = pending {
                 egui::Window::new("Script paused").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
                     ui.label(msg);
                     ui.horizontal(|ui| {
@@ -2708,6 +2719,7 @@ struct ConsoleSwitch {
 /// One window, independent adapter/video/workflow sessions. Only the selected
 /// session receives local input; all Bluetooth links keep their own keepalives.
 struct Console {
+    agent: agent::Agent,
     sessions: Vec<ConsoleSession>,
     active: usize,
     switching: Option<ConsoleSwitch>,
@@ -2715,6 +2727,10 @@ struct Console {
 
 impl Console {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        Self::from_context(&cc.egui_ctx)
+    }
+
+    fn from_context(ctx: &egui::Context) -> Self {
         let mut cfg = Config::load();
         let mut startup_notice = None;
         if cfg.consoles.is_empty() {
@@ -2742,11 +2758,11 @@ impl Console {
                 if videos.contains(&video) { local.last_video_key = None; local.last_video = None; }
                 else { videos.push(video); }
             }
-            let app = App::with_config(&cc.egui_ctx, local, Some(profile.key.clone()));
+            let app = App::with_config(ctx, local, Some(profile.key.clone()));
             if let Some(notice) = &startup_notice { app.set_notice(notice.clone()); }
             sessions.push(ConsoleSession { key: profile.key, label: profile.label, app, memory: None });
         }
-        Self { sessions, active: 0, switching: None }
+        Self { sessions, active: 0, switching: None, agent: agent::Agent::default() }
     }
 
     fn add(&mut self, ctx: &egui::Context) {
@@ -2846,9 +2862,12 @@ impl Console {
 
 impl eframe::App for Console {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // A queued command must never start a write after this frame accepted close.
+        if ctx.input(|i|i.viewport().close_requested()) && !self.agent.flash_busy() { self.agent.revoke(); }
+        self.agent_ui(ctx);
         self.poll_switch(ctx);
         self.refresh_claims();
-        let flashing = self.sessions.iter().any(|s| s.app.flash.as_ref().is_some_and(|w| w.busy()));
+        let flashing = self.agent.flash_busy() || self.sessions.iter().any(|s| s.app.flash.as_ref().is_some_and(|w| w.busy()));
         if ctx.input(|i| i.viewport().close_requested()) {
             if flashing {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -2925,7 +2944,12 @@ impl eframe::App for Console {
             ctx.request_repaint_after(Duration::from_millis(25));
             return;
         }
-        self.sessions[self.active].app.update(ctx, frame);
+        if self.agent.flash_busy() {
+            egui::CentralPanel::default().show(ctx, |ui| { ui.spinner(); ui.label("Writing and verifying adapter firmware. Wait for completion before closing or reconnecting."); });
+        } else {
+            self.sessions[self.active].app.update(ctx, frame);
+        }
+        self.agent_tick(ctx);
         ctx.request_repaint_after(Duration::from_millis(250));
     }
 }
@@ -2967,16 +2991,16 @@ mod tests {
         assert_eq!(app.can_repair("this-board"), supported);
     }
 
-    struct MockBoard {
-        dev: Device,
-        held: Arc<AtomicUsize>,
-        fail_release: Arc<AtomicBool>,
-        hold_release: Arc<AtomicBool>,
-        release_waiting: std_mpsc::Receiver<()>,
-        allow_release: Arc<tokio::sync::Notify>,
+    pub(super) struct MockBoard {
+        pub(super) dev: Device,
+        pub(super) held: Arc<AtomicUsize>,
+        pub(super) fail_release: Arc<AtomicBool>,
+        pub(super) hold_release: Arc<AtomicBool>,
+        pub(super) release_waiting: std_mpsc::Receiver<()>,
+        pub(super) allow_release: Arc<tokio::sync::Notify>,
     }
 
-    fn mock_board(rt: &tokio::runtime::Runtime) -> MockBoard {
+    pub(super) fn mock_board(rt: &tokio::runtime::Runtime) -> MockBoard {
         use kvmit_protocol::{decode, encode_vec, msg, FLAG_RESPONSE};
         let (tx, mut input) = mpsc::unbounded_channel::<Vec<u8>>();
         let (output, rx) = mpsc::unbounded_channel();
@@ -3013,14 +3037,14 @@ mod tests {
         MockBoard { dev, held, fail_release, hold_release, release_waiting, allow_release }
     }
 
-    fn mock_console(ctx: &egui::Context, rt: Arc<tokio::runtime::Runtime>, boards: &[&MockBoard]) -> Console {
+    pub(super) fn mock_console(ctx: &egui::Context, rt: Arc<tokio::runtime::Runtime>, boards: &[&MockBoard]) -> Console {
         let sessions = boards.iter().enumerate().map(|(i, board)| {
             let mut app = App::with_config(ctx, Config { script_dir: Some(std::env::temp_dir().join("kvmit-console-fixture")), ..Default::default() }, None);
             app.rt = rt.clone();
             *app.link.lock().unwrap() = Link::Connected { dev: board.dev.clone(), id: format!("board-{i}"), name: format!("board-{i}") };
             ConsoleSession { key: format!("console-{i}"), label: format!("Bench {i}"), app, memory: None }
         }).collect();
-        Console { sessions, active: 0, switching: None }
+        Console { sessions, active: 0, switching: None, agent: agent::Agent::default() }
     }
 
     fn finish_switch(console: &mut Console, ctx: &egui::Context) {
@@ -3219,16 +3243,16 @@ mod tests {
         assert!(seen.load(Ordering::SeqCst), "woken only after publishing");
         // Answering takes the pending question before replying: a question published after the answer stays.
         let (tx1, rx1) = std_mpsc::channel();
-        *slot.lock().unwrap() = Some(("first".into(), tx1));
+        *slot.lock().unwrap() = Some(("first".into(), tx1, 1));
         answer(&slot, true);
         assert_eq!(rx1.recv().ok(), Some(true));
         let (tx2, _rx2) = std_mpsc::channel();
-        *slot.lock().unwrap() = Some(("second".into(), tx2));
+        *slot.lock().unwrap() = Some(("second".into(), tx2, 2));
         answer(&slot, true); // answers "second" only
         assert!(slot.lock().unwrap().is_none());
         let (tx3, _rx3) = std_mpsc::channel();
-        *slot.lock().unwrap() = Some(("third".into(), tx3));
-        assert_eq!(slot.lock().unwrap().as_ref().map(|(m, _)| m.clone()).as_deref(), Some("third"));
+        *slot.lock().unwrap() = Some(("third".into(), tx3, 3));
+        assert_eq!(slot.lock().unwrap().as_ref().map(|(m, _, _)| m.clone()).as_deref(), Some("third"));
     }
 
     #[test]

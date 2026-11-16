@@ -24,6 +24,30 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// MCP stdio adapter: attach to the running local console (no hardware connection of its own).
+    Mcp,
+    /// Run the shared controller without a window. Access defaults to observation only.
+    Serve {
+        #[arg(long, default_value = "observe", value_parser = ["observe", "workflow", "full"])]
+        access: String,
+        /// Locally approve an exact saved workflow (no credentials; GUI required for those).
+        #[arg(long)]
+        approve: Vec<PathBuf>,
+    },
+    /// Invoke a named console operation through the same owner used by MCP and the GUI.
+    Control {
+        tool: String,
+        #[arg(long, conflicts_with = "arguments_file")]
+        arguments: Option<String>,
+        #[arg(long)]
+        arguments_file: Option<PathBuf>,
+    },
+    /// Wait locally for a run to finish or need a person; prints once, without model polling.
+    Watch {
+        run_id: String,
+        #[arg(long, default_value_t = 7200, value_parser = clap::value_parser!(u64).range(1..=86400))]
+        timeout: u64,
+    },
     /// Open the graphical app (default)
     Gui,
     /// List adapters in range
@@ -223,6 +247,35 @@ fn save_settings(cfg: &Config, f: impl Fn(&mut Config)) {
 fn real_main(cli: Cli) -> R<()> {
     let cfg = Config::load();
     match cli.cmd.unwrap_or(Cmd::Gui) {
+        Cmd::Mcp => kvmit_control::mcp::serve(&mut std::io::stdin().lock(), &mut std::io::stdout().lock(), &kvmit_control::control_dir(&kvmit::config::config_path())).map_err(Into::into),
+        Cmd::Serve { access, approve } => {
+            let access = match access.as_str() { "workflow" => kvmit_control::broker::Access::Workflow, "full" => kvmit_control::broker::Access::Full, _ => kvmit_control::broker::Access::Observe };
+            kvmit::gui::serve_headless(access, &approve).map_err(Into::into)
+        }
+        Cmd::Control { tool, arguments, arguments_file } => {
+            let arguments = match arguments_file { Some(path) => std::fs::read_to_string(path)?, None => arguments.unwrap_or_else(|| "{}".into()) };
+            let args = serde_json::from_str(&arguments)?;
+            let result = kvmit_control::broker::call(&kvmit_control::control_dir(&kvmit::config::config_path()), &tool, args)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
+        Cmd::Watch { run_id, timeout } => {
+            let deadline = std::time::Instant::now() + Duration::from_secs(timeout);
+            let directory = kvmit_control::control_dir(&kvmit::config::config_path());
+            let cancel = Arc::new(AtomicBool::new(false));
+            let stop = cancel.clone();
+            ctrlc::set_handler(move || stop.store(true, Ordering::SeqCst))?;
+            loop {
+                let state = kvmit_control::broker::call(&directory,"run_status",serde_json::json!({"run_id":run_id}))?;
+                let status = state["receipt"]["status"].as_str().unwrap_or_default();
+                if state["progress"]["needs_attention"] == true || !matches!(status,"starting"|"running") {
+                    println!("{}",serde_json::to_string(&state)?);return Ok(());
+                }
+                if cancel.load(Ordering::SeqCst) { return Err("Monitoring stopped; the workflow continues locally. Use run_cancel to stop it.".into()); }
+                if std::time::Instant::now() >= deadline { return Err("Monitoring timed out; the workflow continues locally. Inspect its run_id before any new start.".into()); }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
         Cmd::Gui => kvmit::gui::run_gui().map_err(|e| e.to_string().into()),
         Cmd::Scan { seconds } => rt().block_on(async {
             let found = backend::scan(Duration::from_secs(seconds)).await?;
@@ -783,6 +836,7 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     let base = a.file.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
     let go = |rt: &tokio::runtime::Handle, dev: Option<kvmit_ble::Device>, resume: Option<&kvmit_script::Checkpoint>| {
         let mut host = ScriptHost {
+            reference_snapshot: None,
             rt: rt.clone(),
             dev,
             capture: Some(capture.clone()),
@@ -889,6 +943,7 @@ fn execute(id: Option<String>, video: Option<String>, cfg: Config, script: Scrip
     let capture = Arc::new(std::sync::Mutex::new(video));
     with_device(id, cfg, |rt, dev| {
         let mut host = ScriptHost {
+            reference_snapshot: None,
             rt: rt.handle().clone(),
             dev: Some(dev.clone()),
             capture: Some(capture),

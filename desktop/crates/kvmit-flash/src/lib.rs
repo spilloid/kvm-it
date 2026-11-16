@@ -744,6 +744,7 @@ pub struct Report {
 /// looked up again and must be the same device, no adapter native port may be attached, and the chip that answers must be
 /// an ESP32-S3 of the image's flash size, not in secure download mode.
 pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut dyn ProgressCallbacks) -> Result<Report, FlashError> {
+    let _hardware = kvmit_control::ResourceClaim::hardware(false).map_err(FlashError)?;
     use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
     use espflash::flasher::Flasher;
     use espflash::image_format::Segment;

@@ -3,6 +3,27 @@ on:
   push: {branches: [main]}
   pull_request:
 jobs:
+  desktop-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, binary: kvmit.exe, python: python }
+          - { os: macos-latest, binary: kvmit, python: python3 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal --component clippy
+      - name: Native tests and lint
+        shell: bash
+        working-directory: desktop
+        run: |
+          cargo +1.99.1 test --workspace --locked
+          cargo +1.99.1 clippy --workspace --all-targets --locked -- -D warnings
+          cargo +1.99.1 build -p kvmit --bin kvmit --locked
+      - name: MCP stdio, shared owner and bounded status smoke
+        run: ${{ matrix.python }} tools/mcp-smoke.py --binary desktop/target/debug/${{ matrix.binary }}
   firmware:
     runs-on: ubuntu-latest
     container: espressif/idf:v5.5

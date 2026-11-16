@@ -54,6 +54,8 @@ self-test types into the machine it is plugged into.
 
 ## Things to re-verify before trusting them (dated, STD-003 rule 4)
 
+- 2026-11-16 (0.7.0): the maintainer reports successful MCP operation on Windows, without an exact operation/failure-case inventory. Physical Mac/Linux MCP input, delayed release, capture-stall/reconnect and flash-shutdown paths, and Claude/Cowork interoperability remain unverified. CI checks are software evidence. Workflow provisioning remains prerelease beta; the regular GitHub release flag does not graduate it.
+
 - 2026-11-06 (0.5.1, workflow setup): the setup form (Set up your copy, Save profile) and `kvmit workflow new/set/show`
   ran on Windows 11 only, against the real scripts folder with a throwaway copy, demo video and no adapter. The live-run
   parts of the workflow panel (chip, timeline, variables) are still unseen. Linux and macOS build the same code; not run.

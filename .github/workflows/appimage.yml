@@ -21,6 +21,9 @@ on:
         type: boolean
   pull_request:
     paths:
+      - desktop/**
+      - VERSION
+      - tools/mcp-smoke.py
       - scripts/build-appimage.sh
       - scripts/appimage.Containerfile
       - installer/linux/**
@@ -61,6 +64,7 @@ jobs:
           got="$(squashfs-root/usr/bin/kvmit --version)"
           echo "kvmit --version: $got"
           case "$got" in *"$want"*) ;; *) echo "version mismatch (want $want)"; exit 1;; esac
+          python3 ../tools/mcp-smoke.py --binary "$(pwd)/squashfs-root/usr/bin/kvmit"
           test -s squashfs-root/usr/bin/firmware/FIRMWARE.txt
           (cd ../firmware/release && diff -r . ../../dist-linux/squashfs-root/usr/bin/firmware)
           python3 ../scripts/licenses.py --check

@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+kvmit-control = { path = "../kvmit-control" }
 kvmit-hid = { path = "../kvmit-hid" }
 kvmit-protocol = { path = "../kvmit-protocol" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
