@@ -174,7 +174,7 @@ const MAX_CONSECUTIVE_READ_ERRORS: u32 = 20;
 const SHUTDOWN_WAIT: Duration = Duration::from_millis(1500);
 
 impl Capture {
-    pub fn open(path: &str) -> Result<Capture, CaptureError> {
+    pub fn open(path: &str, claim: std::sync::Arc<kvmit_control::ResourceClaim>) -> Result<Capture, CaptureError> {
         let latest: Arc<Mutex<Option<SharedFrame>>> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
         let failed = Arc::new(AtomicBool::new(false));
@@ -184,6 +184,7 @@ impl Capture {
         let thread = std::thread::Builder::new()
             .name("kvmit-capture".into())
             .spawn(move || {
+                let _claim = claim;
                 let _signal_done = DoneOnDrop(done_tx);
                 let _mf = match Mf::start() {
                     Ok(m) => m,

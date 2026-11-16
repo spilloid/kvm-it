@@ -1,0 +1,35 @@
+{
+  "version": "0.7.0 development",
+  "date": "2026-11-14",
+  "platform": "Windows",
+  "workspace_tests": { "passed": 380, "failed": 0, "ignored": 1 },
+  "strict_clippy": "passed",
+  "native_cli_and_gui_build": "passed",
+  "mcp_smoke": {
+    "passed": true,
+    "full_tool_count": 35,
+    "workflow_tool_count": 12,
+    "full_catalog_wire_bytes": 13027,
+    "observe_catalog_wire_bytes": 2353,
+    "workflow_catalog_wire_bytes": 4025,
+    "unchanged_status_wire_bytes": 327,
+    "checks": [
+      "stdio initialization and JSON-RPC-only stdout",
+      "shared owner through MCP and command-line front ends",
+      "Observe, approved Workflow and Full permissions",
+      "duplicate request and changed-parameter refusal",
+      "client reconnect and owner restart with persisted receipts",
+      "synthetic image as MCP image content, without duplicated base64 in structured text",
+      "no-target input refusal",
+      "multiple secret-free approved headless workflows",
+      "approved-mode denial of human-gate answers"
+    ]
+  },
+  "rust_notices": { "check": "passed", "named_crates": 385, "locked_crates": 479 },
+  "bundled_firmware_source_hash_check": "passed",
+  "hardware_input_sent": false,
+  "real_capture_recording_audio_verified": false,
+  "claude_cowork_client_verified": false,
+  "model_token_usage_measured": false,
+  "published": false
+}

@@ -930,6 +930,15 @@ dependencies = [
 
 [[package]]
 name = "cpufeatures"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "cpufeatures"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
@@ -1529,7 +1538,7 @@ dependencies = [
  "regex",
  "serde",
  "serialport",
- "sha2",
+ "sha2 0.11.0",
  "slip-codec",
  "strum 0.28.0",
  "thiserror 2.0.21",
@@ -2272,8 +2281,9 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kvmit"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
+ "base64",
  "clap",
  "ctrlc",
  "dirs",
@@ -2282,6 +2292,7 @@ dependencies = [
  "embed-resource",
  "image",
  "kvmit-ble",
+ "kvmit-control",
  "kvmit-flash",
  "kvmit-hid",
  "kvmit-layout",
@@ -2301,11 +2312,12 @@ dependencies = [
 
 [[package]]
 name = "kvmit-ble"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bluer",
  "btleplug",
  "futures",
+ "kvmit-control",
  "kvmit-hid",
  "kvmit-protocol",
  "tokio",
@@ -2315,32 +2327,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "kvmit-control"
+version = "0.7.0"
+dependencies = [
+ "dirs",
+ "getrandom 0.3.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "kvmit-flash"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "espflash",
+ "kvmit-control",
  "md-5 0.11.0",
  "nusb",
  "serde",
  "serde_json",
  "serialport",
- "sha2",
+ "sha2 0.11.0",
 ]
 
 [[package]]
 name = "kvmit-hid"
-version = "0.6.0"
+version = "0.7.0"
 
 [[package]]
 name = "kvmit-layout"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "kvmit-hid",
 ]
 
 [[package]]
 name = "kvmit-protocol"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2348,14 +2372,14 @@ dependencies = [
 
 [[package]]
 name = "kvmit-record"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "kvmit-video",
 ]
 
 [[package]]
 name = "kvmit-script"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "kvmit-hid",
  "kvmit-layout",
@@ -2368,11 +2392,12 @@ dependencies = [
 
 [[package]]
 name = "kvmit-video"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "image",
+ "kvmit-control",
  "kvmit-hid",
  "kvmit-layout",
  "kvmit-script",
@@ -3851,12 +3876,23 @@ dependencies = [
 
 [[package]]
 name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "sha2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.3.1",
  "digest 0.11.3",
 ]
 

@@ -139,3 +139,12 @@ Three independent link states, each with its own reconnect loop, none fatal to t
 **capture device**, **target USB** (invisible to the controller; seen as the ESP32 rebooting and the BLE
 link dropping). On every BLE (re)connect the controller sends handshake then `RELEASE_ALL`. Video reacquires
 the signal without touching BLE state.
+
+## MCP control (0.7 development)
+
+`kvmit-control` supplies per-user resource claims, authenticated loopback IPC, bounded MCP stdio schemas and durable receipts.
+`gui/agent.rs` adapts commands to the existing `Console` actor and its proven script/workflow/recording paths; headless mode uses the same actor with an egui context but no native window.
+CLI `control` and MCP attach to this owner; legacy hardware commands respect the shared claims.
+Approved workflows freeze definition/profile/reference bytes; the host reads decoded references from that snapshot.
+Native BLE/capture/disconnect workers retain ownership through their actual teardown. Flashing takes an exclusive hardware claim and joins the GUI/headless shutdown guard.
+OCR/image preparation runs outside the actor and capture lock. No local observation or wait invokes a model. See [MCP](mcp.md) for modes, cost bounds and evidence limits.

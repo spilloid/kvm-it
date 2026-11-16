@@ -152,7 +152,7 @@ mod imp {
     }
 
     impl Capture {
-        pub fn open(path: &str) -> Result<Capture, CaptureError> {
+        pub fn open(path: &str, claim: std::sync::Arc<kvmit_control::ResourceClaim>) -> Result<Capture, CaptureError> {
             let dev = Device::with_path(path).map_err(|e| CaptureError(format!("{path}: {e}")))?;
             let caps = dev.query_caps().ok();
             let name = caps.as_ref().map(|c| c.card.clone()).unwrap_or_default();
@@ -175,6 +175,7 @@ mod imp {
             let thread = std::thread::Builder::new()
                 .name("kvmit-capture".into())
                 .spawn(move || {
+                    let _claim = claim;
                     let _signal_done = DoneOnDrop(done_tx);
                     let _fail = FailOnExit { stop: s2.clone(), failed: f2 };
                     let mut stream = match Stream::with_buffers(&dev, Type::VideoCapture, 4) {
@@ -263,7 +264,7 @@ mod imp {
         pub info: DeviceInfo,
     }
     impl Capture {
-        pub fn open(_path: &str) -> Result<Capture, CaptureError> {
+        pub fn open(_path: &str, _claim: std::sync::Arc<kvmit_control::ResourceClaim>) -> Result<Capture, CaptureError> {
             Err(CaptureError("video capture is not implemented on this platform yet (Linux, Windows and macOS only)".into()))
         }
         pub fn latest(&self) -> Option<SharedFrame> {
@@ -280,6 +281,9 @@ use imp::Capture as PlatformCapture;
 /// A capture device: the platform's real backend, or the synthetic demo source (`demo::PREFIX` paths).
 pub struct Capture {
     inner: Inner,
+    _claim: Option<std::sync::Arc<kvmit_control::ResourceClaim>>,
+    /// Changes on every open, including reopening the same card.
+    pub epoch: u64,
     pub mode: Mode,
     pub info: DeviceInfo,
 }
@@ -291,13 +295,17 @@ enum Inner {
 
 impl Capture {
     pub fn open(path: &str) -> Result<Capture, CaptureError> {
+        static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let epoch = EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if let Some(png) = path.strip_prefix(crate::demo::PREFIX) {
             let c = crate::demo::DemoCapture::open(png)?;
             let info = DeviceInfo::new(path, "Demo target (synthetic picture)");
-            return Ok(Capture { mode: c.mode, info, inner: Inner::Demo(c) });
+            return Ok(Capture { mode: c.mode, info, inner: Inner::Demo(c), _claim: None, epoch });
         }
-        let c = PlatformCapture::open(path)?;
-        Ok(Capture { mode: c.mode, info: c.info.clone(), inner: Inner::Platform(c) })
+        let identity = std::fs::canonicalize(path).map(|p|p.to_string_lossy().into_owned()).unwrap_or_else(|_|path.to_string());
+        let claim = std::sync::Arc::new(kvmit_control::ResourceClaim::acquire("capture", &identity).map_err(CaptureError)?);
+        let c = PlatformCapture::open(path, claim.clone())?;
+        Ok(Capture { mode: c.mode, info: c.info.clone(), inner: Inner::Platform(c), _claim: Some(claim), epoch })
     }
 
     pub fn latest(&self) -> Option<crate::SharedFrame> {

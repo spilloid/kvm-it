@@ -1644,3 +1644,19 @@ for their earlier revisions only.
 - Workflow/provisioning prerelease beta and the explicitly approved Linux hardware deferral remain disclosed in the
   public notes. Firmware 0.2.1's new pairing-window behaviour is still not board-verified; no earlier hardware label
   is broadened by this release.
+
+## 2026-11-14 - 0.7 MCP shared control and workflows
+
+Maintainer authorized implementation after an independent Astra architecture assessment. Work is isolated in feat/0.7-mcp and preserves the existing 0.6 working tree.
+Astra reviewed the implementation adversarially and rechecked reproduced fixes; final static verdict: no confirmed implementation blocker remains, subject to native validation.
+See [findings, fixes and evidence limits](reviews/2026-11-14-mcp-astra.md). Physical MCP behavior and actual Claude/Cowork interoperability are not claimed.
+
+0.7 final validation on Windows: 380 workspace tests passed (one manual audio test ignored), strict Clippy clean, CLI/GUI preview built, all three MCP access modes pass disconnected smoke.
+The inactive-recording completion follow-up was fixed, regression-tested and cleared by Astra. Notice and firmware-source checks pass.
+[Measured checks and limits](reviews/2026-11-14-mcp-windows.json); no physical/client or model-token-billing claim.
+
+## 2026-11-16 - 0.7.0 regular release integration
+
+The maintainer approved publishing 0.7.0 as a regular release (not a GitHub prerelease). The reviewed MCP development snapshot is preserved separately; the original 0.6 and MCP working trees are unchanged. Integration starts from the published 0.6 main and retains its adapter-task ownership/retirement fixes, three ownership regressions, bounded settings-lock acquisition workers and final evidence records. MCP adds native resource claims alongside those GUI leases. Merge resolution keeps the MCP owner/frontend and the published teardown barriers together; a duplicated test-only retry helper was removed.
+
+The independent MCP source review and the independent final 0.6 ownership/settings reviews remain recorded above. Current-candidate cross-platform CI and package evidence will be recorded when complete. Windows usage is maintainer-reported; physical Mac/Linux MCP and actual Claude/Cowork interoperability remain unverified. The regular release retains workflow beta limits and disclosed physical verification debt.

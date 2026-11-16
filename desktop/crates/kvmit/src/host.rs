@@ -22,6 +22,8 @@ pub struct ScriptHost {
     pub capture: Option<Arc<Mutex<Option<Capture>>>>,
     /// Directory reference images are resolved against (the script's folder).
     pub base_dir: PathBuf,
+    /// Approved workflows read their reference frames from an immutable snapshot.
+    pub reference_snapshot: Option<Arc<std::collections::BTreeMap<String, Frame>>>,
     pub cancel: Arc<AtomicBool>,
     pub confirm: ConfirmFn,
     pub on_event: EventFn,
@@ -67,6 +69,7 @@ impl Host for ScriptHost {
         cap.as_ref()?.latest().map(|f| f.to_gray())
     }
     fn reference(&mut self, name: &str) -> Result<Frame, String> {
+        if let Some(refs) = &self.reference_snapshot { return refs.get(name).cloned().ok_or_else(|| "Reference is absent from the approved snapshot".into()); }
         kvmit_video::convert::load_reference(&crate::wf_view::reference_path(&self.base_dir, name)?)
     }
     /// A valid picture name with nothing saved there yet. A name the path rule refuses is not "missing": loading it
@@ -75,6 +78,7 @@ impl Host for ScriptHost {
         kvmit_video::text::read_text(frame)
     }
     fn reference_missing(&mut self, name: &str) -> bool {
+        if let Some(refs) = &self.reference_snapshot { return !refs.contains_key(name); }
         crate::wf_view::reference_path(&self.base_dir, name).is_ok_and(|p| std::fs::symlink_metadata(&p).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound))
     }
     fn persist(&mut self, checkpoint: &kvmit_script::Checkpoint) -> Result<(), String> {

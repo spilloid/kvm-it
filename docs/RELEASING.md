@@ -151,3 +151,14 @@ On a clean Windows 11 machine or VM, from the assets (not from the build tree):
 - The docs site (GitHub Pages) rebuilds from `main`; check that it states the new version.
 - Open the next milestone in `docs/roadmap.md`; record anything that slipped in the CHANGELOG's *Known limitations*.
 - If anything in this checklist was wrong or missing, fix this file in the same change.
+
+## 0.7 MCP acceptance
+
+Run native workspace tests/clippy, build both executables and run `python tools/mcp-smoke.py --binary <new kvmit binary>` with isolated settings.
+Regenerate Rust third-party notices after manifest/lock changes. Verify GUI Agent mode selection, local approval/takeover, client reconnect and actual stdio client packaging.
+Run physical delayed-release, reconnect/capture-stall and flash-shutdown passes before labeling those MCP paths hardware-verified.
+Workflow beta graduation still requires its existing physical OOBE/Autopilot evidence; MCP does not waive it.
+
+## 0.7.0 publication decision (2026-11-16)
+
+The maintainer explicitly approved publishing 0.7.0 as a **regular release**, not a GitHub prerelease, after reviewing the remaining integration and Mac verification work. Workflow automation retains its prerelease-beta label; software CI and packaging do not establish a physical Mac/Linux MCP pass, Claude/Cowork interoperability or end-to-end provisioning. The maintainer reports useful MCP operation on this Windows PC; the exact operations and failure cases were not reported. Keep the inherited Linux hardware debt and all unverified MCP paths explicit in the notes. Do not claim the 0.6-only hardware exception as new hardware evidence.

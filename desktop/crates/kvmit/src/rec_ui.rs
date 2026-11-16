@@ -80,6 +80,12 @@ impl Default for RecordUi {
 }
 
 impl RecordUi {
+    #[cfg(test)]
+    pub(crate) fn finished_fixture() -> Self {
+        let (tx,rx) = channel();
+        tx.send(Err(RecordError::Io("fixture recorder finished".into()))).unwrap();
+        Self { finishing:Some(rx),..Default::default() }
+    }
     pub fn is_recording(&self) -> bool {
         self.active.is_some()
     }
@@ -90,10 +96,15 @@ impl RecordUi {
     }
 
     pub fn start(&mut self, source: impl FnMut() -> Option<SharedFrame> + Send + 'static) -> Result<(), String> {
+        let audio = self.audio_sel.and_then(|i| self.audio.get(i));
+        self.start_with_settings(settings_for(self.format, audio), source)
+    }
+
+    /// GUI and MCP use the same encoder lifecycle, with explicit audio opt-in.
+    pub fn start_with_settings(&mut self, settings: Settings, source: impl FnMut() -> Option<SharedFrame> + Send + 'static) -> Result<(), String> {
         let dir = output_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-        let audio = self.audio_sel.and_then(|i| self.audio.get(i));
-        let handle = poll_record(settings_for(self.format, audio), &dir, source).map_err(|e| e.to_string())?;
+        let handle = poll_record(settings, &dir, source).map_err(|e| e.to_string())?;
         self.active = Some(Active { handle, since: Instant::now() });
         Ok(())
     }

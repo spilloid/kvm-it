@@ -162,6 +162,7 @@ struct Session {
     output: Retained<AVCaptureVideoDataOutput>,
     _delegate: Retained<Delegate>,
     _queue: DispatchRetained<DispatchQueue>,
+    _claim: Arc<kvmit_control::ResourceClaim>,
 }
 
 /// The chosen format and the frame-rate range it is used at, handed to the worker that applies them.
@@ -188,7 +189,7 @@ pub struct Capture {
 }
 
 impl Capture {
-    pub fn open(path: &str) -> Result<Capture, CaptureError> {
+    pub fn open(path: &str, claim: Arc<kvmit_control::ResourceClaim>) -> Result<Capture, CaptureError> {
         ensure_permission()?;
         let device = unsafe { AVCaptureDevice::deviceWithUniqueID(&NSString::from_str(path)) }
             .ok_or_else(|| CaptureError(format!("capture device {path} is not connected")))?;
@@ -243,7 +244,7 @@ impl Capture {
             session.addOutput(&output);
             session.commitConfiguration();
         }
-        let sess = Arc::new(Session { session, device, output, _delegate: delegate, _queue: queue });
+        let sess = Arc::new(Session { session, device, output, _delegate: delegate, _queue: queue, _claim: claim });
 
         // Start on a worker. On macOS a session picks its own format when it starts unless the device stays locked with
         // the chosen one until it is running (Apple's documented pattern: lock, set, start, unlock).

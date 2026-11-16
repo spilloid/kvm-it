@@ -49,13 +49,14 @@ pub const GATT_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 ///
 /// The disconnect runs on a task of its own: a backend that blocks its thread inside it (btleplug's WinRT backend takes a
 /// lock synchronously, which a pending write can hold) then holds up that task, not the caller, so the 5 s bound holds.
-async fn close_quietly(p: &Peripheral) {
+async fn close_quietly(p: &Peripheral, claims: (std::sync::Arc<kvmit_control::ResourceClaim>,std::sync::Arc<kvmit_control::ResourceClaim>)) {
     let p = p.clone();
     // On a thread of its own, outside the runtime's workers and its blocking pool: a backend that blocks there holds up
     // neither other tasks nor the runtime's shutdown (which waits for its blocking pool). The thread drives the future
     // with a small runtime of its own; if it never finishes, it is abandoned and ends with the process.
     let (tx, rx) = tokio::sync::oneshot::channel();
     let started = std::thread::Builder::new().name("kvmit-ble-disconnect".into()).spawn(move || {
+        let _claims = claims;
         if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
             let _ = rt.block_on(p.disconnect());
         }
@@ -250,6 +251,8 @@ async fn find(ad: &Adapter, id: &str, wait: Duration) -> Result<Peripheral> {
 
 /// An open GATT connection. Dropping it does NOT disconnect: call [`Connection::disconnect`].
 pub struct Connection {
+    _claim: std::sync::Arc<kvmit_control::ResourceClaim>,
+    _hardware: std::sync::Arc<kvmit_control::ResourceClaim>,
     pub io: Option<LinkIo>,
     peripheral: Peripheral,
     /// The task writing frames to the adapter: cancelled before disconnecting, so no write of ours is still pending
@@ -274,12 +277,14 @@ impl Connection {
             w.abort();
             let _ = tokio::time::timeout(Duration::from_secs(1), w).await;
         }
-        close_quietly(&self.peripheral).await;
+        close_quietly(&self.peripheral,(self._claim.clone(),self._hardware.clone())).await;
     }
 }
 
 /// Connect to a bonded adapter by address and bridge its GATT characteristics to byte-frame channels.
 pub async fn connect(id: &str) -> Result<Connection> {
+    let claim = std::sync::Arc::new(kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?);
+    let hardware = std::sync::Arc::new(kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?);
     let ad = adapter().await?;
     // Linux: a powered-off or blocked adapter shows up here as "not found"; say why. (Not checked up front: BlueZ's
     // default adapter is not necessarily the one btleplug picked when a computer has two.)
@@ -308,11 +313,11 @@ pub async fn connect(id: &str) -> Result<Connection> {
     let set_up = match tokio::time::timeout(GATT_SETUP_TIMEOUT, setup).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            close_quietly(&p).await;
+            close_quietly(&p,(claim.clone(),hardware.clone())).await;
             return Err(e);
         }
         Err(_) => {
-            close_quietly(&p).await;
+            close_quietly(&p,(claim.clone(),hardware.clone())).await;
             return err(format!(
                 "adapter {id} did not answer within {} s (it may be restarting after a power loss)",
                 GATT_SETUP_TIMEOUT.as_secs()
@@ -345,7 +350,11 @@ pub async fn connect(id: &str) -> Result<Connection> {
         // stream end = disconnect; dropping `to_client` tells the client the link is gone
     });
     let writer = p.clone();
+    // Dropping/cancelling a Connection must not release ownership while its
+    // detached writer can still deliver input.
+    let writer_claims = (claim.clone(), hardware.clone());
     let writer_task = tokio::spawn(async move {
+        let _claims = writer_claims;
         let debug = std::env::var_os("KVMIT_DEBUG").is_some();
         while let Some(frame) = from_client.recv().await {
             let t = std::time::Instant::now();
@@ -359,6 +368,8 @@ pub async fn connect(id: &str) -> Result<Connection> {
         }
     });
     Ok(Connection {
+        _claim: claim,
+        _hardware: hardware,
         io: Some(LinkIo { tx: client_tx, rx: client_rx }),
         peripheral: p,
         writer: std::sync::Mutex::new(Some(writer_task)),
@@ -371,6 +382,8 @@ pub async fn connect(id: &str) -> Result<Connection> {
 /// within its physical pairing window (15 s after power-on, or after a BOOT short press).
 #[cfg(target_os = "linux")]
 pub async fn pair(id: &str) -> Result<()> {
+    let _adapter = kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?;
+    let _hardware = kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?;
     use bluer::agent::Agent;
     let (session, adapter) = bluez(true).await?;
     let agent = Agent {
@@ -522,6 +535,8 @@ async fn request_fast_link(id: &str) -> Option<FastLink> {
 /// toast or Settings dialog is needed. The adapter must be in its pairing window (physical presence).
 #[cfg(windows)]
 pub async fn pair(id: &str) -> Result<()> {
+    let _adapter = kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?;
+    let _hardware = kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?;
     use windows::Devices::Enumeration::{
         DeviceInformationCustomPairing, DevicePairingKinds, DevicePairingProtectionLevel, DevicePairingRequestedEventArgs,
         DevicePairingResultStatus,
@@ -567,6 +582,8 @@ pub async fn pair(id: &str) -> Result<()> {
 /// bond exists. The adapter must be in its pairing window.
 #[cfg(target_os = "macos")]
 pub async fn pair(id: &str) -> Result<()> {
+    let _adapter = kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?;
+    let _hardware = kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?;
     let ad = adapter().await?;
     let p = find(&ad, id, Duration::from_secs(90)).await?;
     p.connect().await?;
@@ -596,6 +613,8 @@ pub async fn pair(_id: &str) -> Result<()> {
 /// Remove the OS-level bond (Linux). The adapter-side bond is erased with a 10 s BOOT hold.
 #[cfg(target_os = "linux")]
 pub async fn unpair(id: &str) -> Result<()> {
+    let _adapter = kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?;
+    let _hardware = kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?;
     let (_session, adapter) = bluez(false).await?;
     let addr: bluer::Address = id.parse().map_err(|_| BackendError(format!("bad address {id}")))?;
     adapter.remove_device(addr).await?;
@@ -604,6 +623,8 @@ pub async fn unpair(id: &str) -> Result<()> {
 
 #[cfg(windows)]
 pub async fn unpair(id: &str) -> Result<()> {
+    let _adapter = kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?;
+    let _hardware = kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?;
     use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationKind, DeviceUnpairingResultStatus};
     let _pairing = WINDOWS_PAIRING.lock().await;
     let selector = pairing_selector(id)?;

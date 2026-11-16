@@ -14,6 +14,8 @@ name = "kvmit-gui"
 path = "src/gui_main.rs"
 
 [dependencies]
+kvmit-control = { path = "../kvmit-control" }
+base64 = "0.22"
 kvmit-hid = { path = "../kvmit-hid" }
 kvmit-layout = { path = "../kvmit-layout" }
 kvmit-protocol = { path = "../kvmit-protocol" }
