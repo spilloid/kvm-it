@@ -190,3 +190,11 @@ Recording completion is collected for every console, including inactive tabs; Fu
 Rust notices were regenerated and checked, and the bundled firmware source hash matches.
 Real capture/audio, physical MCP operation, and actual Claude/Cowork integration remain unverified.
 See the [machine-readable check record](reviews/2026-11-14-mcp-windows.json) and [Astra review](reviews/2026-11-14-mcp-astra.md).
+
+### 0.7.0 release validation (2026-11-16)
+
+0.7.0 is a regular published release. Final native tests passed on Windows (385), Linux (391) and Mac (392), with one manual audio test ignored on each; strict lint passed. MCP smoke passed on native Windows/Mac, the finished Mac DMG, extracted Linux AppImage, installed signed Windows MSI and downloaded signed Windows CLI. A Mac IPC timeout found during validation was fixed and covered by a fragmented-request regression.
+
+All 12 published assets match their checked digests and checksum files. Windows executables and MSI carry independently verified valid, timestamped signatures from the expected publisher. Install, installed MCP, shortcut/PATH and uninstall passed on a clean hosted Windows runner. These checks use isolated settings and synthetic video and send no target input. Physical and client limits above remain in force; workflow automation remains prerelease beta.
+
+[Release evidence and hashes](reviews/2026-11-16-0.7.0-release.json).

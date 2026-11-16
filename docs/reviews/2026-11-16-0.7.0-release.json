@@ -1,0 +1,99 @@
+{
+  "version": "0.7.0",
+  "date": "2026-11-16",
+  "release_url": "https://github.com/spilloid/kvm-it/releases/tag/v0.7.0",
+  "source_commit": "32566968f94340efcdaa163124c3ab1192b9c700",
+  "candidate_commit": "913a350d9d5825b1e32ddc6206da64882559453f",
+  "pull_request": 61,
+  "published": true,
+  "prerelease": false,
+  "native_workspace_tests": {
+    "windows": {
+      "passed": 385,
+      "failed": 0,
+      "ignored": 1
+    },
+    "linux": {
+      "passed": 391,
+      "failed": 0,
+      "ignored": 1
+    },
+    "macos": {
+      "passed": 392,
+      "failed": 0,
+      "ignored": 1
+    }
+  },
+  "strict_lint": "passed",
+  "windows_container_cross_build": "passed",
+  "firmware_host_tests_and_builds": "passed",
+  "mcp_smoke": {
+    "native_windows": "passed",
+    "native_macos": "passed",
+    "packaged_mac_dmg": "passed",
+    "packaged_linux_appimage": "passed",
+    "installed_signed_windows_msi": "passed",
+    "downloaded_signed_windows_cli": "passed",
+    "access_modes": [
+      "observe",
+      "workflow",
+      "full"
+    ],
+    "full_tool_count": 35,
+    "workflow_tool_count": 12,
+    "hardware_input_sent": false
+  },
+  "windows_signatures": {
+    "cli": "Valid",
+    "gui": "Valid",
+    "msi": "Valid",
+    "timestamped": true,
+    "expected_publisher": "Joseph Spillers",
+    "independently_checked_on_windows": true
+  },
+  "windows_msi_smoke": {
+    "host": "clean hosted Windows runner",
+    "install": "passed",
+    "installed_binary_identity": "passed",
+    "version_shortcut_machine_path": "passed",
+    "installed_mcp": "passed",
+    "uninstall": "passed"
+  },
+  "macos_notarized": false,
+  "assets_sha256": {
+    "ipxe-12798ec29aa8-source.tar.gz": "44909ccc7e186a9ec326355cf9a8a80f276b135de8992aff8308d633e8439f45",
+    "ipxe-12798ec29aa8-source.tar.gz.sha256": "d77394606bc1eab19cd55c11bc21b5485d7e15754290ef89cf0a51b9a226eff0",
+    "kvm-it-0.7.0-macos-arm64.dmg": "13e02ba2930319bbf191aed76d79dcff164b4ca23d4f4c120153c8a523ce9a62",
+    "kvm-it-0.7.0-macos-arm64.dmg.sha256": "bb2fa0ba8d7642cd6efd8fd075f33b26882d9d04c7e6e52a3865b821f7d04238",
+    "kvm-it-0.7.0-x86_64.AppImage": "84fca45bc39e5b0afbca23be892463670fd282e768fa67a548d58d739b0ff915",
+    "kvm-it-0.7.0-x86_64.AppImage.sha256": "ce08229a21852fd49adb71e8613f3c4db2f4e10f2be2fb695554de0a12d609e6",
+    "kvmit-v0.7.0-windows-x64.msi": "6680fd9de69f61f8b355734dc48997e3c3123788bffab4327444007523278061",
+    "kvmit-v0.7.0-windows-x64.msi.sha256": "0d2c8abedc53e395aae20af75cab9b2425992e3bedf4bc6cf1eb3d7b454438ea",
+    "kvmit-v0.7.0-windows-x64.zip": "4a68ca19cb167056643ebbdff70e8b637da20e66b73cef0d1dd95686bf7e8754",
+    "kvmit-v0.7.0-windows-x64.zip.sha256": "0d594c4260139e941fe693ae16b1cce3a8d2db164a1c37af2febb550ccdfd20e",
+    "SHA256SUMS": "20e67588e4bbcb7f5cabcfe74b72eed51ce4e873ac860c2ce5e5c96a517cb07b",
+    "SIGNATURES.txt": "7b87a239eb134c1cbb62201c70e89f2447ae6a545741ddbb29e7989a31bd4582"
+  },
+  "checksums_and_package_verifier": "passed",
+  "public_asset_digests_unchanged_after_publication": true,
+  "package_workflow_runs": {
+    "windows": 43909926997,
+    "macos": 43909933089,
+    "linux": 43909938560,
+    "ipxe_source": 43909943913
+  },
+  "candidate_ci_runs": [
+    43908131397,
+    43908131426,
+    43908131610,
+    43908131710
+  ],
+  "verification_limits": {
+    "windows_physical_mcp": "maintainer-reported; operation inventory not supplied",
+    "macos_physical_mcp": false,
+    "linux_physical_mcp": false,
+    "claude_cowork_interoperability": false,
+    "physical_end_to_end_provisioning": false,
+    "workflow_automation": "prerelease beta"
+  }
+}

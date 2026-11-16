@@ -162,3 +162,9 @@ Workflow beta graduation still requires its existing physical OOBE/Autopilot evi
 ## 0.7.0 publication decision (2026-11-16)
 
 The maintainer explicitly approved publishing 0.7.0 as a **regular release**, not a GitHub prerelease, after reviewing the remaining integration and Mac verification work. Workflow automation retains its prerelease-beta label; software CI and packaging do not establish a physical Mac/Linux MCP pass, Claude/Cowork interoperability or end-to-end provisioning. The maintainer reports useful MCP operation on this Windows PC; the exact operations and failure cases were not reported. Keep the inherited Linux hardware debt and all unverified MCP paths explicit in the notes. Do not claim the 0.6-only hardware exception as new hardware evidence.
+
+### Automated installed-package smoke (since 0.7.0)
+
+The signed Windows release job now installs its MSI on the clean hosted runner, checks installed executable hashes, version, Start menu and machine PATH, runs isolated MCP smoke against the installed CLI and uninstalls before uploading assets. The Mac and AppImage jobs run MCP smoke against their finished packaged executables. Report this as hosted software/package evidence; retain manual Windows 11 GUI and physical hardware limits where those passes were not run.
+
+When preparing assets on a draft using workflow_dispatch, publication also fires the published-event workflows. Cancel redundant rebuilds before they replace already-verified Windows/Mac/Linux bytes, or wait for the replacements and reverify the final public bytes. Compare all asset digests after publication and refresh Pages. Never describe a draft-only check as verification of subsequently replaced public bytes.
