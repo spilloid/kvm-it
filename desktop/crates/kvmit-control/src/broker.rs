@@ -80,7 +80,8 @@ impl Broker {
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                         let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
                         let result = (|| {
-                            let bytes = read_message(&mut BufReader::new(stream.try_clone().map_err(|e| e.to_string())?))?;
+                            let bytes = read_message(&mut BufReader::new(stream.try_clone().map_err(|e| e.to_string())?))
+                                .map_err(|e| format!("Could not read control request: {e}"))?;
                             let request: WireRequest = serde_json::from_slice(&bytes).map_err(|_| "Invalid control request".to_string())?;
                             // No HTTP parser, CORS or browser credentials. All calls require the per-owner token.
                             if request.token != endpoint.token { return Err("Unauthorized".into()); }
@@ -137,9 +138,16 @@ pub fn call(dir: &Path, tool: &str, arguments: Value) -> Result<Value, String> {
         tool: tool.into(),
         arguments,
     };
-    serde_json::to_writer(&mut stream, &request).map_err(|e| e.to_string())?;
-    stream.write_all(b"\n").map_err(|e| e.to_string())?;
-    let bytes = read_message(&mut BufReader::new(stream))?;
+    // Serializing directly to a TCP stream produces many tiny writes. Nagle and
+    // delayed ACKs can stall the terminating newline past the owner's read timeout.
+    let mut message = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
+    message.push(b'\n');
+    if message.len() > MAX_MESSAGE {
+        return Err("Message exceeds 1 MiB".into());
+    }
+    stream.write_all(&message).map_err(|e| format!("Could not send control request: {e}"))?;
+    let bytes = read_message(&mut BufReader::new(stream))
+        .map_err(|e| format!("Could not read controller response: {e}"))?;
     serde_json::from_slice::<Result<Value, String>>(&bytes)
         .map_err(|_| "Invalid controller response".to_string())?
 }
