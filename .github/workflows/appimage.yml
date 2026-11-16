@@ -21,6 +21,9 @@ on:
         type: boolean
   pull_request:
     paths:
+      - desktop/**
+      - VERSION
+      - tools/mcp-smoke.py
       - scripts/build-appimage.sh
       - scripts/appimage.Containerfile
       - installer/linux/**

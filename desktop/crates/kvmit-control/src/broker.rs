@@ -77,6 +77,9 @@ impl Broker {
             while !stopped.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut stream, peer)) if peer.ip().is_loopback() => {
+                        // Accepted sockets can inherit the listener's nonblocking
+                        // mode on macOS. A partial request must wait for its newline.
+                        if stream.set_nonblocking(false).is_err() { continue; }
                         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
                         let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
                         let result = (|| {
@@ -176,5 +179,43 @@ pub fn read_message(reader: &mut impl BufRead) -> Result<Vec<u8>, String> {
         if bytes.last() == Some(&b'\n') {
             return Ok(bytes);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_accepted_connection_waits_for_a_fragmented_request() {
+        let dir = std::env::temp_dir().join(format!("kvmit-ipc-{}", nonce().unwrap()));
+        let broker = Broker::start(&dir, Access::Observe).unwrap();
+        let endpoint: Endpoint = serde_json::from_slice(&std::fs::read(dir.join("endpoint.json")).unwrap()).unwrap();
+        let client = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(endpoint.address).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(4))).unwrap();
+            let mut message = serde_json::to_vec(&WireRequest {
+                token: endpoint.token,
+                tool: "probe".into(),
+                arguments: serde_json::json!({}),
+            }).unwrap();
+            message.push(b'\n');
+            let split = message.len() / 2;
+            stream.write_all(&message[..split]).unwrap();
+            // Exceeds the accept loop's 20 ms poll interval while staying well
+            // inside the request read deadline. No hardware or settings are used.
+            std::thread::sleep(Duration::from_millis(150));
+            stream.write_all(&message[split..]).unwrap();
+            let bytes = read_message(&mut BufReader::new(stream)).unwrap();
+            serde_json::from_slice::<Result<Value, String>>(&bytes).unwrap()
+        });
+        if let Ok(command) = broker.incoming.recv_timeout(Duration::from_secs(3)) {
+            assert_eq!(command.tool, "probe");
+            command.reply.send(Ok(serde_json::json!({"received": true}))).unwrap();
+        }
+        let result = client.join().unwrap();
+        drop(broker);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(result.unwrap(), serde_json::json!({"received": true}));
     }
 }
