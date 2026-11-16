@@ -16,6 +16,7 @@ jobs:
       - name: Native Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal --component clippy
       - name: Native tests and lint
+        shell: bash
         working-directory: desktop
         run: |
           cargo +1.99.1 test --workspace --locked
