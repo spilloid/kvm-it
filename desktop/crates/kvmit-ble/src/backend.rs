@@ -17,6 +17,9 @@ pub const SERVICE_UUID: Uuid = Uuid::from_u128(0x7a1e0000_4b49_4d54_8000_6b766d6
 pub const RX_UUID: Uuid = Uuid::from_u128(0x7a1e0001_4b49_4d54_8000_6b766d697401); // controller -> device (write)
 pub const TX_UUID: Uuid = Uuid::from_u128(0x7a1e0002_4b49_4d54_8000_6b766d697401); // device -> controller (notify)
 
+#[cfg(windows)]
+static WINDOWS_PAIRING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[derive(Debug)]
 pub struct BackendError(pub String);
 impl std::fmt::Display for BackendError {
@@ -46,13 +49,14 @@ pub const GATT_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 ///
 /// The disconnect runs on a task of its own: a backend that blocks its thread inside it (btleplug's WinRT backend takes a
 /// lock synchronously, which a pending write can hold) then holds up that task, not the caller, so the 5 s bound holds.
-async fn close_quietly(p: &Peripheral) {
+async fn close_quietly(p: &Peripheral, claims: (std::sync::Arc<kvmit_control::ResourceClaim>,std::sync::Arc<kvmit_control::ResourceClaim>)) {
     let p = p.clone();
     // On a thread of its own, outside the runtime's workers and its blocking pool: a backend that blocks there holds up
     // neither other tasks nor the runtime's shutdown (which waits for its blocking pool). The thread drives the future
     // with a small runtime of its own; if it never finishes, it is abandoned and ends with the process.
     let (tx, rx) = tokio::sync::oneshot::channel();
     let started = std::thread::Builder::new().name("kvmit-ble-disconnect".into()).spawn(move || {
+        let _claims = claims;
         if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
             let _ = rt.block_on(p.disconnect());
         }
@@ -247,6 +251,8 @@ async fn find(ad: &Adapter, id: &str, wait: Duration) -> Result<Peripheral> {
 
 /// An open GATT connection. Dropping it does NOT disconnect: call [`Connection::disconnect`].
 pub struct Connection {
+    _claim: std::sync::Arc<kvmit_control::ResourceClaim>,
+    _hardware: std::sync::Arc<kvmit_control::ResourceClaim>,
     pub io: Option<LinkIo>,
     peripheral: Peripheral,
     /// The task writing frames to the adapter: cancelled before disconnecting, so no write of ours is still pending
@@ -271,12 +277,14 @@ impl Connection {
             w.abort();
             let _ = tokio::time::timeout(Duration::from_secs(1), w).await;
         }
-        close_quietly(&self.peripheral).await;
+        close_quietly(&self.peripheral,(self._claim.clone(),self._hardware.clone())).await;
     }
 }
 
 /// Connect to a bonded adapter by address and bridge its GATT characteristics to byte-frame channels.
 pub async fn connect(id: &str) -> Result<Connection> {
+    let claim = std::sync::Arc::new(kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?);
+    let hardware = std::sync::Arc::new(kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?);
     let ad = adapter().await?;
     // Linux: a powered-off or blocked adapter shows up here as "not found"; say why. (Not checked up front: BlueZ's
     // default adapter is not necessarily the one btleplug picked when a computer has two.)
@@ -305,11 +313,11 @@ pub async fn connect(id: &str) -> Result<Connection> {
     let set_up = match tokio::time::timeout(GATT_SETUP_TIMEOUT, setup).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            close_quietly(&p).await;
+            close_quietly(&p,(claim.clone(),hardware.clone())).await;
             return Err(e);
         }
         Err(_) => {
-            close_quietly(&p).await;
+            close_quietly(&p,(claim.clone(),hardware.clone())).await;
             return err(format!(
                 "adapter {id} did not answer within {} s (it may be restarting after a power loss)",
                 GATT_SETUP_TIMEOUT.as_secs()
@@ -342,7 +350,11 @@ pub async fn connect(id: &str) -> Result<Connection> {
         // stream end = disconnect; dropping `to_client` tells the client the link is gone
     });
     let writer = p.clone();
+    // Dropping/cancelling a Connection must not release ownership while its
+    // detached writer can still deliver input.
+    let writer_claims = (claim.clone(), hardware.clone());
     let writer_task = tokio::spawn(async move {
+        let _claims = writer_claims;
         let debug = std::env::var_os("KVMIT_DEBUG").is_some();
         while let Some(frame) = from_client.recv().await {
             let t = std::time::Instant::now();
@@ -356,6 +368,8 @@ pub async fn connect(id: &str) -> Result<Connection> {
         }
     });
     Ok(Connection {
+        _claim: claim,
+        _hardware: hardware,
         io: Some(LinkIo { tx: client_tx, rx: client_rx }),
         peripheral: p,
         writer: std::sync::Mutex::new(Some(writer_task)),
@@ -368,6 +382,8 @@ pub async fn connect(id: &str) -> Result<Connection> {
 /// within its physical pairing window (15 s after power-on, or after a BOOT short press).
 #[cfg(target_os = "linux")]
 pub async fn pair(id: &str) -> Result<()> {
+    let _adapter = kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?;
+    let _hardware = kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?;
     use bluer::agent::Agent;
     let (session, adapter) = bluez(true).await?;
     let agent = Agent {
@@ -424,8 +440,68 @@ impl From<windows::core::Error> for BackendError {
 
 #[cfg(windows)]
 async fn le_device(id: &str) -> Result<windows::Devices::Bluetooth::BluetoothLEDevice> {
+    cached_le_device(id).await?.ok_or_else(|| BackendError(format!("Windows returned no Bluetooth device handle for adapter {id}")))
+}
+
+#[cfg(windows)]
+async fn cached_le_device(id: &str) -> Result<Option<windows::Devices::Bluetooth::BluetoothLEDevice>> {
     let addr = u64::from_str_radix(&id.replace(':', ""), 16).map_err(|_| BackendError(format!("bad address {id}")))?;
-    Ok(windows::Devices::Bluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(addr)?.await?)
+    match windows::Devices::Bluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(addr)?.await {
+        Ok(dev) => Ok(Some(dev)),
+        Err(error) if error.code().is_ok() => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Pair/forget association endpoints directly. A BluetoothLEDevice is a GATT
+/// handle and can be null precisely when a stale/missing bond needs repair.
+#[cfg(windows)]
+fn pairing_selector(id: &str) -> Result<windows::core::HSTRING> {
+    let address = pairing_address(id)?;
+    Ok(format!("System.Devices.Aep.ProtocolId:=\"{{bb7bb05e-5972-42b5-94fc-76eaa7084d49}}\" AND System.Devices.Aep.DeviceAddress:=\"{address}\"").into())
+}
+
+#[cfg(windows)]
+fn pairing_address(id: &str) -> Result<String> {
+    let addr = u64::from_str_radix(&id.replace(':', ""), 16).map_err(|_| BackendError(format!("bad address {id}")))?;
+    if addr > 0xffff_ffff_ffff { return err(format!("bad Bluetooth address {id}")); }
+    let bytes = addr.to_be_bytes();
+    let address = bytes[2..].iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":");
+    Ok(address)
+}
+
+#[cfg(windows)]
+fn pairing_properties() -> windows_collections::IIterable<windows::core::HSTRING> {
+    vec![windows::core::HSTRING::from("System.Devices.Aep.DeviceAddress")].into()
+}
+
+#[cfg(windows)]
+fn check_pairing_address(info: &windows::Devices::Enumeration::DeviceInformation, id: &str) -> Result<()> {
+    use windows::core::Interface;
+    let value = info.Properties()?.Lookup(&"System.Devices.Aep.DeviceAddress".into())?.cast::<windows::Foundation::IPropertyValue>()?.GetString()?;
+    if pairing_address(&value.to_string())? != pairing_address(id)? { return err("Windows returned a pairing entry for another board; refusing to change it"); }
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn pairing_endpoint(id: &str) -> Result<windows::Devices::Enumeration::DeviceInformation> {
+    use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationKind, DeviceWatcher};
+    use windows::Foundation::TypedEventHandler;
+    let selector = pairing_selector(id)?;
+    let watcher = DeviceInformation::CreateWatcherWithKindAqsFilterAndAdditionalProperties(&selector, &pairing_properties(), DeviceInformationKind::AssociationEndpoint)
+        .map_err(|e| BackendError(format!("Windows could not start Bluetooth pairing discovery: {e}")))?;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let added = watcher.Added(&TypedEventHandler::<DeviceWatcher, DeviceInformation>::new(move |_, info| {
+        if let Some(info) = info.as_ref() { let _ = tx.send(info.clone()); }
+        Ok(())
+    }))?;
+    if let Err(error) = watcher.Start() { let _ = watcher.RemoveAdded(added); return err(format!("Windows could not start Bluetooth pairing discovery: {error}")); }
+    let found = tokio::time::timeout(Duration::from_secs(20), rx.recv()).await.ok().flatten();
+    let _ = watcher.Stop();
+    let _ = watcher.RemoveAdded(added);
+    let found = found.ok_or_else(|| BackendError(format!("Windows could not find pairing entry for {id}. Press BOOT briefly on that board and try again.")))?;
+    check_pairing_address(&found, id)?;
+    Ok(found)
 }
 
 /// Keeps the Windows "throughput optimised" connection request alive; dropping it lets the stack relax the link.
@@ -459,13 +535,15 @@ async fn request_fast_link(id: &str) -> Option<FastLink> {
 /// toast or Settings dialog is needed. The adapter must be in its pairing window (physical presence).
 #[cfg(windows)]
 pub async fn pair(id: &str) -> Result<()> {
+    let _adapter = kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?;
+    let _hardware = kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?;
     use windows::Devices::Enumeration::{
         DeviceInformationCustomPairing, DevicePairingKinds, DevicePairingProtectionLevel, DevicePairingRequestedEventArgs,
         DevicePairingResultStatus,
     };
     use windows::Foundation::TypedEventHandler;
-    let dev = le_device(id).await?;
-    let pairing = dev.DeviceInformation()?.Pairing()?;
+    let _pairing = WINDOWS_PAIRING.lock().await;
+    let pairing = pairing_endpoint(id).await?.Pairing()?;
     if pairing.IsPaired()? {
         return Ok(());
     }
@@ -482,11 +560,17 @@ pub async fn pair(id: &str) -> Result<()> {
             Ok(())
         },
     ))?;
-    let res = custom
-        .PairWithProtectionLevelAsync(DevicePairingKinds::ConfirmOnly, DevicePairingProtectionLevel::Encryption)?
-        .await;
+    let operation = match custom.PairWithProtectionLevelAsync(DevicePairingKinds::ConfirmOnly, DevicePairingProtectionLevel::Encryption) {
+        Ok(operation) => operation,
+        Err(error) => { let _ = custom.RemovePairingRequested(token); return Err(error.into()); }
+    };
+    let res = tokio::time::timeout(Duration::from_secs(60), operation.clone()).await;
     let _ = custom.RemovePairingRequested(token);
-    match res?.Status()? {
+    let result = match res {
+        Ok(result) => result?,
+        Err(_) => { let _ = operation.Cancel(); return err("Windows pairing timed out. Press BOOT briefly on the adapter and retry Repair pairing."); }
+    };
+    match result.Status()? {
         DevicePairingResultStatus::Paired | DevicePairingResultStatus::AlreadyPaired => Ok(()),
         s => err(format!("Windows could not pair with {id}: {s:?}. Is the adapter's pairing window open (BOOT short press, or just re-plugged)?")),
     }
@@ -498,6 +582,8 @@ pub async fn pair(id: &str) -> Result<()> {
 /// bond exists. The adapter must be in its pairing window.
 #[cfg(target_os = "macos")]
 pub async fn pair(id: &str) -> Result<()> {
+    let _adapter = kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?;
+    let _hardware = kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?;
     let ad = adapter().await?;
     let p = find(&ad, id, Duration::from_secs(90)).await?;
     p.connect().await?;
@@ -527,6 +613,8 @@ pub async fn pair(_id: &str) -> Result<()> {
 /// Remove the OS-level bond (Linux). The adapter-side bond is erased with a 10 s BOOT hold.
 #[cfg(target_os = "linux")]
 pub async fn unpair(id: &str) -> Result<()> {
+    let _adapter = kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?;
+    let _hardware = kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?;
     let (_session, adapter) = bluez(false).await?;
     let addr: bluer::Address = id.parse().map_err(|_| BackendError(format!("bad address {id}")))?;
     adapter.remove_device(addr).await?;
@@ -535,12 +623,42 @@ pub async fn unpair(id: &str) -> Result<()> {
 
 #[cfg(windows)]
 pub async fn unpair(id: &str) -> Result<()> {
-    use windows::Devices::Enumeration::DeviceUnpairingResultStatus;
-    let dev = le_device(id).await?;
-    match dev.DeviceInformation()?.Pairing()?.UnpairAsync()?.await?.Status()? {
-        DeviceUnpairingResultStatus::Unpaired | DeviceUnpairingResultStatus::AlreadyUnpaired => Ok(()),
-        s => err(format!("Windows could not unpair {id}: {s:?}")),
+    let _adapter = kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?;
+    let _hardware = kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?;
+    use windows::Devices::Enumeration::{DeviceInformation, DeviceInformationKind, DeviceUnpairingResultStatus};
+    let _pairing = WINDOWS_PAIRING.lock().await;
+    let selector = pairing_selector(id)?;
+    let lookup = {
+        let properties = pairing_properties();
+        DeviceInformation::FindAllAsyncWithKindAqsFilterAndAdditionalProperties(&selector, &properties, DeviceInformationKind::AssociationEndpoint)
+            .map_err(|e| BackendError(format!("Windows could not look up saved Bluetooth pairings; nothing was forgotten: {e}")))?
+    };
+    let response = match tokio::time::timeout(Duration::from_secs(20), lookup.clone()).await {
+        Ok(response) => response,
+        Err(_) => { let _ = lookup.Cancel(); return err("Windows timed out looking up the saved pairing; nothing was forgotten. Try Repair pairing again."); }
+    };
+    let entries = match response {
+        Ok(entries) => entries,
+        Err(error) => return err(format!("Windows could not read saved Bluetooth pairings; nothing was forgotten: {error}")),
+    };
+    // Includes stale/offline association records; forgetting must not require
+    // opening a GATT connection to the very board whose bond is broken.
+    for i in 0..entries.Size()? {
+        let entry = entries.GetAt(i)?;
+        check_pairing_address(&entry, id)?;
+        let pairing = entry.Pairing()?;
+        if !pairing.IsPaired()? { continue; }
+        let operation = pairing.UnpairAsync()?;
+        let result = match tokio::time::timeout(Duration::from_secs(20), operation.clone()).await {
+            Ok(result) => result?,
+            Err(_) => { let _ = operation.Cancel(); return err("Windows did not confirm removing the pairing. Try Repair pairing again."); }
+        };
+        match result.Status()? {
+            DeviceUnpairingResultStatus::Unpaired | DeviceUnpairingResultStatus::AlreadyUnpaired => {},
+            s => return err(format!("Windows could not unpair {id}: {s:?}")),
+        }
     }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -551,4 +669,20 @@ pub async fn unpair(_id: &str) -> Result<()> {
 #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 pub async fn unpair(_id: &str) -> Result<()> {
     err("remove the device in the OS Bluetooth settings")
+}
+
+#[cfg(all(test, windows))]
+mod pairing_tests {
+    use super::*;
+
+    #[test]
+    fn pairing_selector_targets_only_the_exact_ble_address() {
+        let selector = pairing_selector("98:C3:77:A0:A4:32").unwrap().to_string();
+        assert!(selector.contains("System.Devices.Aep.ProtocolId"));
+        assert!(selector.contains("System.Devices.Aep.DeviceAddress:=\"98:c3:77:a0:a4:32\""));
+        assert_eq!(pairing_selector("98c377a0a432").unwrap().to_string(), selector);
+        for bad in ["98:c3:77:a0:a4:32\" OR true", "1000000000000", "not-a-board"] {
+            assert!(pairing_selector(bad).is_err(), "must not broaden an unpair query: {bad}");
+        }
+    }
 }

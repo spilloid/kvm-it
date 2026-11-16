@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+kvmit-control = { path = "../kvmit-control" }
 kvmit-hid = { path = "../kvmit-hid" }
 kvmit-protocol = { path = "../kvmit-protocol" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
@@ -18,6 +19,7 @@ bluer = { version = "0.17", features = ["bluetoothd"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = ["Devices_Bluetooth", "Devices_Enumeration", "Foundation"] }
+windows-collections = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

@@ -66,7 +66,10 @@ pub fn initial_video(devices: &[DeviceInfo], last_key: Option<&str>, last_path: 
     // A stored key that matches nothing means the remembered card is not here: its old `/dev/videoN` may now be a webcam, so
     // the path is only a fallback for configs that never had a key.
     match last_key {
-        Some(k) => devices.iter().position(|d| d.key == k),
+        Some(k) => {
+            let mut matches = devices.iter().enumerate().filter(|(_, d)| d.key == k);
+            match (matches.next(), matches.next()) { (Some((i, _)), None) => Some(i), _ => None }
+        },
         None => last_path.and_then(|p| devices.iter().position(|d| d.path == p)),
     }
     .or_else(|| devices.iter().position(|d| d.path.starts_with(DEMO_PREFIX)))
@@ -164,6 +167,13 @@ mod tests {
         assert_eq!(initial_video(&[], Some("k"), Some("/dev/video0")), None);
         assert_eq!(initial_video(&d, Some("gone"), Some("/dev/video9")), None, "remembered device absent: open nothing");
         assert_eq!(initial_video(&d, Some("Gone @ usb-9"), Some("/dev/video0")), None, "a missing keyed card must not fall back to a path that is now the webcam");
+    }
+
+    #[test]
+    fn startup_never_guesses_between_two_cards_with_the_same_key() {
+        let cards = [dev("/dev/video2", "Capture"), dev("/dev/video4", "Capture")];
+        assert_eq!(initial_video(&cards, Some("Capture"), Some("/dev/video2")), None);
+        assert_eq!(select_video(&cards, "/dev/video4").unwrap(), 1, "an explicit path still selects the intended card");
     }
 
     #[test]

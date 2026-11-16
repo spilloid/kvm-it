@@ -24,6 +24,30 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// MCP stdio adapter: attach to the running local console (no hardware connection of its own).
+    Mcp,
+    /// Run the shared controller without a window. Access defaults to observation only.
+    Serve {
+        #[arg(long, default_value = "observe", value_parser = ["observe", "workflow", "full"])]
+        access: String,
+        /// Locally approve an exact saved workflow (no credentials; GUI required for those).
+        #[arg(long)]
+        approve: Vec<PathBuf>,
+    },
+    /// Invoke a named console operation through the same owner used by MCP and the GUI.
+    Control {
+        tool: String,
+        #[arg(long, conflicts_with = "arguments_file")]
+        arguments: Option<String>,
+        #[arg(long)]
+        arguments_file: Option<PathBuf>,
+    },
+    /// Wait locally for a run to finish or need a person; prints once, without model polling.
+    Watch {
+        run_id: String,
+        #[arg(long, default_value_t = 7200, value_parser = clap::value_parser!(u64).range(1..=86400))]
+        timeout: u64,
+    },
     /// Open the graphical app (default)
     Gui,
     /// List adapters in range
@@ -33,6 +57,8 @@ enum Cmd {
     },
     /// Pair with an adapter (within 15 s of plugging it in, or after a brief BOOT press)
     Pair,
+    /// Forget this adapter's saved pairing, pair again and reconnect (press BOOT briefly first; requires --device)
+    RepairPairing,
     /// Remove the OS pairing for an adapter (also hold BOOT 10 s on the adapter to erase its side)
     Unpair,
     /// Connect and print adapter info, target-USB state and link round-trip time
@@ -66,6 +92,9 @@ enum Cmd {
         /// Serial port (default: the one adapter UART port found)
         #[arg(long)]
         port: Option<String>,
+        /// Transfer speed after connecting (try 115200 if the default 460800 times out)
+        #[arg(long)]
+        baud: Option<u32>,
         /// Flash through a USB serial port that is not a known adapter UART (the native USB port is still refused)
         #[arg(long)]
         any_port: bool,
@@ -134,7 +163,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: VideoCmd,
     },
-    /// Workflows: make your own copy of a built-in one and set its profile (deployment mode, organisation, ...)
+    /// Prerelease beta workflows: copy a built-in one and set its profile (deployment mode, organisation, ...)
     Workflow {
         #[command(subcommand)]
         cmd: WorkflowCmd,
@@ -218,6 +247,35 @@ fn save_settings(cfg: &Config, f: impl Fn(&mut Config)) {
 fn real_main(cli: Cli) -> R<()> {
     let cfg = Config::load();
     match cli.cmd.unwrap_or(Cmd::Gui) {
+        Cmd::Mcp => kvmit_control::mcp::serve(&mut std::io::stdin().lock(), &mut std::io::stdout().lock(), &kvmit_control::control_dir(&kvmit::config::config_path())).map_err(Into::into),
+        Cmd::Serve { access, approve } => {
+            let access = match access.as_str() { "workflow" => kvmit_control::broker::Access::Workflow, "full" => kvmit_control::broker::Access::Full, _ => kvmit_control::broker::Access::Observe };
+            kvmit::gui::serve_headless(access, &approve).map_err(Into::into)
+        }
+        Cmd::Control { tool, arguments, arguments_file } => {
+            let arguments = match arguments_file { Some(path) => std::fs::read_to_string(path)?, None => arguments.unwrap_or_else(|| "{}".into()) };
+            let args = serde_json::from_str(&arguments)?;
+            let result = kvmit_control::broker::call(&kvmit_control::control_dir(&kvmit::config::config_path()), &tool, args)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            Ok(())
+        }
+        Cmd::Watch { run_id, timeout } => {
+            let deadline = std::time::Instant::now() + Duration::from_secs(timeout);
+            let directory = kvmit_control::control_dir(&kvmit::config::config_path());
+            let cancel = Arc::new(AtomicBool::new(false));
+            let stop = cancel.clone();
+            ctrlc::set_handler(move || stop.store(true, Ordering::SeqCst))?;
+            loop {
+                let state = kvmit_control::broker::call(&directory,"run_status",serde_json::json!({"run_id":run_id}))?;
+                let status = state["receipt"]["status"].as_str().unwrap_or_default();
+                if state["progress"]["needs_attention"] == true || !matches!(status,"starting"|"running") {
+                    println!("{}",serde_json::to_string(&state)?);return Ok(());
+                }
+                if cancel.load(Ordering::SeqCst) { return Err("Monitoring stopped; the workflow continues locally. Use run_cancel to stop it.".into()); }
+                if std::time::Instant::now() >= deadline { return Err("Monitoring timed out; the workflow continues locally. Inspect its run_id before any new start.".into()); }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
         Cmd::Gui => kvmit::gui::run_gui().map_err(|e| e.to_string().into()),
         Cmd::Scan { seconds } => rt().block_on(async {
             let found = backend::scan(Duration::from_secs(seconds)).await?;
@@ -229,8 +287,14 @@ fn real_main(cli: Cli) -> R<()> {
             }
             Ok(())
         }),
-        Cmd::Pair => rt().block_on(async {
+        command @ (Cmd::Pair | Cmd::RepairPairing) => rt().block_on(async {
+            let repair = matches!(command, Cmd::RepairPairing);
+            if repair && cli.device.is_none() { return Err("repair-pairing requires --device <adapter-id>, so only the intended board is forgotten".into()); }
             let id = session::resolve(cli.device, None).await?;
+            if repair {
+                println!("removing the saved pairing for {id}…");
+                backend::unpair(&id).await?;
+            }
             println!("pairing with {id} (the adapter must be in its pairing window: first 15 s after plug-in, or BOOT short press)…");
             backend::pair(&id).await?;
             save_settings(&cfg, |c| c.last_device = Some(id.clone()));
@@ -240,8 +304,8 @@ fn real_main(cli: Cli) -> R<()> {
             conn.disconnect().await;
             Ok(())
         }),
-        Cmd::Flash { firmware, port, any_port, erase_all, list, yes } => {
-            kvmit::flashcmd::run(kvmit::flashcmd::Args { firmware, port, any_port, erase_all, yes, list })
+        Cmd::Flash { firmware, port, baud, any_port, erase_all, list, yes } => {
+            kvmit::flashcmd::run(kvmit::flashcmd::Args { firmware, port, baud, any_port, erase_all, yes, list })
         }
         Cmd::Unpair => rt().block_on(async {
             let id = session::resolve(cli.device, cfg.last_device.clone()).await?;
@@ -713,6 +777,7 @@ struct WfRun {
 fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src: &str, a: WfRun) -> R<()> {
     use kvmit::wf_view;
     let wf = kvmit_script::Workflow::parse(src).map_err(|e| format!("{}: {e}", a.file.display()))?;
+    eprintln!("{}", wf_view::BETA_NOTICE);
     let source = wf_view::file_source(&a.file);
     let dir = cfg.script_dir();
     // Secrets first: nothing from the file (or its checkpoint) is printed until it is known not to hold a secret's
@@ -771,6 +836,7 @@ fn run_workflow_cmd(id: Option<String>, video: Option<String>, cfg: Config, src:
     let base = a.file.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
     let go = |rt: &tokio::runtime::Handle, dev: Option<kvmit_ble::Device>, resume: Option<&kvmit_script::Checkpoint>| {
         let mut host = ScriptHost {
+            reference_snapshot: None,
             rt: rt.clone(),
             dev,
             capture: Some(capture.clone()),
@@ -877,6 +943,7 @@ fn execute(id: Option<String>, video: Option<String>, cfg: Config, script: Scrip
     let capture = Arc::new(std::sync::Mutex::new(video));
     with_device(id, cfg, |rt, dev| {
         let mut host = ScriptHost {
+            reference_snapshot: None,
             rt: rt.handle().clone(),
             dev: Some(dev.clone()),
             capture: Some(capture),

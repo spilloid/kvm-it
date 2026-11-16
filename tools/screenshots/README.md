@@ -28,6 +28,22 @@ covering a chip (both happened).
 
 ## Data safety
 
+The 0.6 console/flash smoke pass also runs with Windows PowerShell and built-in UI Automation (no .NET SDK or FlaUI):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/screenshots/console-smoke.ps1 -Exe desktop/target/debug/kvmit-gui.exe
+```
+
+It uses isolated settings, starts disconnected and uses the synthetic target, adds four consoles, switches between
+them, opens/cancels the pairing-repair guide, checks saved profiles and the flash dialog's firmware/COM-port list,
+and tries normal/minimum-size screenshots. It never clicks Flash, repairs a real pairing or
+sends target input. Use `-NoScreenshots` in a desktop session where UI Automation works but screen capture is unavailable.
+
+The 0.6 site uses `console-06.png` and `flash-06.png` from this isolated pass, captured at 1260x900. Their native-window
+border is cropped (8 px left/right, 1 px top, 8 px bottom); the three USB serial numbers in the flash dialog are
+redacted. The captions identify disconnected demo consoles, synthetic target video and a flash dialog with no write
+in progress. Neither screenshot is evidence of four simultaneous hardware sessions or a running flash.
+
 Pictures show only the app and the synthetic demo target. `postprocess.py` crops the invisible window border (wallpaper bleeds in) and
 pixelates the one line that shows the adapter's full Bluetooth address. `annotate.py <final-dir> <out-dir>` then draws the red-arrow tours
 (`tour-*.png`) that the docs use; check those by eye too. Turn off desktop notifications on the capture machine.

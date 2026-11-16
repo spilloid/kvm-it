@@ -31,6 +31,11 @@ to the same release. Treat this file as a checklist: each numbered step is a ste
 
 ## 1. Merge and tag
 
+**0.6 scope decision (2026-11-14):** workflow automation, OCR and provisioning may ship as **prerelease beta** without
+the full physical-laptop provisioning run. Keep that label and the unverified steps visible in the GUI, CLI, website,
+guides and release notes. The physical-laptop run remains a gate for graduating workflows from beta, not for 0.6.
+This does not waive independent review, CI, signing, installation checks or the shared-client Linux hardware check.
+
 1. Merge the PR into `main` (squash or merge commit; keep the review log).
 2. Tag the merge commit: `git tag -a vX.Y.Z -m "kvm-it X.Y.Z"` and push the tag.
 
@@ -141,3 +146,10 @@ On a clean Windows 11 machine or VM, from the assets (not from the build tree):
 - The docs site (GitHub Pages) rebuilds from `main`; check that it states the new version.
 - Open the next milestone in `docs/roadmap.md`; record anything that slipped in the CHANGELOG's *Known limitations*.
 - If anything in this checklist was wrong or missing, fix this file in the same change.
+
+## 0.7 MCP acceptance
+
+Run native workspace tests/clippy, build both executables and run `python tools/mcp-smoke.py --binary <new kvmit binary>` with isolated settings.
+Regenerate Rust third-party notices after manifest/lock changes. Verify GUI Agent mode selection, local approval/takeover, client reconnect and actual stdio client packaging.
+Run physical delayed-release, reconnect/capture-stall and flash-shutdown passes before labeling those MCP paths hardware-verified.
+Workflow beta graduation still requires its existing physical OOBE/Autopilot evidence; MCP does not waive it.

@@ -1,8 +1,65 @@
 # Changelog
 
-## [Unreleased] (0.6.0 in progress: screens recognised by their text)
+## [0.7.0 development] - Local MCP and agent-assisted workflows
+
+Not published. Includes the pending 0.6 console work below; workflow automation remains prerelease beta.
+
+- Local MCP stdio adapter and an authenticated shared GUI/headless owner, with explicit Observe, Approved workflow and Full control modes.
+- Console, adapter, capture/OCR, bounded input, library/authoring, workflow/recovery, recording/audio, boot-drive and flash operations.
+- Locally approved SHA-256 workflow/reference snapshots, local-only credentials and human gates, counted emergency releases and worker-lifetime hardware claims.
+- Durable run IDs, intent receipts and monotonic progress cursors; duplicate-argument checks, interruption reconciliation and bounded changed-state responses.
+- Local `kvmit watch` for long update/enrollment waits without a model polling loop. No embedded model or API key.
+- Native Windows/macOS CI coverage and an isolated no-target MCP smoke harness. See docs/mcp.md for setup and verification limits.
+
+
+## [Unreleased] (0.6.0: multiple consoles, clearer flashing, screens recognised by their text)
+
+**Release scope:** multiple consoles, adapter status, flashing and pairing recovery are the core of 0.6.
+Workflow automation, OCR and provisioning are included as **prerelease beta**, without end-to-end physical-laptop
+verification. Automated tests and the partial Windows VM run are evidence for the steps they cover; password entry,
+MFA, enrolment and the Autopilot path remain unverified. The GUI, CLI and guides disclose this before workflow use.
 
 ### Added
+- **A full product pass on the website:** the multi-adapter bench story, current real-GUI demo screenshots, a wiring
+  diagram that separates BLE control from HDMI video, setup/recovery guidance, consistent documentation navigation,
+  responsive light/dark layouts and explicit workflow beta evidence. Downloads follow stable published assets;
+  the site labels 0.6 as a preview until the corresponding release is available.
+- **Several adapters in one window:** named console tabs keep independent Bluetooth links, capture cards, scripts,
+  workflows and status. Switching waits for queued manual input and release-all on the outgoing target; automated
+  runs continue in their own console. Adapter and video assignments are remembered per console, and the same adapter
+  or capture card cannot be assigned to two live consoles. Release captured input before selecting another tab.
+- **Firmware and board status are visible:** the adapter chip and console tabs show the firmware version reported by
+  the connected board; the Adapter popup also shows protocol version, target USB, held input, link counters, measured
+  status-response time and how long ago that status was checked.
+- **Repair pairing inside the console** (Windows/Linux): the chosen adapter's saved pairing is removed, it is paired
+  again and its console reconnects. Press BOOT briefly to authorize the new pairing; a 10-second trust reset is not
+  normally needed. Recovery is also available for the remembered adapter when it will not connect. Other consoles'
+  adapters cannot be repaired from the wrong console. macOS still requires System Settings for forgetting a BLE bond.
+- **`kvmit repair-pairing --device <id>`**: the same recovery from the CLI, requiring the exact target ID.
+- **Flashing explains its work:** selected COM port, USB serial, firmware version from the image, speed, chip MAC,
+  preparation/write/verification/restart stages, elapsed time and copyable diagnostics; retry at 115200 baud and flash
+  another board without closing the window. Success distinguishes verified flash from a running-firmware check.
+- `kvmit flash --baud <rate>` and the small `kvmit-flash` diagnostic example, for testing without building the GUI.
+
+### Fixed
+- **Sparse boot-drive images could time out on otherwise working boards.** espflash 4.6 waits for a previous
+  compressed block to finish using the next block's timeout; the disk's long empty regions can expand one block to
+  more than 1 MiB. Write the data image as sector-aligned 64 KiB regions in one session, verifying every region.
+  Reproduced with the installed 0.5.1 on COM3 at 460800 and 115200 baud; the patched flasher wrote and verified the
+  same installed firmware on all four physical boards (COM3–COM6), preserving the settings partition.
+- Flash errors retain the underlying command and cause, rather than only “Error while connecting to device”.
+- Windows pairing and forgetting use the device's **association endpoint**, rather than needing a working GATT device
+  handle to repair a broken pairing. Saved/offline pairing records can be removed directly. Pairing operations are
+  serialized within the app and bounded; a previous connection attempt is retired before repair. The endpoint's
+  Bluetooth address is checked before any pairing is removed. **Hardware-verified, maintainer-reported on Windows
+  (2026-11-14):** pairing repair worked in the 0.6.0 preview.
+
+### Hardware verification
+- **Windows, 0.6.0 preview (2026-11-14, maintainer report):** pairing repair, adding a console and using the GUI with
+  multiple physical adapters worked. The exact simultaneous adapter count and held-input/failure-case handoffs were
+  not reported; the latter remain host-tested. Linux and macOS were not part of this pass.
+
+### Added (workflow changes already in progress)
 - **The workflow panel, section by section** ([docs/workflow-panel.md](docs/workflow-panel.md)): what each part is
   for, which four you use on a normal day, what to leave closed, and the words the panel uses.
 - **Workflow screens are recognised by their text**, read with the operating system's own recogniser: Windows OCR

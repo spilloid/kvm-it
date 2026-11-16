@@ -1,6 +1,6 @@
 //! `kvmit flash`: write the adapter's firmware through its UART (COM) port. The decisions live in `kvmit-flash`; this is
 //! the talking-to-a-person part.
-use kvmit_flash::{check_no_native_adapter, check_port, flash, list_ports, usb_devices, Image, Options, PortKind, ProgressCallbacks};
+use kvmit_flash::{check_no_native_adapter, check_port, flash, list_ports, usb_devices, FlashStage, Image, Options, PortKind, ProgressCallbacks};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
@@ -11,6 +11,7 @@ pub struct Args {
     pub erase_all: bool,
     pub yes: bool,
     pub list: bool,
+    pub baud: Option<u32>,
 }
 
 type R<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -22,6 +23,7 @@ struct Bar {
 }
 
 impl ProgressCallbacks for Bar {
+    fn stage(&mut self, stage: &FlashStage) { eprintln!("{stage}"); }
     fn init(&mut self, addr: u32, total: usize) {
         self.total = total;
         self.done = 0;
@@ -81,7 +83,7 @@ pub fn run(a: Args) -> R<()> {
     if let Some(w) = check_port(&port, a.any_port)? {
         eprintln!("warning: {w}");
     }
-    println!("firmware: {} parts, {} bytes, from {}", image.parts.len(), image.total_bytes(), firmware.display());
+    println!("firmware: {} ({} images, {} bytes), from {}", image.firmware_version().unwrap_or_else(|| "version unavailable".into()), image.parts.len(), image.total_bytes(), firmware.display());
     println!("port:     {} ({})", port.name, port.description);
     if port.serial.as_deref().is_none_or(str::is_empty) {
         println!("note:     this USB bridge reports no serial number, so identical boards cannot be told apart: do not swap cables now.");
@@ -91,7 +93,7 @@ pub fn run(a: Args) -> R<()> {
         if a.erase_all {
             "mode:     FULL ERASE first: the adapter's pairing (bond) and settings are erased; re-pair afterwards."
         } else {
-            "mode:     bootloader, partition table and app only: the adapter's pairing and settings are kept."
+            "mode:     all bundled images (including the boot drive): pairing and settings are kept."
         }
     );
     println!("The board's native USB port must NOT be plugged into this computer (it would type into it).");
@@ -105,7 +107,7 @@ pub fn run(a: Args) -> R<()> {
         }
     }
     let mut bar = Bar { total: 0, done: 0, name: "" };
-    let report = flash(&port, &image, Options { erase_all: a.erase_all, allow_other_port: a.any_port, baud: None }, &mut bar)?;
+    let report = flash(&port, &image, Options { erase_all: a.erase_all, allow_other_port: a.any_port, baud: a.baud }, &mut bar)?;
     println!("flashed and verified (ESP32-S3{}). The adapter restarts by itself; check it with `kvmit status`.", report.mac.map(|m| format!(", {m}")).unwrap_or_default());
     Ok(())
 }

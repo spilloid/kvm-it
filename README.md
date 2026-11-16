@@ -2,13 +2,13 @@
 
 # kvm-it
 
-**A KVM for the machine that has nothing on it yet.**
+**One console. A whole bench of machines.**
 
 See it. Type at it. Install it. No software on the target, no network, no hundred-dollar IP-KVM: an ESP32-S3 dev board (~$10), a cheap
 HDMI capture card, and one app.
 
-<p align="center"><img src="docs/assets/screenshots/tour-overview.png" alt="The kvm-it window: Adapter, Target USB, Video and Capture chips and the Keys, Type and Scripts buttons over a live picture of the target (a synthetic demo)" width="820"></p>
-<p align="center"><sub>The real app (0.4.0, Windows 11). The picture is a synthetic demo target, never a real machine.</sub></p>
+<p align="center"><img src="docs/assets/screenshots/console-06.png" alt="The kvm-it 0.6 preview with four disconnected console tabs and synthetic demo video" width="820"></p>
+<p align="center"><sub>The real 0.6 preview on Windows 11. Disconnected demo consoles; the target picture is synthetic. Downloads remain the published release until 0.6 ships.</sub></p>
 
 ## Three steps
 
@@ -17,13 +17,14 @@ HDMI capture card, and one app.
    `.AppImage` for **Linux**. Double-click or `chmod +x`. That is the whole "dev environment": **no Rust, no Docker, no drivers, no DLLs to hunt down.**
 3. **Plug in.** In the app: **Adapter > Flash adapter…** (one click; the firmware is inside the app), pair once, and drive.
 
-<p align="center"><img src="docs/assets/screenshots/tour-flash.png" alt="The Flash adapter window: the firmware ships with the app, your board's COM port is picked for you, one click flashes it" width="700"></p>
+<p align="center"><img src="docs/assets/screenshots/flash-06.png" alt="The 0.6 Flash adapters window: bundled firmware, COM ports, transfer speed and pairing-preserving defaults" width="700"></p>
 
 ## What you get
 
 - **See and drive the target in one window.** Click the picture and your keyboard and mouse belong to the target; **Ctrl+Alt+Esc** (**Ctrl+Option+Esc** on a Mac) gives
   them back (that chord is never sent). It works from the BIOS splash onward: if the target takes a USB keyboard, kvm-it can drive it.
 - **The keys your PC would swallow.** One-click Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more; on Windows, and on macOS once kvm-it is allowed under *Privacy & Security > Accessibility*, the rest go to the target too while captured (Linux, or a Mac without that permission: use the Keys button for them).
+- **Several adapters in one console (0.6 preview).** Named tabs keep independent Bluetooth links, capture cards and runs. The Adapter popup shows running firmware and board status, with pairing repair on Windows and Linux.
 - **Zero-step reconnect.** Pair once. Move the cables to the next machine and the app reconnects by itself.
 - **Replayable setup scripts.** Native TOML or imported DuckyScript: text, keys, chords, delays, and *wait-for-the-screen* steps, so one slow
   install screen does not wreck everything after it. Preview and dry-run before anything is typed; abort leaves nothing held down.
@@ -51,7 +52,25 @@ the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what t
 
 **Hacking on it?** Building from source (that is where Rust and Docker live): [docs/developing.md](docs/developing.md).
 
+<a id="verification"></a>
+
+## MCP development (0.7.0)
+
+This branch adds local MCP control, explicit Agent access modes and durable workflow runs on top of the pending 0.6 console work.
+See [MCP setup and assurance limits](docs/mcp.md). This is development source; published downloads and the hardware evidence below are unchanged.
+
 ## Status: v0.5.1
+
+The source checkout is preparing **0.6.0**: named consoles for several adapters in one window, visible running firmware
+and board status, and flashing with real stages and diagnostics. The sparse boot-drive flash timeout was reproduced
+with the installed Windows 0.5.1 and fixed locally; the same installed firmware then wrote and verified on four
+physical boards. On 2026-11-14 the maintainer confirmed pairing repair, adding a console and using the GUI with multiple
+physical adapters on Windows. The exact simultaneous adapter count and failure-case input handoffs were not reported.
+See the [0.6 console instructions](docs/getting-started.md#several-targets-in-one-console-06).
+
+**Workflow automation is prerelease beta in 0.6.** OCR and provisioning have automated tests and partial Windows VM
+coverage, but have not been tested end to end on physical laptops. Password entry, MFA, enrolment and the Autopilot
+path remain unverified. This beta is for supervised evaluation; see the [evidence and guide](docs/provisioning.md).
 
 Labels are strict: **built** = compiles; **host-tested** = automated tests pass in CI/containers;
 **hardware-verified** = run on a physical board; **VM-verified** = run in a Windows 11 virtual machine on a Linux
@@ -60,6 +79,7 @@ not bare-metal Windows).
 
 | Area | State |
 |---|---|
+| Desktop 0.6 preview: in-app pairing repair, adding consoles and GUI use with multiple adapters | **hardware-verified, maintainer-reported** on Windows (2026-11-14). Exact simultaneous adapter count, held-input switching and forced link-failure recovery were not reported; those handoff cases remain host-tested |
 | Firmware: USB keyboard + mouse (boot HID) | **hardware-verified** (enumeration via `lsusb`; self-test typed) |
 | Firmware: protocol dispatcher, dedup, keepalive, LED language, BOOT gestures | host-tested |
 | Firmware: BLE (bonding, pairing window, GATT), BOOT GPIO | **hardware-verified** (BOOT opens the window; LE SC bond; HELLO/STATUS over GATT; bonded reconnect) |
