@@ -2281,7 +2281,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kvmit"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "base64",
  "clap",
@@ -2312,7 +2312,7 @@ dependencies = [
 
 [[package]]
 name = "kvmit-ble"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "bluer",
  "btleplug",
@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "kvmit-control"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "dirs",
  "getrandom 0.3.4",
@@ -2339,7 +2339,7 @@ dependencies = [
 
 [[package]]
 name = "kvmit-flash"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "espflash",
  "kvmit-control",
@@ -2353,18 +2353,18 @@ dependencies = [
 
 [[package]]
 name = "kvmit-hid"
-version = "0.7.0"
+version = "0.7.1"
 
 [[package]]
 name = "kvmit-layout"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "kvmit-hid",
 ]
 
 [[package]]
 name = "kvmit-protocol"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2372,14 +2372,14 @@ dependencies = [
 
 [[package]]
 name = "kvmit-record"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "kvmit-video",
 ]
 
 [[package]]
 name = "kvmit-script"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "kvmit-hid",
  "kvmit-layout",
@@ -2392,7 +2392,7 @@ dependencies = [
 
 [[package]]
 name = "kvmit-video"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "block2 0.6.2",
  "dispatch2",

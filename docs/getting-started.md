@@ -233,6 +233,8 @@ seconds for an ordinary repair: that is a separate full trust reset. Windows and
 does not expose a forget API, so its forget step still needs System Settings. The CLI equivalent is
 `kvmit repair-pairing --device <adapter-id>` and requires the ID explicitly.
 
+On macOS, replugging a paired adapter uses automatic reconnect. Use Bluetooth System Settings to forget an adapter only when you intend to pair it again.
+
 **Flash adapters** shows the chosen COM port and USB serial, image firmware version, speed, board MAC, exact write and
 verification stages, elapsed time and **Copy flash diagnostics**. After success, **Flash another board** returns to
 the port list. Flash success means the flash checksums match; reconnect over Bluetooth to check the running firmware.

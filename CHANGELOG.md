@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.1] - 2026-11-18
+
+### Fixed
+
+- **macOS Bluetooth reconnect after power loss.** The app uses the disconnect event for the remembered adapter and retries with its saved bond. If a CoreBluetooth teardown callback never arrives, the old attempt releases Bluetooth ownership after five seconds.
+- Removed the unavailable pairing repair controls from the Mac adapter menu. For an intentionally cleared or broken bond, use Bluetooth System Settings and pair again through kvm-it.
+
+Desktop-only patch. Physical Mac replug validation is pending.
+
 ## [0.7.0] - 2026-11-16
 
 Local MCP and agent-assisted workflows.

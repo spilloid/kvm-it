@@ -9,6 +9,9 @@ use crate::diag;
 use btleplug::api::{Central, CentralEvent, Manager as _, Peripheral as _, ScanFilter, WriteType};
 use btleplug::platform::{Adapter, Manager, Peripheral};
 use futures::StreamExt;
+use std::sync::Arc;
+#[cfg(target_os = "macos")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -44,12 +47,27 @@ type Result<T> = std::result::Result<T, BackendError>;
 /// The longest connecting, discovering the services and subscribing may take, once the adapter has been found.
 pub const GATT_SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Close a connection attempt that failed, without waiting forever on it: a platform that never confirms the disconnect
-/// (CoreBluetooth waits for a callback) must not stall the caller's next attempt.
-///
-/// The disconnect runs on a task of its own: a backend that blocks its thread inside it (btleplug's WinRT backend takes a
-/// lock synchronously, which a pending write can hold) then holds up that task, not the caller, so the 5 s bound holds.
-async fn close_quietly(p: &Peripheral, claims: (std::sync::Arc<kvmit_control::ResourceClaim>,std::sync::Arc<kvmit_control::ResourceClaim>)) {
+const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+type LinkClaims = (Arc<kvmit_control::ResourceClaim>, Arc<kvmit_control::ResourceClaim>);
+
+#[cfg(any(target_os = "macos", test))]
+async fn close_macos(disconnect: impl std::future::Future, _claims: LinkClaims) {
+    // btleplug waits for a CoreBluetooth callback even if it has already removed
+    // the peripheral. Time out the operation that owns the claims, so the next
+    // attempt can obtain them. Each attempt has its own CoreBluetooth manager.
+    let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, disconnect).await;
+}
+
+#[cfg(target_os = "macos")]
+async fn close_quietly(p: &Peripheral, claims: LinkClaims) {
+    close_macos(p.disconnect(), claims).await;
+}
+
+/// A backend that blocks its thread (such as WinRT waiting on a service lock)
+/// needs a separate thread to bound the caller's wait. It retains ownership
+/// until disconnect returns.
+#[cfg(not(target_os = "macos"))]
+async fn close_quietly(p: &Peripheral, claims: LinkClaims) {
     let p = p.clone();
     // On a thread of its own, outside the runtime's workers and its blocking pool: a backend that blocks there holds up
     // neither other tasks nor the runtime's shutdown (which waits for its blocking pool). The thread drives the future
@@ -63,7 +81,7 @@ async fn close_quietly(p: &Peripheral, claims: (std::sync::Arc<kvmit_control::Re
         let _ = tx.send(());
     });
     if started.is_ok() {
-        let _ = tokio::time::timeout(Duration::from_secs(5), rx).await;
+        let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, rx).await;
     }
 }
 
@@ -258,6 +276,8 @@ pub struct Connection {
     /// The task writing frames to the adapter: cancelled before disconnecting, so no write of ours is still pending
     /// (holding the backend's service lock) when the backend tears the link down.
     writer: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    #[cfg(target_os = "macos")]
+    peer_disconnected: Arc<AtomicBool>,
     /// Windows: holds the fast-connection request for as long as the link is open.
     #[cfg(windows)]
     _fast: Option<FastLink>,
@@ -277,7 +297,11 @@ impl Connection {
             w.abort();
             let _ = tokio::time::timeout(Duration::from_secs(1), w).await;
         }
-        close_quietly(&self.peripheral,(self._claim.clone(),self._hardware.clone())).await;
+        #[cfg(target_os = "macos")]
+        if self.peer_disconnected.load(Ordering::Acquire) {
+            return;
+        }
+        close_quietly(&self.peripheral, (self._claim.clone(), self._hardware.clone())).await;
     }
 }
 
@@ -289,6 +313,8 @@ pub async fn connect(id: &str) -> Result<Connection> {
     // Linux: a powered-off or blocked adapter shows up here as "not found"; say why. (Not checked up front: BlueZ's
     // default adapter is not necessarily the one btleplug picked when a computer has two.)
     let p = find(&ad, id, Duration::from_secs(20)).await.map_err(explained)?;
+    #[cfg(target_os = "macos")]
+    let mut events = ad.events().await?;
     // Bounded: an adapter that lost power (or is restarting) can leave the OS's connect or service discovery waiting
     // forever, which would stall the app's reconnect loop until someone pressed Connect again. A timed-out attempt is
     // closed and reported, and the caller's next attempt finds the adapter once it is back.
@@ -325,9 +351,27 @@ pub async fn connect(id: &str) -> Result<Connection> {
         }
     };
     #[cfg(windows)]
-    let (rx_char, mut notifications, fast) = set_up;
+    let (rx_char, notifications, fast) = set_up;
     #[cfg(not(windows))]
-    let (rx_char, mut notifications) = set_up;
+    let (rx_char, notifications) = set_up;
+
+    // CoreBluetooth's notification stream stays open after a remote disconnect.
+    // Stop it on the event for this peripheral so the client can reconnect immediately.
+    #[cfg(target_os = "macos")]
+    let peer_disconnected = Arc::new(AtomicBool::new(false));
+    #[cfg(target_os = "macos")]
+    let notifications = {
+        let peripheral_id = p.id();
+        let peer_disconnected = peer_disconnected.clone();
+        notifications.take_until(async move {
+            while let Some(event) = events.next().await {
+                if matches!(event, CentralEvent::DeviceDisconnected(id) if id == peripheral_id) {
+                    peer_disconnected.store(true, Ordering::Release);
+                    break;
+                }
+            }
+        })
+    };
 
     let (to_client, client_rx) = mpsc::unbounded_channel::<Vec<u8>>();
     let (client_tx, mut from_client) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -335,6 +379,7 @@ pub async fn connect(id: &str) -> Result<Connection> {
     tokio::spawn(async move {
         let debug = std::env::var_os("KVMIT_DEBUG").is_some();
         let mut last = std::time::Instant::now();
+        futures::pin_mut!(notifications);
         while let Some(n) = notifications.next().await {
             if debug && last.elapsed() > Duration::from_millis(1500) {
                 eprintln!("[debug] no notification for {} ms", last.elapsed().as_millis());
@@ -373,6 +418,8 @@ pub async fn connect(id: &str) -> Result<Connection> {
         io: Some(LinkIo { tx: client_tx, rx: client_rx }),
         peripheral: p,
         writer: std::sync::Mutex::new(Some(writer_task)),
+        #[cfg(target_os = "macos")]
+        peer_disconnected,
         #[cfg(windows)]
         _fast: fast,
     })
@@ -582,12 +629,12 @@ pub async fn pair(id: &str) -> Result<()> {
 /// bond exists. The adapter must be in its pairing window.
 #[cfg(target_os = "macos")]
 pub async fn pair(id: &str) -> Result<()> {
-    let _adapter = kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?;
-    let _hardware = kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?;
+    let claim = Arc::new(kvmit_control::ResourceClaim::acquire("adapter", id).map_err(BackendError)?);
+    let hardware = Arc::new(kvmit_control::ResourceClaim::hardware(true).map_err(BackendError)?);
     let ad = adapter().await?;
     let p = find(&ad, id, Duration::from_secs(90)).await?;
-    p.connect().await?;
     let outcome = async {
+        p.connect().await?;
         p.discover_services().await?;
         let rx = p.characteristics().into_iter().find(|c| c.uuid == RX_UUID);
         let Some(rx) = rx else { return err("device does not expose the kvm-it characteristics") };
@@ -601,7 +648,7 @@ pub async fn pair(id: &str) -> Result<()> {
         }
     }
     .await;
-    let _ = p.disconnect().await;
+    close_quietly(&p, (claim, hardware)).await;
     outcome
 }
 
@@ -669,6 +716,42 @@ pub async fn unpair(_id: &str) -> Result<()> {
 #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 pub async fn unpair(_id: &str) -> Result<()> {
     err("remove the device in the OS Bluetooth settings")
+}
+
+#[cfg(test)]
+mod disconnect_tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn missing_macos_callback_releases_ownership() {
+        let lock_dir = std::env::temp_dir().join(format!(
+            "kvmit-macos-disconnect-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let adapter = || kvmit_control::ResourceClaim::at(&lock_dir, "adapter", "fake-adapter");
+        let hardware = || kvmit_control::ResourceClaim::at(&lock_dir, "hardware", "test");
+        let claims = (Arc::new(adapter().unwrap()), Arc::new(hardware().unwrap()));
+        let start = tokio::time::Instant::now();
+
+        close_macos(
+            async {
+                assert!(adapter().is_err());
+                assert!(hardware().is_err());
+                std::future::pending::<()>().await;
+            },
+            claims,
+        )
+        .await;
+
+        assert_eq!(start.elapsed(), DISCONNECT_TIMEOUT);
+        drop(adapter().expect("the next connection can claim the adapter"));
+        drop(hardware().expect("the next operation can claim the hardware"));
+        std::fs::remove_dir_all(lock_dir).unwrap();
+    }
 }
 
 #[cfg(all(test, windows))]

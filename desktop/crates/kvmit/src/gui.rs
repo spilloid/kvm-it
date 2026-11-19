@@ -41,6 +41,8 @@ enum Scan {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PairingMode { Reconnect, Pair, Repair }
 
+const PAIRING_REPAIR_SUPPORTED: bool = cfg!(any(windows, target_os = "linux"));
+
 async fn retire_link_task(mut task: tokio::task::JoinHandle<()>, limit: Duration) -> bool {
     if tokio::time::timeout(limit, &mut task).await.is_ok() { return true; }
     task.abort();
@@ -2233,7 +2235,7 @@ impl App {
                     }
                 });
                 self.boot_drive_ui(ui, ctx, dev);
-                if ui.add_enabled(self.can_repair(id), egui::Button::new("Repair pairing…")).on_hover_text("Remove this board's saved pairing and pair again inside kvm-it").clicked() { repair = Some(id.clone()); }
+                if PAIRING_REPAIR_SUPPORTED && ui.add_enabled(self.can_repair(id), egui::Button::new("Repair pairing…")).on_hover_text("Remove this board's saved pairing and pair again inside kvm-it").clicked() { repair = Some(id.clone()); }
             }
             _ => {
                 let scanning = matches!(&*self.scan.lock().unwrap(), Scan::Scanning);
@@ -2265,7 +2267,7 @@ impl App {
                                 if ui.add_enabled(!flashing && !claimed, egui::Button::new("Connect")).clicked() {
                                     chosen = Some((f.id.clone(), false));
                                 }
-                                if ui.add_enabled(!flashing && !claimed, egui::Button::new("Repair pairing…")).clicked() { repair = Some(f.id.clone()); }
+                                if PAIRING_REPAIR_SUPPORTED && ui.add_enabled(!flashing && !claimed, egui::Button::new("Repair pairing…")).clicked() { repair = Some(f.id.clone()); }
                             });
                         }
                     }
@@ -2279,7 +2281,7 @@ impl App {
                 }
                 if let Some(id) = self.cfg.last_device.clone() {
                     ui.small(format!("Remembered adapter: {id}"));
-                    if ui.add_enabled(self.can_repair(&id), egui::Button::new("Repair remembered pairing…")).clicked() { repair = Some(id); }
+                    if PAIRING_REPAIR_SUPPORTED && ui.add_enabled(self.can_repair(&id), egui::Button::new("Repair remembered pairing…")).clicked() { repair = Some(id); }
                 }
             }
         }
@@ -2295,7 +2297,7 @@ impl App {
     }
 
     fn can_repair(&self, id: &str) -> bool {
-        cfg!(any(windows, target_os = "linux")) && self.flash.is_none() && self.input_idle() && self.pairing.load(Ordering::SeqCst) == 0 && !self.unavailable_adapters.iter().any(|other| other.eq_ignore_ascii_case(id))
+        PAIRING_REPAIR_SUPPORTED && self.flash.is_none() && self.input_idle() && self.pairing.load(Ordering::SeqCst) == 0 && !self.unavailable_adapters.iter().any(|other| other.eq_ignore_ascii_case(id))
     }
 
     fn repair_ui(&mut self, ctx: &egui::Context) {
@@ -2308,7 +2310,6 @@ impl App {
             ui.strong(format!("Adapter {id}"));
             ui.label("kvm-it will remove this adapter's saved pairing from this computer, pair again, and reconnect. Other adapters are left alone.");
             ui.label("1. Press BOOT briefly on this board to authorize pairing (do not hold it for 10 seconds).\n2. Click Forget and pair again below.");
-            if cfg!(target_os = "macos") { ui.label("macOS does not expose an API to forget a BLE device; that step still needs System Settings on macOS."); }
             start = ui.add_enabled(self.can_repair(&id), egui::Button::new("Forget and pair again")).clicked();
             cancel = ui.button("Cancel repair").clicked();
             if !self.can_repair(&id) { ui.small("Stop this console's input/run and wait for pairing or flashing to finish first. The adapter must not belong to another console."); }
