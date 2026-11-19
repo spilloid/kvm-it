@@ -55,7 +55,9 @@ the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what t
 
 <a id="verification"></a>
 
-## Status: v0.7.0
+## Status: v0.7.1
+
+**0.7.1** fixes a macOS reconnect stall after an adapter loses power. Replugging a paired adapter uses its saved bond. The repair menu is available on Windows and Linux.
 
 Desktop **0.7.0** adds local MCP control through the same owner as the GUI, with Observe, Approved workflows and Full control modes. Access starts disabled on every launch. Approved workflows use exact saved snapshots; credentials stay in the local app. Durable run receipts and `kvmit watch` keep routine workflow monitoring local.
 
