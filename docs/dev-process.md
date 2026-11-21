@@ -3,6 +3,12 @@
 Orchestrator (Claude) writes/verifies; a different model (astra, Codex `gpt-6-astra`) reviews adversarially.
 Every finding is reproduced against source before being accepted.
 
+## 2026-11-20 — 0.8.1 patch verification
+
+The maintainer explicitly waived independent model review for 0.8.1. The native Windows workspace passed 398 tests with two skipped, and Clippy passed with warnings treated as errors. The Settings pointer test selected each agent mode at the minimum window size and confirmed access stayed disabled until enabled separately.
+
+A simulated 100 KiB file send on an 8 MiB FAT volume used 34 sector reads and 413 writes. The same send on 0.8.0 used 224 reads and 413 writes. Both resulting files matched the original bytes. Physical two-computer throughput remains unmeasured.
+
 ## 2026-11-20 — 0.8.0 release review
 
 An independent Astra review of the 0.7.1 to 0.8.0 changes identified two release blockers.
