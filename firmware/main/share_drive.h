@@ -4,6 +4,8 @@
 #include "esp_err.h"
 
 esp_err_t share_drive_init(void);
+bool share_reserve_restart(void);
+void share_cancel_restart(void);
 bool share_present(void);
 bool share_media_changed(void);
 uint32_t share_blocks(void);

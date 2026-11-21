@@ -21,7 +21,7 @@
 static wl_handle_t disk = WL_INVALID_HANDLE;
 static const esp_partition_t *partition;
 static SemaphoreHandle_t lock;
-static bool presented, media_changed;
+static bool presented, media_changed, restart_reserved;
 static char lease[17], board[33];
 static int64_t expires;
 static char last_request[MAX_LINE], reply[MAX_LINE];
@@ -39,6 +39,24 @@ static int nibble(char c)
 }
 
 uint32_t share_blocks(void) { return disk == WL_INVALID_HANDLE ? 0 : wl_size(disk) / SECTOR; }
+/* A mode change and a transfer cannot both acquire the adapter. Keep the
+ * reservation until restart, including the delay while the BLE reply is sent. */
+bool share_reserve_restart(void)
+{
+    if (!lock) return true; /* exchange is disabled in boot-drive mode */
+    xSemaphoreTake(lock, portMAX_DELAY);
+    bool available = !restart_reserved && !presented && (!*lease || esp_timer_get_time() >= expires);
+    if (available) restart_reserved = true;
+    xSemaphoreGive(lock);
+    return available;
+}
+void share_cancel_restart(void)
+{
+    if (!lock) return;
+    xSemaphoreTake(lock, portMAX_DELAY);
+    restart_reserved = false;
+    xSemaphoreGive(lock);
+}
 bool share_present(void)
 {
     if (!lock) return false;
@@ -105,6 +123,7 @@ static const char *command(char *line, char *value)
     char *op = strtok_r(NULL, " ", &save);
     char *arg = strtok_r(NULL, " ", &save);
     if (!key || strlen(key) != 16 || !op) return "INVALID";
+    if (restart_reserved) return "BUSY";
     if (!strcmp(op, "INFO")) {
         /* First-time wear-levelling setup belongs to the first file request.
          * A regular keyboard connection can finish booting immediately. */

@@ -3,6 +3,15 @@
 Orchestrator (Claude) writes/verifies; a different model (astra, Codex `gpt-6-astra`) reviews adversarially.
 Every finding is reproduced against source before being accepted.
 
+## 2026-11-20 — 0.8.0 release review
+
+An independent Astra review of the 0.7.1 to 0.8.0 changes identified two release blockers.
+
+- The boot-drive command scheduled an adapter restart while a controller transfer or target-mounted exchange drive could still be writing. Firmware now reserves the restart under the same mutex that protects exchange ownership. The reservation blocks new requests until restart and is released if scheduling fails. GUI and MCP also reject a mode change during a local transfer.
+- Emergency release could queue behind a paste started from the Send menu with capture off. Emergency release and the GUI release action now cancel the paste before their release report runs. A regression test pauses the board's first acknowledgement, requests emergency release and checks that zero clipboard keystrokes reach the target.
+
+The reviewer checked both fixes again and reported both resolved. A host simulation of the actual firmware handlers covered an active controller lease, target-mounted media, ejection, cancellation, lease expiry and requests during a reserved restart. Physical two-PC file exchange, board power isolation and new Linux/macOS hardware passes remain outstanding.
+
 ## 2026-10-03 — Milestones 0-2 firmware
 
 - Asked: repository + firmware for ESP32-S3 HID self-test.

@@ -828,8 +828,8 @@ impl App {
     }
 
     fn end_capture(&mut self, ctx: &egui::Context) {
+        self.paste_active.store(false, Ordering::SeqCst);
         if self.capturing {
-            self.paste_active.store(false, Ordering::SeqCst);
             self.capturing = false;
             self.wheel.reset();
             self.grab = None; // unhooks: the controller's OS gets its keys back
@@ -2364,7 +2364,7 @@ impl App {
                 });
                 ui.horizontal(|ui| {
                     if ui.button("Release all keys").clicked() {
-                        // Through the pump, so it lands after (not between) anything already queued.
+                        self.paste_active.store(false, Ordering::SeqCst);
                         if let Some(tx) = self.pump() {
                             let _ = tx.send(Input::ReleaseAll);
                         }
@@ -2478,8 +2478,9 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(if on { "Boot drive: on" } else { "Boot drive: off" });
             let button = egui::Button::new(if on { "Turn off (restarts adapter)" } else { "Turn on (restarts adapter)" });
-            let hint = if script_running { "Wait for the running script to finish" } else { "The target sees the adapter re-plug, with the drive added or removed" };
-            if ui.add_enabled(!script_running, button).on_hover_text(hint).clicked() {
+            let transferring = self.files.active.load(Ordering::SeqCst);
+            let hint = if script_running { "Wait for the running script to finish" } else if transferring { "Wait for the file transfer to finish" } else { "Eject KVM SHARE on the target before restarting the adapter" };
+            if ui.add_enabled(!script_running && !transferring, button).on_hover_text(hint).clicked() {
                 self.set_boot_drive(dev.clone(), !on, ctx.clone());
             }
         });
@@ -2495,7 +2496,7 @@ impl App {
         *notice.lock().unwrap() = format!("Turning the boot drive {}: the adapter restarts and reconnects by itself…", if enable { "on" } else { "off" });
         self.rt.spawn(async move {
             if let Err(e) = dev.set_boot_drive(enable).await {
-                *notice.lock().unwrap() = format!("Could not change the boot drive: {e}");
+                *notice.lock().unwrap() = format!("Could not change the boot drive: {e}. If KVM SHARE is in use, finish the transfer and eject it on the target.");
             }
             ctx.request_repaint();
         });
@@ -3141,7 +3142,7 @@ mod tests {
     }
 
     pub(super) struct MockBoard {
-        keys_seen: Arc<Mutex<Vec<(u8, u8)>>>,
+        pub(super) keys_seen: Arc<Mutex<Vec<(u8, u8)>>>,
         pub(super) dev: Device,
         pub(super) held: Arc<AtomicUsize>,
         pub(super) fail_release: Arc<AtomicBool>,

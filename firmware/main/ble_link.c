@@ -19,6 +19,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "usb_hid.h"
+#include "share_drive.h"
 
 void ble_store_config_init(void);
 
@@ -379,8 +380,16 @@ static bool o_set_boot_drive(void *c, bool enabled)
     static esp_timer_handle_t t;
     const esp_timer_create_args_t a = {.callback = restart_cb, .name = "bootdrv_restart"};
     if (!t && esp_timer_create(&a, &t) != ESP_OK) return false; /* before the commit: a failure here must leave the stored setting alone */
-    if (kvm_config_set_boot_drive(enabled) != ESP_OK) return false;
-    esp_timer_start_once(t, 500 * 1000);
+    if (esp_timer_is_active(t) || !share_reserve_restart()) return false;
+    if (kvm_config_set_boot_drive(enabled) != ESP_OK) {
+        share_cancel_restart();
+        return false;
+    }
+    if (esp_timer_start_once(t, 500 * 1000) != ESP_OK) {
+        (void)kvm_config_set_boot_drive(!enabled);
+        share_cancel_restart();
+        return false;
+    }
     return true;
 }
 static bool o_boot_drive(void *c) { (void)c; return usb_hid_boot_drive(); }

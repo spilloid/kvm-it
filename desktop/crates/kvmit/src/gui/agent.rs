@@ -835,6 +835,9 @@ impl Agent {
             }
             "boot_drive_set" => {
                 idle(app)?;
+                if app.files.active.load(Ordering::SeqCst) {
+                    return Err("Wait for the file transfer to finish before restarting the adapter.".into());
+                }
                 let dev = app.device().ok_or("No connected adapter")?;
                 if !dev.info().supports_boot_drive() {
                     return Err("Firmware does not support a boot drive".into());
@@ -2024,6 +2027,33 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[test]
+    fn emergency_release_stops_uncaptured_clipboard_typing_before_the_first_key() {
+        let (root, mut agent, fixture_console, ctx) = fixture(Access::Full);
+        drop(fixture_console);
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let board = super::super::tests::mock_board(&rt);
+        let mut console = super::super::tests::mock_console(&ctx, rt.clone(), &[&board]);
+        board.hold_release.store(true, Ordering::SeqCst);
+        let app = &mut console.sessions[0].app;
+        assert!(!app.capturing);
+        app.paste_clipboard(Some("still pending".into()));
+        board.release_waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let result = agent.execute(&mut console, "input_release", json!({"console":"console-0"}), &ctx);
+        board.allow_release.notify_one();
+        result.unwrap();
+        let app = &console.sessions[0].app;
+        assert!(!app.paste_active.load(Ordering::SeqCst));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !app.input_idle() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.input_idle());
+        assert!(board.keys_seen.lock().unwrap().iter().all(|(op, _)| *op == kvmit_protocol::msg::RELEASE_ALL));
+        board.dev.close();
+        drop((agent, console, board, rt));
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn emergency_release_is_counted_until_acknowledged_and_blocks_new_input() {
         let (root, mut agent, console, ctx) = fixture(Access::Full);

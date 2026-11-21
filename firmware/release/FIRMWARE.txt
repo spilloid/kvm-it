@@ -3,5 +3,5 @@ Built with the pinned ESP-IDF v5.5 and the repository NimBLE patch from the sour
 image firmware/ipxe/ipxe.img (scripts/build-ipxe-image.sh). Release builds are not byte-for-byte reproducible (the build time
 is embedded), so these exact files are what ships; verify with SHA256SUMS. Rebuild from source with scripts/fw.sh build and
 scripts/refresh-firmware-release.py. Refreshed 2026-11-20.
-source-sha256: 6f108f5dbad6073c886d79a54b3aa953b1e48107edefc47cf8ee4260d20eab3c
+source-sha256: c4151ca96405feb49546f88c41c8455dfd34c140bdf5d8b86b8282b72f739af2
 (hash of the firmware build inputs, see scripts/fw-source-hash.py; CI and verify-release.py check it)

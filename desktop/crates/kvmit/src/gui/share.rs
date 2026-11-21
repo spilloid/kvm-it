@@ -186,7 +186,7 @@ impl App {
         if files.scan.is_some() {
             ui.spinner();
         } else if files.ports.is_empty() {
-            ui.small("Connect the board’s COM port to this computer using the supported single-power setup.");
+            ui.small("Both USB ports can power the board. Before connecting COM to this computer, verify that only one computer supplies power with your board and cables.");
         } else {
             for port in &files.ports {
                 ui.add_enabled_ui(files.job.is_none(), |ui| {
