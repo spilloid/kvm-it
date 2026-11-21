@@ -120,6 +120,7 @@ pub(super) fn send<T: ReadWriteSeek>(
     let mut done = 0;
     let mut buffer = [0; 4096];
     let result = (|| {
+        progress(0, total)?;
         for (path, name, len) in &entries {
             let mut source = fs::File::open(path)?;
             let mut dest = staged.create_file(name)?;
@@ -186,6 +187,7 @@ pub(super) fn collect<T: ReadWriteSeek>(
         .tempdir_in(parent)?;
     let mut done = 0;
     let mut buf = [0; 4096];
+    progress(0, total)?;
     for (name, len) in &items {
         let mut src = dir.open_file(name)?;
         let mut dst = OpenOptions::new()
