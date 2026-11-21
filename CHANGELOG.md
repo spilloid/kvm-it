@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.1] - 2026-11-20
+
+- Under Settings, select Observe, Approved workflows, or Full control directly, then choose **Enable local agent**.
+- Files now shows where to copy files in each direction, the measured transfer rate and estimated time left. After sending, it names the exact folder to open on the target.
+- File exchange reuses recently accessed disk sectors and skips identical writes during each transfer over the COM cable. Works with firmware 0.3.0.
+
 ## [0.8.0] - 2026-11-20
 
 - Video-first console with a primary Connect / Take control action, Send and Files actions, device and workflow tools, and on-demand settings. Agent stop and recording stop remain directly accessible when active.

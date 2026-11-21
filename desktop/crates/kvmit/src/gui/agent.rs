@@ -1595,17 +1595,11 @@ impl Console {
                         agent.revoke();
                     }
                 } else {
-                    egui::ComboBox::from_id_salt("agent_mode")
-                        .selected_text(format!("{:?}", agent.access))
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut agent.access, Access::Observe, "Observe");
-                            ui.selectable_value(
-                                &mut agent.access,
-                                Access::Workflow,
-                                "Approved workflows",
-                            );
-                            ui.selectable_value(&mut agent.access, Access::Full, "Full control");
-                        });
+                    ui.end_row();
+                    ui.radio_value(&mut agent.access, Access::Observe, "Observe");
+                    ui.radio_value(&mut agent.access, Access::Workflow, "Approved workflows");
+                    ui.radio_value(&mut agent.access, Access::Full, "Full control");
+                    ui.end_row();
                     if ui.button("Enable local agent").clicked() {
                         agent.notice = match agent.enable() {
                             Ok(()) => {
@@ -1702,6 +1696,61 @@ pub fn serve_headless(access: Access, approved: &[PathBuf]) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn settings_accepts_mode_clicks_before_enabling_access() {
+        use eframe::App as _;
+        let (root, fixture_agent, mut console, ctx) = fixture(Access::Observe);
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut render = |events| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    MIN_WINDOW.into(),
+                )),
+                events,
+                ..Default::default()
+            };
+            let output = ctx.run(input, |ctx| console.update(ctx, &mut frame));
+            let labels: BTreeMap<_, _> = output
+                .shapes
+                .into_iter()
+                .filter_map(|s| match s.shape {
+                    egui::Shape::Text(t) => Some((
+                        t.galley.text().to_owned(),
+                        t.visual_bounding_rect().center(),
+                    )),
+                    _ => None,
+                })
+                .collect();
+            assert!(!console.agent.enabled());
+            (labels, console.agent.access)
+        };
+        render(vec![]);
+        let mut labels = render(vec![]).0;
+        for (label, expected) in [
+            ("Settings", Access::Observe),
+            ("Approved workflows", Access::Workflow),
+            ("Full control", Access::Full),
+            ("Observe", Access::Observe),
+        ] {
+            let pos = labels[label];
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            render(vec![egui::Event::PointerMoved(pos), button(true)]);
+            render(vec![button(false)]);
+            let (next, mode) = render(vec![]);
+            assert_eq!(mode, expected);
+            assert!(next.contains_key("Enable local agent"));
+            labels = next;
+        }
+        drop((fixture_agent, console));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn recorder_completion_is_collected_for_inactive_consoles_without_a_gui_frame() {
         let (root, agent, mut console, ctx) = fixture(Access::Full);

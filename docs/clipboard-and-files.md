@@ -17,9 +17,11 @@ This feature requires firmware **0.3.0** and the two-port adapter. The native **
 
 Connect the matching adapter over Bluetooth, turn off its iPXE boot drive, then open **Files**. The adapter starts as a keyboard and mouse. The first share briefly reconnects target USB to add the drive. kvm-it checks that the COM cable and the selected console identify the same board.
 
-- **Controller to target.** Copy individual files in your file manager and choose **Share copied files**. When the app says the drive is ready, open **KVM SHARE → From host** on the target and copy the new transfer folder wherever you want.
+- **Controller to target.** Copy individual files in your file manager and choose **Send copied files**. On the target, open **KVM SHARE → From host** and copy files from the transfer folder named by the app.
 - **Target to controller.** Choose **Show drive on target**, copy individual files into **KVM SHARE → To host**, and eject KVM SHARE using the target OS. Choose **Collect from target** on the controller. Received files are saved under **Downloads/kvm-it**. Choose **Copy received files to clipboard** to paste them elsewhere.
 - **Reuse the drive.** Eject it on the target before the controller sends or collects again. The adapter stores files in flash across sessions. Delete unwanted files in the target file manager to reclaim space. A full-chip erase also removes the exchange files. Keep both cables attached while either side is writing.
+
+The controller’s COM link runs at 115,200 baud. It sends two hexadecimal characters per file byte, and each sector needs a reply. The Files panel shows the average file data copied per second and estimates the time left for copying. At 1 KiB/s, 100 KiB takes about 1 minute 40 seconds, plus setup and finalization. For plain text going into a focused field, **Send → Type host clipboard** skips the drive handoff.
 
 The exchange partition is 8 MiB before filesystem and wear-levelling overhead. Each batch supports up to 128 individual files. Target-side USB storage restrictions apply. The separately selectable iPXE boot drive remains read-only.
 

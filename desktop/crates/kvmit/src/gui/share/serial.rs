@@ -119,27 +119,32 @@ fn parse_reply(line: &[u8], id: &str) -> Option<io::Result<String>> {
     })
 }
 
-/// Cache one logical sector. FAT directory enumeration performs many small reads.
+// FAT alternates between directory entries, allocation tables and file data.
+// Keep confirmed sectors only for this exclusive lease. Switching blocks still
+// flushes pending writes in order before any other block can be accessed.
+const CACHE_SLOTS: usize = 32;
 pub(super) struct Disk<'a> {
-    cable: &'a mut Cable,
+    request: &'a mut dyn FnMut(&str) -> io::Result<String>,
     size: u64,
     pos: u64,
     block: Option<u64>,
     dirty: bool,
     bytes: [u8; BLOCK],
+    cache: [Option<(u64, [u8; BLOCK])>; CACHE_SLOTS],
     failed: bool,
     deadline: Instant,
 }
 
 impl<'a> Disk<'a> {
-    pub(super) fn new(cable: &'a mut Cable, blocks: u32) -> Self {
+    pub(super) fn new(request: &'a mut dyn FnMut(&str) -> io::Result<String>, blocks: u32) -> Self {
         Self {
-            cable,
+            request,
             size: blocks as u64 * BLOCK as u64,
             pos: 0,
             block: None,
             dirty: false,
             bytes: [0; BLOCK],
+            cache: [None; CACHE_SLOTS],
             failed: false,
             deadline: Instant::now() + Duration::from_secs(3600),
         }
@@ -148,7 +153,7 @@ impl<'a> Disk<'a> {
         if self.failed || Instant::now() > self.deadline {
             return Err(io::Error::other("File operation interrupted."));
         }
-        let reply = self.cable.request(cmd);
+        let reply = (self.request)(cmd);
         self.failed |= reply.is_err();
         reply
     }
@@ -158,7 +163,13 @@ impl<'a> Disk<'a> {
         }
         self.flush()?;
         if !whole_write {
-            self.bytes = decode_sector(&self.command(&format!("R {block}"))?)?;
+            let slot = block as usize % CACHE_SLOTS;
+            if let Some((_, bytes)) = self.cache[slot].as_ref().filter(|(id, _)| *id == block) {
+                self.bytes = *bytes;
+            } else {
+                self.bytes = decode_sector(&self.command(&format!("R {block}"))?)?;
+                self.cache[slot] = Some((block, self.bytes));
+            }
         }
         self.block = Some(block);
         Ok(())
@@ -192,7 +203,12 @@ impl Write for Disk<'_> {
     }
     fn flush(&mut self) -> io::Result<()> {
         if self.dirty {
-            self.command(&format!("W {} {}", self.block.unwrap(), hex(&self.bytes)))?;
+            let block = self.block.unwrap();
+            let slot = block as usize % CACHE_SLOTS;
+            if self.cache[slot] != Some((block, self.bytes)) {
+                self.command(&format!("W {block} {}", hex(&self.bytes)))?;
+                self.cache[slot] = Some((block, self.bytes));
+            }
             self.dirty = false;
         }
         Ok(())
@@ -215,6 +231,46 @@ impl Seek for Disk<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn revisiting_sectors_reuses_confirmed_bytes_and_flushes_edits_in_order() {
+        let mut storage = [[5; BLOCK]; CACHE_SLOTS + 1];
+        let mut log = Vec::new();
+        let mut request = |command: &str| {
+            let mut fields = command.split_whitespace();
+            let op = fields.next().unwrap();
+            let index: usize = fields.next().unwrap().parse().unwrap();
+            log.push((op.to_owned(), index));
+            if op == "R" {
+                return Ok(hex(&storage[index]));
+            }
+            assert_eq!(op, "W");
+            storage[index] = decode_sector(fields.next().unwrap())?;
+            Ok("-".into())
+        };
+        let mut disk = Disk::new(&mut request, CACHE_SLOTS as u32 + 1);
+        let mut byte = [0];
+        for sector in [0, 1, 0, 1] {
+            disk.seek(SeekFrom::Start(sector * BLOCK as u64)).unwrap();
+            disk.read_exact(&mut byte).unwrap();
+        }
+        disk.write_all(&[9]).unwrap();
+        disk.rewind().unwrap();
+        disk.write_all(&[5]).unwrap(); // identical to the confirmed sector
+        disk.seek(SeekFrom::Start((CACHE_SLOTS * BLOCK) as u64))
+            .unwrap();
+        disk.write_all(&[7; BLOCK]).unwrap(); // replaces sector 0's cache slot
+        disk.rewind().unwrap();
+        disk.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [5]);
+        assert_eq!(storage[1][..3], [5, 9, 5]);
+        assert_eq!(storage[CACHE_SLOTS], [7; BLOCK]);
+        let commands: Vec<_> = log.iter().map(|(op, i)| (op.as_str(), *i)).collect();
+        assert_eq!(
+            commands,
+            [("R", 0), ("R", 1), ("W", 1), ("W", CACHE_SLOTS), ("R", 0)]
+        );
+    }
+
     fn frame(body: &str) -> String {
         format!("{body} {:04x}", kvmit_protocol::crc16(body.as_bytes()))
     }

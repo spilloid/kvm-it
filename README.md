@@ -55,7 +55,9 @@ the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what t
 
 <a id="verification"></a>
 
-## Status: v0.8.0
+## Status: v0.8.1
+
+In **Settings → Agent access**, select the mode and choose **Enable local agent**. The **Files** panel shows both directions and the measured transfer speed over the COM cable.
 
 **Ctrl+Shift+V types the controller’s clipboard into the focused target.** Connect, take control and use the shortcut, or choose **Send → Type host clipboard**. It uses the adapter’s USB keyboard and works with existing firmware. The target needs no application, driver installation or network connection.
 
