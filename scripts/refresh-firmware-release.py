@@ -7,7 +7,7 @@ Copies the bootloader, partition table, app and the boot-drive image, rewrites t
 and rewrites FIRMWARE.txt (version, source hash) and SHA256SUMS. Run it from a git checkout whose firmware sources are committed
 or staged the way you want them hashed. CI and verify-release.py check the result with scripts/fw-source-hash.py --check.
 """
-import datetime, hashlib, json, pathlib, re, shutil, subprocess, sys
+import argparse, datetime, hashlib, json, pathlib, re, shutil, subprocess, sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BUILD, REL = ROOT / "firmware" / "build", ROOT / "firmware" / "release"
@@ -20,8 +20,20 @@ SIGNED = ROOT / "firmware" / "ipxe" / "signed"
 
 
 def main() -> None:
-    # rebuild the boot drive from its inputs (deterministic), so a changed signed binary or autoexec.ipxe can never ship a stale image
-    subprocess.run([str(ROOT / "scripts" / "build-ipxe-image.sh")], check=True, stdout=subprocess.DEVNULL)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--reuse-ipxe-from", metavar="TAG", help="reuse a tagged release's exact boot drive when its image and all build inputs are identical")
+    args = parser.parse_args()
+    if args.reuse_ipxe_from:
+        tag = args.reuse_ipxe_from
+        if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
+            sys.exit("expected a release tag such as v0.7.1")
+        ref = "refs/tags/" + tag
+        subprocess.run(["git", "diff", "--quiet", ref, "--", "firmware/ipxe", "scripts/build-ipxe-image.sh"], cwd=ROOT, check=True)
+        previous = subprocess.check_output(["git", "show", ref + ":firmware/release/ipxe.img"], cwd=ROOT)
+        if previous != (ROOT / "firmware/ipxe/ipxe.img").read_bytes():
+            sys.exit("the boot image differs from the released bytes")
+    else:
+        subprocess.run([str(ROOT / "scripts" / "build-ipxe-image.sh")], check=True, stdout=subprocess.DEVNULL)
     for dst, src in COPIES.items():
         if not src.is_file():
             sys.exit(f"missing {src}: run scripts/fw.sh build first")
@@ -35,17 +47,17 @@ def main() -> None:
     for block in manifest.values():  # IDF's per-part blocks ("bootloader", "app", ...) name files too: keep every path inside the folder
         if isinstance(block, dict) and isinstance(block.get("file"), str) and block["file"].startswith("../ipxe/"):
             block["file"] = "ipxe.img"
-    (REL / "flasher_args.json").write_text(json.dumps(manifest, indent=4) + "\n")
+    (REL / "flasher_args.json").write_text(json.dumps(manifest, indent=4) + "\n", encoding="utf-8", newline="\n")
     version = re.search(r'set\(PROJECT_VER "([^"]+)"\)', (ROOT / "firmware" / "CMakeLists.txt").read_text()).group(1)
     src_hash = subprocess.run([sys.executable, str(ROOT / "scripts" / "fw-source-hash.py")], check=True, capture_output=True, text=True).stdout.strip()
     (REL / "FIRMWARE.txt").write_text(
         f"kvm-it adapter firmware {version} (ESP32-S3, 16 MB flash), the images the app flashes (Flash adapter... / kvmit flash).\n"
-        "Built with scripts/fw.sh build (the pinned ESP-IDF container) from the firmware sources recorded below, plus the boot drive\n"
+        "Built with the pinned ESP-IDF v5.5 and the repository NimBLE patch from the sources below, plus the boot drive\n"
         "image firmware/ipxe/ipxe.img (scripts/build-ipxe-image.sh). Release builds are not byte-for-byte reproducible (the build time\n"
         "is embedded), so these exact files are what ships; verify with SHA256SUMS. Rebuild from source with scripts/fw.sh build and\n"
         f"scripts/refresh-firmware-release.py. Refreshed {datetime.date.today().isoformat()}.\n"
         f"source-sha256: {src_hash}\n"
-        "(hash of the firmware build inputs, see scripts/fw-source-hash.py; CI and verify-release.py check it)\n")
+        "(hash of the firmware build inputs, see scripts/fw-source-hash.py; CI and verify-release.py check it)\n", encoding="utf-8", newline="\n")
     pins = dict(re.findall(r"^([A-Z_0-9]+)=(\S+)", (SIGNED / "pins.env").read_text(), re.M))
     commit, tag = pins["IPXE_COMMIT"], pins["IPXE_TAG"]
     (REL / "ipxe-SOURCE.txt").write_text(
@@ -61,9 +73,9 @@ def main() -> None:
         "not linked into kvm-it's MIT-licensed firmware or app. See THIRD_PARTY_NOTICES.md in the kvm-it release.\n"
         "\n"
         f"Shim source: {pins['SHIM_REPO']} at tag {pins['SHIM_VERSION']} (commit {pins['SHIM_COMMIT']}). Its licence notices:\n"
-        "\n" + (SIGNED / "shim-NOTICES.txt").read_text())
+        "\n" + (SIGNED / "shim-NOTICES.txt").read_text(), encoding="utf-8", newline="\n")
     names = ["kvm-it-firmware.bin", "bootloader/bootloader.bin", "partition_table/partition-table.bin", "ipxe.img", "ipxe-COPYING.GPLv2", "ipxe-SOURCE.txt", "flasher_args.json"]
-    (REL / "SHA256SUMS").write_text("".join(f"{hashlib.sha256((REL / n).read_bytes()).hexdigest()}  {n}\n" for n in names))
+    (REL / "SHA256SUMS").write_text("".join(f"{hashlib.sha256((REL / n).read_bytes()).hexdigest()}  {n}\n" for n in names), encoding="utf-8", newline="\n")
     print("refreshed", REL, "version", version, "source", src_hash[:16])
 
 

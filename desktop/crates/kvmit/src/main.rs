@@ -55,7 +55,9 @@ enum Cmd {
         #[arg(long, default_value_t = backend::DEFAULT_SCAN_SECS)]
         seconds: u64,
     },
-    /// Pair with an adapter (within 15 s of plugging it in, or after a brief BOOT press)
+    /// Connect to an adapter, pairing if needed after a brief BOOT press
+    Connect,
+    /// Pair with an adapter and verify the connection
     Pair,
     /// Forget this adapter's saved pairing, pair again and reconnect (press BOOT briefly first; requires --device)
     RepairPairing,
@@ -287,19 +289,26 @@ fn real_main(cli: Cli) -> R<()> {
             }
             Ok(())
         }),
-        command @ (Cmd::Pair | Cmd::RepairPairing) => rt().block_on(async {
+        command @ (Cmd::Connect | Cmd::Pair | Cmd::RepairPairing) => rt().block_on(async {
             let repair = matches!(command, Cmd::RepairPairing);
             if repair && cli.device.is_none() { return Err("repair-pairing requires --device <adapter-id>, so only the intended board is forgotten".into()); }
-            let id = session::resolve(cli.device, None).await?;
-            if repair {
-                println!("removing the saved pairing for {id}…");
-                backend::unpair(&id).await?;
-            }
-            println!("pairing with {id} (the adapter must be in its pairing window: first 15 s after plug-in, or BOOT short press)…");
-            backend::pair(&id).await?;
+            let id = if matches!(command, Cmd::Connect) {
+                session::resolve_for_connect(cli.device, cfg.last_device.clone()).await?
+            } else {
+                session::resolve(cli.device, None).await?
+            };
+            let id = backend::canonical_id(&id);
+            let mode = if repair { session::ConnectMode::Repair } else { session::ConnectMode::Connect };
+            let (dev, conn) = match session::connect_adapter(&id, mode, |stage| println!("{}", stage.label())).await {
+                Ok(link) => link,
+                Err(failure) if failure.repair_available => return Err(format!(
+                    "{failure}. If the saved pairing is stale, briefly press BOOT and run `kvmit --device {id} repair-pairing`"
+                ).into()),
+                Err(failure) => return Err(failure.into()),
+            };
             save_settings(&cfg, |c| c.last_device = Some(id.clone()));
-            let (dev, conn) = session::connect(&id).await?;
-            println!("paired and connected: {} (firmware {}.{}.{})", dev.info().name, dev.info().fw[0], dev.info().fw[1], dev.info().fw[2]);
+            let outcome = if matches!(command, Cmd::Connect) { "connected" } else { "paired and connected" };
+            println!("{outcome}: {} (firmware {}.{}.{})", dev.info().name, dev.info().fw[0], dev.info().fw[1], dev.info().fw[2]);
             dev.shutdown().await;
             conn.disconnect().await;
             Ok(())
@@ -308,7 +317,7 @@ fn real_main(cli: Cli) -> R<()> {
             kvmit::flashcmd::run(kvmit::flashcmd::Args { firmware, port, baud, any_port, erase_all, yes, list })
         }
         Cmd::Unpair => rt().block_on(async {
-            let id = session::resolve(cli.device, cfg.last_device.clone()).await?;
+            let id = backend::canonical_id(&session::resolve(cli.device, cfg.last_device.clone()).await?);
             backend::unpair(&id).await?;
             save_settings(&cfg, |c| c.last_device = None);
             println!("removed pairing for {id}. To erase the adapter's side too, hold BOOT for 10 s.");

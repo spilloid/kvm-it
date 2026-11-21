@@ -6,8 +6,8 @@ The board has two USB-C ports. They are **not interchangeable**:
 
 | Port (silkscreen) | Wired to | Use it for |
 |---|---|---|
-| **COM** | CH343 USB-UART bridge → ESP32-S3 UART0 | **Development**: flashing, serial log. Connect to your controller/dev PC. |
-| **USB** | ESP32-S3 native USB (GPIO19/20) | **Target**: this is the keyboard/mouse (and the read-only boot drive, see below) the target computer sees. Connect to the target. |
+| **COM** | CH343 USB-UART bridge → ESP32-S3 UART0 | **Controller**: flashing, serial log and the 0.3.0 file exchange. Connect to your controller/dev PC. |
+| **USB** | ESP32-S3 native USB (GPIO19/20) | **Target**: this is the keyboard/mouse (and the removable exchange drive on 0.3.0, or the read-only boot drive when enabled) the target computer sees. Connect to the target. |
 
 Evidence from this repo's development host: with only the COM port connected, Linux reports
 `1a86:55d3 QinHeng Electronics USB Single Serial` (a WCH CH343) and creates `/dev/ttyACM0`. That matches the
@@ -21,27 +21,22 @@ COM port. The silkscreen names above are from the board vendor's documentation; 
 2. **Do not plug the USB port into the machine you are developing on** while the self-test is flashed: ~8 s
    after boot the board types `HELLO FROM KVM`, presses Enter and moves the mouse *on whatever machine it is
    plugged into*. Use a separate target, or leave the USB port unplugged while you flash.
-3. During development you may connect COM to your dev PC and USB to a test target at the same time. Both ports
-   can power the board; if your board revision has a power-selection jumper/solder pad, check it before
-   connecting two different computers at once (two hosts feeding 5 V into one board is best avoided). **This
-   has not been verified on rev 2022-v1.3 — check the board's schematic or just power via one host.**
+3. Two-PC file exchange needs both USB data paths and a single power source. Both ports can power the board.
+   Verify power isolation for the exact board and cabling before connecting two computers.
+   The two-host power arrangement on rev 2022-v1.3 still needs hardware verification.
 4. The firmware keeps its console on UART0 (COM port) on purpose, because the native USB peripheral belongs to
    the HID device.
 
 ### Buttons
 
-**Firmware version matters:** the automatic windows below describe released firmware 0.2.0. Firmware 0.2.1,
-bundled for desktop 0.6, suppresses the power-on/RESET pairing window when a bond exists: press BOOT briefly to pair
-again. That change is built and bundled, but has not yet been verified on a physical board.
+Firmware 0.2.1 and 0.3.0 open a 15-second pairing window at startup when the board has no saved controller.
+A paired board reconnects to its saved controller. On older firmware 0.2.0, a normal power-on or RESET also opens the short window.
 
 - **BOOT** (GPIO0, read by the firmware at run time):
-  - short press (< 3 s): open the **pairing window** for 300 s (a 15 s window also opens by itself at every
-    power-on or RESET; with a bond stored, crash/watchdog reboots do not open it);
+  - short press (< 3 s) opens the **pairing window** for five minutes. A fast blue blink confirms it is open.
   - hold 10 s: **erase the bonded controller** and reopen the window (LED shows progress, below);
   - hold it while pressing RESET: ROM download mode (hardware behaviour, unchanged).
-- **RESET** (EN): reboots the chip; the USB device re-enumerates on the target and the adapter comes back
-  with its last configuration (name and bond are stored in flash). Like a plug-in, it opens the 15 s pairing
-  window.
+- **RESET** (EN) reboots the chip. The target detects the USB device again and the adapter retains its name and pairing.
 
 ### Status LED (on-board RGB, GPIO48 — verified on this board 2026-10-03; set
 `CONFIG_KVMIT_LED_GPIO` to -1 or another pin if a different board stays dark)

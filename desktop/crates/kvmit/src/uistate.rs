@@ -23,6 +23,7 @@ pub enum LinkKind<'a> {
     Connecting(&'a str),
     Connected(&'a str),
     Failed,
+    Attention,
 }
 
 pub fn adapter_chip(link: LinkKind<'_>) -> (Health, String) {
@@ -30,7 +31,8 @@ pub fn adapter_chip(link: LinkKind<'_>) -> (Health, String) {
         LinkKind::Connected(name) => (Health::Good, format!("Adapter: {name}")),
         LinkKind::Connecting(id) => (Health::Working, format!("Adapter: connecting to {id}…")),
         LinkKind::Failed => (Health::Bad, "Adapter: not connected (retrying)".into()),
-        LinkKind::Disconnected => (Health::Idle, "Adapter: none — click to connect".into()),
+        LinkKind::Attention => (Health::Bad, "Adapter: connection failed".into()),
+        LinkKind::Disconnected => (Health::Idle, "Adapter: disconnected".into()),
     }
 }
 
@@ -44,7 +46,7 @@ pub fn target_usb_chip(connected: bool, hid_mounted: Option<bool>) -> (Health, &
     }
 }
 
-pub const WHY_NO_ADAPTER: &str = "Connect an adapter first (Adapter chip).";
+pub const WHY_NO_ADAPTER: &str = "Choose Connect first.";
 pub const WHY_SCRIPT_RUNNING: &str = "A script is running: abort it first (Esc).";
 pub const WHY_BUSY: &str = "Input is busy (a script is running or keys are still being sent): wait for it to finish.";
 

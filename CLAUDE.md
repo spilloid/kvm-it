@@ -10,6 +10,7 @@ controlled over BLE from a Rust desktop app. Read `README.md`, then `docs/archit
 - **Never claim hardware behaviour was verified unless it was run on a physical board.** Say "built",
   "host-tested" or "hardware-verified" precisely. The README status table and the CHANGELOG must agree.
 - **Never log typed text or secret macro contents**, at any log level. Log lengths/counts only.
+- **The target requires no kvm-it software, agent, scripts or custom drivers.** Host clipboard paste uses USB keystrokes. File exchange uses the standard removable-drive class.
 - **Target-facing input is USB HID only.** Bluetooth is solely controller↔ESP32.
 - **Firmware knows usage codes, not text.** Layouts, macros and text→keys live in the desktop app.
 - **No secrets persisted by default.**
@@ -53,6 +54,8 @@ user must be in `dialout`. **Never flash with the board's USB port attached to t
 self-test types into the machine it is plugged into.
 
 ## Things to re-verify before trusting them (dated, STD-003 rule 4)
+
+- 2026-11-20 (0.8.0): Windows GUI checks, ordered clipboard reports and simulated file round trips passed. Physical two-PC transfers, dual-host power isolation on YD-ESP32-23 rev 2022-v1.3 and a new Linux or macOS hardware regression pass remain unverified.
 
 - 2026-11-16 (0.7.0): the maintainer reports successful MCP operation on Windows, without an exact operation/failure-case inventory. Physical Mac/Linux MCP input, delayed release, capture-stall/reconnect and flash-shutdown paths, and Claude/Cowork interoperability remain unverified. CI checks are software evidence. Workflow provisioning remains prerelease beta; the regular GitHub release flag does not graduate it.
 

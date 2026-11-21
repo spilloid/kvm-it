@@ -40,7 +40,7 @@ for the video, *Settings > Privacy & security > Camera > Let desktop apps access
 1. Plug the board's **COM** port into your PC. **Leave the other one (USB) unplugged.** That one is a real keyboard and mouse
    that takes orders from kvm-it, and plugged into the computer you are flashing from it would be typing into your own machine.
    (kvm-it refuses to flash if it spots one.)
-2. Open **kvm-it**, click the **Adapter** chip, **Flash adapter…**, **Flash adapter**.
+2. Open **kvm-it**, open **Tools**, choose **Devices**, then **Flash adapter…**.
 3. Choose the board's COM port, then wait for *Flashed and verified*. In 0.6, the dialog shows each write and verification stage and lets you copy diagnostics if it fails. Reconnect over Bluetooth afterward to confirm the **running** firmware version; verified flash alone does not prove the app is running.
 
 The firmware ships inside the app, so there is nothing to download. If your adapter was already running kvm-it, its pairing
@@ -48,49 +48,45 @@ survives; if it is straight out of the bag, tick *Erase everything first* (there
 fans: `kvmit flash`. (Verified on boards that already had firmware; a factory-fresh board has not been through it yet, so
 tell us how it goes.)
 
-## 4. Pair (once)
+## 4. Connect the adapter
 
 1. Unplug **COM**, then plug the adapter's **USB** port into the **target**. Powering the board from two computers at
    once has not been verified for the documented board revision.
 2. Pairing-window behaviour depends on firmware: 0.2.0 opens a **15-second** window at physical power-on or RESET
    (a bonded crash/watchdog restart does not). Firmware 0.2.1 suppresses that window once paired. In either case,
    press **BOOT** briefly to open pairing for 5 minutes. See the [hardware guide](hardware.md) for the full behaviour.
-3. In kvm-it: **Adapter** chip, **Scan for adapters**, **Pair & connect**. On Windows this pairs with no system dialog at all.
+3. Click **Connect**. A remembered adapter or a single available board connects directly. If several boards are nearby, choose yours under **Devices**. Connect uses the saved
+   Bluetooth pairing when one exists and pairs during the BOOT window when needed. On Windows, kvm-it handles pairing
+   inside the app. The CLI equivalent is `kvmit --device <adapter-id> connect`.
 
 From then on, move the cables to the next machine and the app reconnects by itself.
 
 ## 5. Drive
 
-<img src="assets/screenshots/console-06.png" alt="The 0.6 app with four disconnected console tabs, status chips and synthetic demo video" style="max-width:100%">
+![kvm-it 0.8 console showing the Connect button and a synthetic target screen](assets/screenshots/console-08.png)
 
-The top bar is the whole control panel; the picture is the rest of the window. Green is working, amber is in progress, red is
-broken, grey is idle.
+The bottom edge shows the Bluetooth connection, target USB and video status. Each console tab keeps its adapter, capture card and workflow.
 
-1. **Adapter**: is it connected? Click it to scan, pair, disconnect, flash.
-2. **Target USB**: does the target see the adapter as a keyboard and mouse? (An indicator, not a button.)
-3. **Video**: click it, pick your capture card, and the target's screen appears. One click switches cards; **Rescan** finds one you
-   plugged in later.
-4. **Capture**: click the picture (or this chip). Your keyboard and mouse now belong to the target.
-5. **Keys · Type · Scripts**: the three buttons that do the clever bits, below.
-
-<img src="assets/screenshots/tour-capture.png" alt="Input captured: a red frame around the picture, and the red chip saying Ctrl+Alt+Esc to release" style="max-width:100%">
+1. Open **Tools**, select **Devices** and choose your capture card. **Rescan** finds a card plugged in later.
+2. Click **Take control** or click the picture. Your keyboard and mouse now drive the target.
+3. Press **Ctrl+Shift+V** to type text from the host clipboard. **Send** contains the same action, special key combinations and a masked text field.
+4. Use **Files** for the two-cable exchange drive and **Record** to capture video. Stop an active recording from the toolbar.
+5. Open **Settings** to add or rename a console, change the theme or enable local agent access.
 
 **Getting out:** press **Ctrl+Alt+Esc** (on a Mac the same keys, labelled **Ctrl+Option+Esc**). That chord is never sent to the target, so it can never get stuck over there. On Windows, and on macOS once kvm-it is allowed under *Accessibility*, keys your
 PC would normally keep for itself (Win, Alt+Tab, Ctrl+Esc, Alt+F4; Cmd+Tab, Cmd+Space on a Mac) go to the target too while you are captured. On
-Linux your desktop keeps its own shortcuts (Super, Alt+Tab): send those from **Keys**; the app reminds you the first time you capture.
+Linux your desktop keeps its own shortcuts (Super, Alt+Tab): send those from **Send**; the app reminds you the first time you capture.
 
-**Keys** sends the chords your PC would swallow: Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and friends. (Ctrl+Alt+Del and Win+L cannot be
+**Send** includes the chords your PC would swallow: Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and friends. (Ctrl+Alt+Del and Win+L cannot be
 intercepted by any program on Windows, so this is how you send them.)
 
-<img src="assets/screenshots/04-keys.png" alt="The Keys popup" width="49%"> <img src="assets/screenshots/05-type.png" alt="The Type popup" width="49%">
 
-**Type** types a string for you. Tick *Secret* for passwords: masked, never logged, never saved.
+The **Type** field in **Send** types a string for you. Tick *Secret* for passwords: masked, never logged, never saved.
 
-**Scripts** replays a setup flow: Windows OOBE, an installer, a BIOS tour. Drop `.toml` or DuckyScript files in your scripts folder
+Under **Tools**, **Workflows** replays a setup flow such as Windows OOBE, an installer, a BIOS tour. Drop `.toml` or DuckyScript files in your scripts folder
 (`~/Documents/kvm-it/scripts`), pick one, read the preview, **Dry run** it first (it types nothing), then **Run**. Abort leaves nothing
 held down. More in [scripts and replay](ux.md).
 
-<img src="assets/screenshots/06-scripts.png" alt="The Scripts popup with a preview" width="49%"> <img src="assets/screenshots/07-run-log.png" alt="The run log strip after a dry run" width="49%">
 
 Everything is also on the command line. Windows: `kvmit` (on PATH after the installer, or beside `kvmit-gui.exe` in the zip). Linux:
 `./kvm-it-X.Y.Z-x86_64.AppImage cli <command>`. macOS: `/Applications/kvm-it.app/Contents/MacOS/kvmit <command>`.
@@ -130,9 +126,9 @@ in the background cannot answer prompts: give values with `--var`, and run scrip
 The adapter can also be a tiny **read-only USB drive** with iPXE on it, so a machine with nothing on it can fetch an installer, WinPE or a rescue image over the
 network, driven from your desk. **It is off until you turn it on**, so by default your target sees only a keyboard and mouse. (The setting is remembered, so it stays on across power cycles until you turn it off.)
 
-1. In kvm-it, click the **Adapter** chip and **Boot drive: Turn on (restarts adapter)**. (Command line: `kvmit boot-drive on`.) The adapter restarts, so the
+1. In kvm-it, open **Tools**, select **Devices** and click **Turn on (restarts adapter)** under **Boot drive**. (Command line: `kvmit boot-drive on`.) The adapter restarts, so the
    target sees it re-plug, and the drive appears. Turn it off the same way when you are done.
-2. With the adapter's **USB** port in the target, open the target's boot menu (usually **F12**, **F11** or **Esc** at power-on; kvm-it's **Keys** button can press
+2. With the adapter's **USB** port in the target, open the target's boot menu (usually **F12**, **F11** or **Esc** at power-on; the **Send** menu can press
    them for you) and pick the entry that says **kvm-it** (listed as a USB device, "UEFI kvm-it kvm-it HID adapter…").
 3. iPXE starts and says *press any key to boot from the network*. Press a key within five seconds and it asks your network for an address and opens the iPXE
    project's public demo menu, which proves the whole path without a server of your own. (If you do nothing it exits and the target carries on with its normal boot
@@ -202,7 +198,7 @@ checks the sign-in does not start there. From a terminal the whole run is `kvmit
 - **The adapter never appears in a scan:** press **BOOT** briefly, then scan again. Automatic power-on windows depend
   on the firmware version and whether it is already paired (see step 4). More in the
   [hardware guide](hardware.md).
-- **Keys stuck on the target:** *Release all keys* in the **Adapter** popup. If the app crashes, the adapter lets go of everything by
+- **Keys stuck on the target:** Open **Tools**, select **Devices** and click **Release all keys**. If the app crashes, the adapter lets go of everything by
   itself within a few seconds (designed that way; not yet verified on hardware).
 - **The target does not offer a "kvm-it" boot entry, or says "Access Denied":** the boot drive is UEFI-only. If it refuses the signed shim, that firmware does not
   trust Microsoft's third-party CA (some locked-down machines); tell us the model. "Security Policy Violation" after iPXE starts means the thing you chained to is not
@@ -212,8 +208,8 @@ checks the sign-in does not start there. From a terminal the whole run is `kvmit
 
 ## Several targets in one console (0.6)
 
-Choose **+ Add adapter** to add a console tab. Give it a useful name, connect its adapter from **Adapter**, and choose
-its HDMI capture card from **Video**. Repeat for each target. Each tab shows its connection and reported firmware
+Open **Settings** and choose **Add console**. Name the new tab and click **Connect**. Open **Tools**, then **Devices**, to select
+its HDMI capture card. Repeat for each target. Each tab shows its connection and reported firmware
 version, and keeps its own video, script and workflow. Assignments are remembered when you reopen the app.
 
 Release captured input with **Ctrl+Alt+Esc** (**Ctrl+Option+Esc** on a Mac), then select another tab. The console waits
@@ -222,16 +218,15 @@ tab continue there; a tab says **needs attention** when a run is waiting for you
 already used by another console cannot be selected. To move a card, stop its run/recording and choose **Close capture
 device** first. To remove a console, disconnect its adapter and stop its run/recording first.
 
-The **Adapter** popup shows running firmware, the firmware included with the app, protocol version, target USB and
+**Devices** under **Tools** shows running firmware, the firmware included with the app, protocol version, target USB and
 held-input/link counters. A missing status reply is shown as waiting, rather than retaining a stale successful status.
-The popup also shows the measured response time and when the status was last checked.
+The same panel shows the measured response time and when the status was last checked.
 
-If a board only works after you forget it in system settings, use **Adapter > Repair pairing…** (or **Repair remembered
-pairing…** when it cannot connect). Press **BOOT briefly** on that board, then **Forget and pair again**. kvm-it removes
-that board's saved pairing, pairs again and reconnects; it leaves the other consoles alone. Do not hold BOOT for ten
-seconds for an ordinary repair: that is a separate full trust reset. Windows and Linux support this in the app; macOS
-does not expose a forget API, so its forget step still needs System Settings. The CLI equivalent is
-`kvmit repair-pairing --device <adapter-id>` and requires the ID explicitly.
+If **Connect** finds a saved pairing but cannot open the link, **Devices** can offer **Repair pairing…**.
+Tap **BOOT** on that board. When the LED flashes blue, choose **Replace pairing and connect**. kvm-it
+replaces the saved pairing for that specific board. Windows and Linux support this in the app. On macOS, remove the
+device in **System Settings > Bluetooth**, then return to **Connect**. The CLI repair command requires the exact ID
+in `kvmit --device <adapter-id> repair-pairing`.
 
 On macOS, replugging a paired adapter uses automatic reconnect. Use Bluetooth System Settings to forget an adapter only when you intend to pair it again.
 
@@ -245,3 +240,7 @@ full erase is a separate choice that also removes pairing. If a transfer times o
 
 kvm-it types into other machines, including credentials. Read the [security model](security.md) before you point it at anything you
 care about.
+
+### Clipboard and file exchange (0.8.0)
+
+While controlling the target, **Ctrl+Shift+V** types text copied on the host. Open **Files** for two-cable transfer through the target’s file manager. See [Clipboard and files](clipboard-and-files.md).

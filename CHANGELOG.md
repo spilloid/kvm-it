@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.0] - 2026-11-20
+
+- Video-first console with a primary Connect / Take control action, Send and Files actions, device and workflow tools, and on-demand settings. Agent stop and recording stop remain directly accessible when active.
+- Ctrl+Shift+V types the host clipboard using the target's USB keyboard. The controller checks the entire text against its US keyboard mapping before sending.
+- Firmware 0.3.0 adds a separate writable exchange partition for files, served over native USB mass storage, with controller access through the COM cable. The target uses its file manager and ejects the volume before the controller can access it. Physical two-computer testing is pending.
+
 ## [0.7.1] - 2026-11-18
 
 ### Fixed

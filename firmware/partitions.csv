@@ -7,3 +7,5 @@ factory,  app,  factory, 0x10000,  0x100000,
 # The read-only boot drive the adapter shows to the target: an MBR disk image with an EFI system partition holding iPXE
 # (built by scripts/build-ipxe-image.sh). Raw 512-byte sectors, served as is.
 ipxe,     data, fat,     0x110000, 0x400000,
+# File exchange only. The existing settings, factory image and iPXE disk keep their addresses.
+exchange, data, 0x40,    0x510000, 0x800000,

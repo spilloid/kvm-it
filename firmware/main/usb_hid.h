@@ -20,6 +20,9 @@ esp_err_t usb_hid_init(bool boot_drive);
 /* Is the boot drive part of this session's USB descriptor. */
 bool usb_hid_boot_drive(void);
 
+/* First explicit file share re-enumerates the target with a removable drive. */
+bool usb_hid_enable_exchange(void);
+
 /* True once the target host has configured the device. False when unplugged
  * or suspended; senders then return ESP_ERR_INVALID_STATE. */
 bool usb_hid_mounted(void);

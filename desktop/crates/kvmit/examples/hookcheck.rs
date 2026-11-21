@@ -23,7 +23,7 @@ fn main() {
             match e {
                 Event::Down(_) => down += 1,
                 Event::Up(_) => up += 1,
-                Event::Release => {}
+                Event::Paste | Event::Release => {}
             }
         }
         released = saw_release;

@@ -19,7 +19,7 @@ title: kvm-it
 <title>kvm-it &mdash; one console, a whole bench of machines</title>
 <meta name="description" content="A desktop KVM for nearby machines, from BIOS to desktop. Bluetooth LE control, USB keyboard and mouse, HDMI capture. Open source for Windows, Linux and macOS.">
 <meta property="og:title" content="kvm-it &mdash; one console, a whole bench of machines">
-<meta property="og:description" content="Your keyboard. Their screen. No software on the target. Meet the multi-adapter console in 0.6.">
+<meta property="og:description" content="Your keyboard. Their screen. No software on the target. Paste text through USB and switch between named consoles.">
 <meta property="og:image" content="{{ '/assets/logo.png' | absolute_url }}">
 <meta property="og:type" content="website">
 <meta property="og:url" content="{{ '/' | absolute_url }}">
@@ -46,18 +46,18 @@ title: kvm-it
     <div class="hero-actions"><a class="button" id="hero-dl" href="#download">Get kvm-it <span aria-hidden="true">&#8595;</span></a><a class="text-link" href="#how-it-connects">See what plugs in where <span aria-hidden="true">&#8595;</span></a><p class="micro">Windows &middot; Linux &middot; macOS<br> Free, open source, MIT licensed</p></div></div>
   </div>
   <figure class="product-shot">
-    <div class="shot-label"><span>YOUR DESK / THEIR MACHINES</span><span>CONSOLE 0.6</span></div>
-    <a href="{{ '/assets/screenshots/console-06.png' | relative_url }}" aria-label="Open the full console screenshot"><img src="{{ '/assets/screenshots/console-06.png' | relative_url }}" alt="The real kvm-it 0.6 preview: four disconnected console tabs above a synthetic boot-menu picture" width="1244" height="891" fetchpriority="high"></a>
-    <figcaption>Real app, synthetic target picture. Disconnected demo consoles; no target input is being sent.</figcaption>
+    <div class="shot-label"><span>YOUR DESK / THEIR MACHINES</span><span>CONSOLE 0.8</span></div>
+    <a href="{{ '/assets/screenshots/console-08.png' | relative_url }}" aria-label="Open the full console screenshot"><img src="{{ '/assets/screenshots/console-08.png' | relative_url }}" alt="The 0.8 console with Connect, Send and Files above a synthetic target screen" width="1942" height="1250" fetchpriority="high"></a>
+    <figcaption>Windows console with synthetic target video.</figcaption>
   </figure>
-  <p class="release-context">{% if bench_release %}<a href="{{ release_url }}">Version {{ r.version }} release notes</a>. <a href="{{ '/mcp.html' | relative_url }}">Local MCP setup (0.7)</a>. Workflows are prerelease beta.{% else %}<strong>0.6 preview shown.</strong> Multiple console tabs, pairing repair and the new flash experience are coming in 0.6. {% if r.version %}Downloads below are the published <a href="{{ release_url }}">{{ r.version }}</a> release.{% else %}Check the published version on <a href="{{ releases }}">GitHub Releases</a>.{% endif %}{% endif %}</p>
+  <p class="release-context">{% if bench_release %}<a href="{{ release_url }}">Version {{ r.version }} release notes</a>. <a href="{{ '/mcp.html' | relative_url }}">Local MCP setup</a>. <a href="{{ '/clipboard-and-files.html' | relative_url }}">Clipboard typing and USB file exchange in 0.8</a>. Workflows are prerelease beta.{% else %}<strong>0.6 preview shown.</strong> Multiple console tabs, pairing repair and the new flash experience are coming in 0.6. {% if r.version %}Downloads below are the published <a href="{{ release_url }}">{{ r.version }}</a> release.{% else %}Check the published version on <a href="{{ releases }}">GitHub Releases</a>.{% endif %}{% endif %}</p>
 </header>
 <div class="facts wrap" aria-label="At a glance"><p><strong>Zero target software.</strong> A USB keyboard and mouse, as far as the target knows.</p><p><strong>Before the OS.</strong> Firmware menus, installers, recovery and sign-in screens.</p><p><strong>Local by design.</strong> BLE for control. HDMI capture for the picture.</p></div>
 <section class="section wrap" id="console">
-  <div class="section-heading"><p class="eyebrow">MEET THE 0.6 CONSOLE</p><h2>Keep the bench moving.<br> Keep each target straight.</h2><p class="intro">A console for each adapter, with its own connection, video source and run. Give each one a name you recognise and switch when you need it.</p></div>
+  <div class="section-heading"><p class="eyebrow">THE CONSOLE</p><h2>Keep the bench moving.<br> Keep each target straight.</h2><p class="intro">A console for each adapter, with its own connection, video source and run. Give each one a name you recognise and switch when you need it.</p></div>
   <div class="feature-columns">
     <article><span class="feature-number">01 / SWITCH</span><h3>More machines.<br> One place to work.</h3><p>Add a console tab, connect its adapter and choose its capture card. Your assignments are remembered. Runs stay with their console while you look elsewhere.</p><p class="detail">Release captured input before switching: <kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>Esc</kbd> <span>(Option on a Mac).</span></p></article>
-    <article><span class="feature-number">02 / UNDERSTAND</span><h3>Know what the<br> board is doing.</h3><p>Read the running firmware version, target USB state and link status in the console. Open Adapter for protocol, held-input counters and the age of the last status reply.</p><p class="detail">A verified flash and a running board are separate checks. The app tells you which one you have.</p></article>
+    <article><span class="feature-number">02 / UNDERSTAND</span><h3>Know what the<br> board is doing.</h3><p>Read the running firmware version, target USB state and link status in the console. Open Tools and select Devices for protocol, held-input counters and the age of the last status reply.</p><p class="detail">A verified flash and a running board are separate checks. The app shows both.</p></article>
     <article><span class="feature-number">03 / RECOVER</span><h3>Fix the pairing.<br> Stay in the app.</h3><p>On Windows and Linux, use Repair pairing to forget and pair the selected adapter again. A brief BOOT press authorises it. Even a remembered adapter that won&rsquo;t connect has a recovery path.</p><p class="detail">macOS still requires System Settings for the forget step. <a href="{{ '/getting-started.html#several-targets-in-one-console-06' | relative_url }}">Console and recovery guide &rarr;</a></p></article>
   </div>
 </section>
@@ -71,7 +71,7 @@ title: kvm-it
     <div class="wire-node target"><span class="node-icon" aria-hidden="true">&#9635;</span><h3>The target</h3><p>A USB port + HDMI output</p></div>
     <div class="video-return"><span aria-hidden="true">&larr;</span> <strong>Picture back to your computer</strong><span>Target HDMI &rarr; USB capture card &rarr; kvm-it</span></div>
   </div>
-  <p class="wiring-note"><strong>COM is for flashing.</strong> Use the board&rsquo;s other USB-C port, labelled COM, to install firmware. Then unplug it and connect the native USB port to the target. <a href="{{ '/hardware.html' | relative_url }}">Which board and which port? &rarr;</a></p>
+  <p class="wiring-note"><strong>Use COM to flash the adapter.</strong> For keyboard and mouse control, the native USB port goes to the target. File exchange uses both data ports and requires verified single-source power. <a href="{{ '/hardware.html' | relative_url }}">Which board and which port? &rarr;</a></p>
 </div></section>
 <section class="section wrap setup" id="setup">
   <div class="setup-heading"><p class="eyebrow">FIRST ADAPTER? START HERE.</p><h2>From parts<br> to a picture.</h2><p>A supported dual-port ESP32-S3 board is about $10. Budget separately for the capture card and cables.</p><a class="text-link" href="{{ '/getting-started.html' | relative_url }}">Open the full setup guide &rarr;</a></div>

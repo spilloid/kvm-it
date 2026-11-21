@@ -6,6 +6,8 @@
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "tusb.h"
+#include "usb_hid.h"
+#include "share_drive.h"
 
 static const char *TAG = "usb_msc";
 
@@ -48,16 +50,20 @@ void tud_msc_inquiry_cb(uint8_t lun, uint8_t vendor_id[8], uint8_t product_id[16
     static bool once;
     if (!once) {
         once = true;
-        ESP_LOGI(TAG, "target sent SCSI INQUIRY to the boot drive");
+        ESP_LOGI(TAG, "target identified the removable drive");
     }
     memcpy(vendor_id, "kvm-it  ", 8);
-    memcpy(product_id, "iPXE boot drive ", 16);
+    memcpy(product_id, usb_hid_boot_drive() ? "iPXE boot drive " : "File exchange   ", 16);
     memcpy(product_rev, "1.0 ", 4);
 }
 
 bool tud_msc_test_unit_ready_cb(uint8_t lun)
 {
-    if (!s_part) {
+    if (!usb_hid_boot_drive() && share_media_changed()) {
+        tud_msc_set_sense(lun, SCSI_SENSE_UNIT_ATTENTION, 0x28, 0x00); /* removable medium has changed */
+        return false;
+    }
+    if (usb_hid_boot_drive() ? !s_part : !share_present()) {
         tud_msc_set_sense(lun, SCSI_SENSE_NOT_READY, 0x3A, 0x00); /* medium not present */
         return false;
     }
@@ -70,22 +76,23 @@ void tud_msc_capacity_cb(uint8_t lun, uint32_t *block_count, uint16_t *block_siz
     static bool once;
     if (!once) {
         once = true;
-        ESP_LOGI(TAG, "target asked the boot drive for its capacity");
+        ESP_LOGI(TAG, "target requested removable drive capacity");
     }
-    *block_count = s_blocks;
+    *block_count = usb_hid_boot_drive() ? s_blocks : (share_present() ? share_blocks() : 0);
     *block_size = BLOCK_SIZE;
 }
 
 bool tud_msc_start_stop_cb(uint8_t lun, uint8_t power_condition, bool start, bool load_eject)
 {
     (void)lun; (void)power_condition; (void)start; (void)load_eject;
-    return true; /* a fixed medium: eject requests are accepted and ignored */
+    if (!usb_hid_boot_drive() && load_eject && !start) share_eject();
+    return true;
 }
 
 bool tud_msc_is_writable_cb(uint8_t lun)
 {
     (void)lun;
-    return false; /* the host sees a write-protected drive */
+    return !usb_hid_boot_drive() && share_present();
 }
 
 /* Note: when a read callback returns an error, TinyUSB (0.21) replaces the sense data set here with NOT READY / medium not present, so the host
@@ -93,6 +100,7 @@ bool tud_msc_is_writable_cb(uint8_t lun)
  * the firmware tries to describe precisely. */
 int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void *buffer, uint32_t bufsize)
 {
+    if (!usb_hid_boot_drive()) return share_usb_io(false, lba, offset, buffer, bufsize);
     (void)lun;
     if (!s_part) {
         return -1;
@@ -114,12 +122,10 @@ int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void *buff
     return (int32_t)bufsize;
 }
 
-/* Defence in depth: with tud_msc_is_writable_cb() false TinyUSB refuses WRITE(10) itself (DATA PROTECT / write protected) before any data is
- * received, so this is not normally reached (on the real adapter, a raw WRITE(10) was refused without reaching it, and the counter below stays 0);
- * if it ever were, it still refuses and never writes. Nothing in this file calls esp_partition_write or erase. */
+/* Only the dedicated exchange medium accepts writes. iPXE remains write-protected at both SCSI layers. */
 int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_t bufsize)
 {
-    (void)lba; (void)offset; (void)buffer; (void)bufsize;
+    if (!usb_hid_boot_drive()) return share_usb_io(true, lba, offset, buffer, bufsize);
     s_refused++;
     tud_msc_set_sense(lun, SCSI_SENSE_DATA_PROTECT, 0x27, 0x00); /* write protected */
     return -1;
@@ -127,7 +133,8 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t *
 
 int32_t tud_msc_scsi_cb(uint8_t lun, uint8_t const scsi_cmd[16], void *buffer, uint16_t bufsize)
 {
-    (void)scsi_cmd; (void)buffer; (void)bufsize;
+    (void)buffer; (void)bufsize;
+    if (!usb_hid_boot_drive() && scsi_cmd[0] == 0x35) return 0; /* SYNCHRONIZE CACHE: writes are synchronous. */
     tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x20, 0x00); /* invalid command operation code */
     return -1;
 }
