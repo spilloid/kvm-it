@@ -52,7 +52,7 @@ pub fn chip(s: VideoState) -> (Level, String) {
 pub fn picture_message(s: VideoState) -> Option<&'static str> {
     match s {
         VideoState::NoDevice => Some("No capture device found. Plug in an HDMI capture card."),
-        VideoState::NotOpened => Some("Open the capture card from the Video button above."),
+        VideoState::NotOpened => Some("Choose your capture card under Devices in Tools."),
         VideoState::Waiting(_) => Some("Waiting for the first frame from the capture card…"),
         VideoState::NoSignal(_) => Some("No signal: the capture card is sending a blank picture. Check the target is on and its HDMI cable is connected."),
         VideoState::Live(_) => None,

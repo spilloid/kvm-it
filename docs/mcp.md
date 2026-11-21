@@ -10,7 +10,7 @@ password/MFA/enrollment and Autopilot are not established merely by exposing the
 ## Connect a client
 
 1. Close older builds (they do not participate in 0.7 ownership), then open the new build of kvm-it. Assign the intended adapters and capture cards to named consoles.
-2. In **Agent access**, choose an access mode and click **Enable local agent**. Access starts off on every launch.
+2. In **Settings**, under **Agent access**, choose an access mode and click **Enable local agent**. Access starts off on every launch.
 3. Configure a local MCP server using the absolute path to this build's `kvmit` executable and the argument `mcp`.
 
 For clients using an `mcpServers` configuration object:
@@ -56,6 +56,14 @@ retains native-USB, selected-port, chip/image and settings-preservation checks.
 Each enable grants at most 128 mutating calls. A person can enable access again if more are needed. Identical retries
 of an already recorded request do not consume this budget again. This bounds controller activity, not a client's
 total tokens or spending.
+
+## Connect an adapter
+
+Call `adapter_scan` for the console, then read `console_list` and pass the selected adapter ID to `adapter_connect`.
+Connect reuses a saved Bluetooth pairing or pairs during the physical BOOT window. Read the console's `connection`
+status in `console_list` for the current stage and any failure. If it reports `repair_available`, the operator can
+briefly press BOOT and authorize `mode: "repair"` to replace that board's pairing. Set `mode: "reconnect"` to connect
+using an existing pairing only. The legacy `mode: "pair"` is an alias for Connect.
 
 ## Run an approved OOBE workflow
 

@@ -12,12 +12,13 @@
 #include "hid_state.h"
 #include "tinyusb.h"
 #include "usb_msc.h"
+#include "share_drive.h"
 
 static const char *TAG = "usb_hid";
 
 /* The mass-storage drive is the LAST interface, so the two boot-protocol HID interfaces keep the numbers 0 and 1 that BIOS/UEFI keyboard
  * handling expects, and a firmware that ignores storage still sees exactly the keyboard and mouse it always did. */
-enum { ITF_KEYBOARD = 0, ITF_MOUSE = 1, ITF_MSC = 2, ITF_COUNT_HID = 2, ITF_COUNT_WITH_DRIVE = 3 };
+enum { ITF_KEYBOARD = 0, ITF_MOUSE = 1, ITF_MSC = 2, ITF_COUNT_WITH_DRIVE = 3 };
 
 /* No report IDs: each interface has exactly one report, which is also what the
  * boot protocol requires. */
@@ -40,17 +41,16 @@ static const char *string_desc[] = {
     serial_str,             /* 3: serial */
     "kvm-it keyboard",      /* 4 */
     "kvm-it mouse",         /* 5 */
-    "kvm-it boot drive",    /* 6 */
+    "kvm-it removable drive",    /* 6 */
 };
 
-/* The default (and the only thing a fresh or upgraded adapter shows a target): the keyboard and mouse, exactly as before the boot drive existed. */
 static const uint8_t config_desc_hid[] = {
-    TUD_CONFIG_DESCRIPTOR(1, ITF_COUNT_HID, 0, CONFIG_TOTAL_LEN_HID, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+    TUD_CONFIG_DESCRIPTOR(1, 2, 0, CONFIG_TOTAL_LEN_HID, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
     TUD_HID_DESCRIPTOR(ITF_KEYBOARD, 4, HID_ITF_PROTOCOL_KEYBOARD, sizeof(kbd_report_desc), EP_KBD_IN, 8, 8),
     TUD_HID_DESCRIPTOR(ITF_MOUSE, 5, HID_ITF_PROTOCOL_MOUSE, sizeof(mouse_report_desc), EP_MOUSE_IN, 8, 8),
 };
 
-/* Only when the user turned the boot drive on: the same two HID interfaces plus the read-only drive. */
+/* Both modes keep the boot keyboard and mouse on interfaces 0 and 1. */
 static const uint8_t config_desc_with_drive[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_COUNT_WITH_DRIVE, 0, CONFIG_TOTAL_LEN_WITH_DRIVE, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
     TUD_HID_DESCRIPTOR(ITF_KEYBOARD, 4, HID_ITF_PROTOCOL_KEYBOARD, sizeof(kbd_report_desc), EP_KBD_IN, 8, 8),
@@ -58,7 +58,10 @@ static const uint8_t config_desc_with_drive[] = {
     TUD_MSC_DESCRIPTOR(ITF_MSC, 6, EP_MSC_OUT, EP_MSC_IN, 64), /* full-speed bulk packet size */
 };
 
-static bool g_boot_drive;
+/* esp_tinyusb keeps this descriptor pointer for the lifetime of the driver. It
+ * changes only while electrically detached, on the first explicit file share. */
+static uint8_t active_descriptor[CONFIG_TOTAL_LEN_WITH_DRIVE];
+static bool g_boot_drive, g_exchange_enabled;
 
 static void housekeeping_task(void *arg);
 
@@ -121,23 +124,47 @@ esp_err_t usb_hid_init(bool boot_drive)
     if (g_boot_drive) {
         usb_msc_init();
     }
+    if (boot_drive) memcpy(active_descriptor, config_desc_with_drive, sizeof(config_desc_with_drive));
+    else memcpy(active_descriptor, config_desc_hid, sizeof(config_desc_hid));
 
     const tinyusb_config_t cfg = {
         .device_descriptor = NULL, /* esp_tinyusb default (Espressif VID/PID) */
         .string_descriptor = string_desc,
         .string_descriptor_count = sizeof(string_desc) / sizeof(string_desc[0]),
         .external_phy = false,
-        .configuration_descriptor = g_boot_drive ? config_desc_with_drive : config_desc_hid,
+        .configuration_descriptor = active_descriptor,
     };
     ESP_LOGI(TAG, "installing TinyUSB, serial %s, boot drive %s", serial_str, g_boot_drive ? "ON (read-only iPXE disk)" : "off");
     esp_err_t err = tinyusb_driver_install(&cfg);
     if (err != ESP_OK) {
         return err;
     }
+    if (!boot_drive && share_drive_init() != ESP_OK) {
+        ESP_LOGW(TAG, "file exchange unavailable");
+    }
     if (xTaskCreate(housekeeping_task, "hid_house", 3072, NULL, 4, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+
+bool usb_hid_enable_exchange(void)
+{
+    /* Called only by the serial task. The BLE input task also takes g_lock. */
+    if (g_boot_drive) return false;
+    if (g_exchange_enabled) return true;
+    xSemaphoreTake(g_lock, portMAX_DELAY);
+    if (hid_state_any_held(&g_state) || g_release_pending) {
+        xSemaphoreGive(g_lock);
+        return false;
+    }
+    tud_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(300));
+    memcpy(active_descriptor, config_desc_with_drive, sizeof(config_desc_with_drive));
+    g_exchange_enabled = true;
+    tud_connect();
+    xSemaphoreGive(g_lock);
+    return true;
 }
 
 bool usb_hid_boot_drive(void)

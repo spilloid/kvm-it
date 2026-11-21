@@ -116,6 +116,7 @@ pub fn usage(k: RawKey) -> Option<Key> {
 pub enum Event {
     Down(Key),
     Up(Key),
+    Paste,
     /// Ctrl+Alt+Esc: give the keyboard back.
     Release,
 }
@@ -148,6 +149,7 @@ pub struct Tracker {
     /// as held for the release chord (Ctrl held before Alt+Esc must still release).
     pre_held: Vec<Key>,
     chord_esc: bool,
+    chord_v: bool,
 }
 
 impl Tracker {
@@ -171,6 +173,18 @@ impl Tracker {
     pub fn on_usage(&mut self, key: Option<Key>, down: bool) -> Action {
         let Some(key) = key else { return Action::Pass };
 
+        if key == Key(0x19) && !self.pre_held.contains(&key) {
+            if self.chord_v {
+                self.chord_v = down;
+                return Action::Swallow(None);
+            }
+            let held = |left, right| self.is_down(Key(left)) || self.is_down(Key(right));
+            if down && !self.down.contains(&key) && held(0xe0, 0xe4) && held(0xe1, 0xe5)
+                && !held(0xe2, 0xe6) && !held(0xe3, 0xe7) {
+                self.chord_v = true;
+                return Action::Swallow(Some(Event::Paste));
+            }
+        }
         if key == Key::ESC {
             let ctrl = self.is_down(Key::LEFT_CTRL) || self.is_down(Key(0xE4));
             let alt = self.is_down(Key::LEFT_ALT) || self.is_down(Key(0xE6));
@@ -329,9 +343,9 @@ pub const fn release_chord(os: Os) -> &'static str {
 /// The release chord as this platform's keyboard labels it.
 pub const RELEASE_CHORD: &str = release_chord(THIS_OS);
 
-pub const MAC_ACCESSIBILITY_HINT: &str = "macOS is keeping Cmd+Tab, Cmd+Space, Cmd+Q and similar shortcuts for itself: allow kvm-it in System Settings > Privacy & Security > Accessibility, then capture again so they go to the target. Until then use the Keys menu for them.";
-pub const WINDOWS_NO_GRAB_HINT: &str = "kvm-it's keyboard grab could not start, so Windows is keeping Win, Alt+Tab, Alt+F4 and similar shortcuts for itself while input is captured. Use the Keys menu for them; capturing again retries the grab.";
-pub const LINUX_NO_GRAB_HINT: &str = "On Linux your desktop keeps Super, Alt+Tab and its other shortcuts for itself while input is captured (kvm-it has no keyboard grab here). Use the Keys menu for them.";
+pub const MAC_ACCESSIBILITY_HINT: &str = "macOS is keeping Cmd+Tab, Cmd+Space, Cmd+Q and similar shortcuts for itself: allow kvm-it in System Settings > Privacy & Security > Accessibility, then capture again so they go to the target. Until then use Send for those keys.";
+pub const WINDOWS_NO_GRAB_HINT: &str = "kvm-it's keyboard grab could not start, so Windows is keeping Win, Alt+Tab, Alt+F4 and similar shortcuts for itself while input is captured. Use Send for those keys. Taking control again retries the grab.";
+pub const LINUX_NO_GRAB_HINT: &str = "On Linux your desktop keeps Super, Alt+Tab and its other shortcuts for itself while input is captured (kvm-it has no keyboard grab here). Use Send for those keys.";
 
 /// Why there is no OS-level grab, for the GUI to show once per run when capture starts without one. Every platform says so:
 /// without a grab the controller's own desktop acts on its shortcuts, and the user should know where to send them from.
@@ -574,6 +588,7 @@ mod imp {
                 let _ = match e {
                     Event::Down(k) => writeln!(out, "D {:x}", k.0),
                     Event::Up(k) => writeln!(out, "U {:x}", k.0),
+                    Event::Paste => writeln!(out, "P"),
                     Event::Release => writeln!(out, "R"),
                 };
                 let _ = out.flush();
@@ -629,6 +644,7 @@ mod imp {
                                 let _ = tx.send(Event::Up(Key(k)));
                                 wake();
                             }
+                            (Some("P"), _) => { let _ = tx.send(Event::Paste); wake(); }
                             (Some("R"), _) => {
                                 let _ = tx.send(Event::Release);
                                 wake();
@@ -1147,7 +1163,7 @@ mod platform_text_tests {
     fn capture_without_a_grab_is_explained_on_every_platform() {
         for os in ALL {
             let h = no_grab_hint(os);
-            assert!(h.contains("Keys menu"), "{os:?}: says where to send the swallowed shortcuts from");
+            assert!(h.contains("Send"), "{os:?}: says where to send the swallowed shortcuts from");
         }
         assert!(no_grab_hint(Os::MacOs).contains("Accessibility"));
         assert!(no_grab_hint(Os::Linux).contains("Super"));

@@ -217,7 +217,7 @@ def generate():
     for build, m in ((FW / "build", "kvm-it-firmware.map"), (FW / "build/bootloader", "bootloader.map")):
         if not (build / m).exists():
             sys.exit(f"FAIL: {(build / m).relative_to(ROOT)} is missing: run `idf.py build` (scripts/fw.sh build) first")
-        t = (build / m).read_text(errors="replace")
+        t = (build / m).read_text(errors="replace").replace("\\", "/")
         comp_dirs = component_dirs(build)
         for archive in sorted(set(re.findall(r"(\S+\.a)\(", t))):
             src = sources_for(archive, t, comp_dirs)

@@ -21,14 +21,17 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 mod agent;
+mod paste;
+mod share;
 pub use agent::serve_headless;
 
 #[derive(Clone)]
 enum Link {
     Disconnected,
-    Connecting(String),
+    Connecting(String, session::ConnectStage),
     Connected { dev: Device, name: String, id: String },
     Failed(String),
+    ConnectFailed { id: String, failure: session::ConnectFailure },
 }
 
 enum Scan {
@@ -37,11 +40,6 @@ enum Scan {
     Done(Vec<Found>),
     Error(String),
 }
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PairingMode { Reconnect, Pair, Repair }
-
-const PAIRING_REPAIR_SUPPORTED: bool = cfg!(any(windows, target_os = "linux"));
 
 async fn retire_link_task(mut task: tokio::task::JoinHandle<()>, limit: Duration) -> bool {
     if tokio::time::timeout(limit, &mut task).await.is_ok() { return true; }
@@ -66,6 +64,7 @@ enum Input {
     /// A "Send keys" chord: all downs, then ups in reverse. Runs inside the pump so it can never interleave
     /// with captured input, a capture's closing RELEASE_ALL, or the Release all button.
     Chord(&'static str, Vec<Key>),
+    Paste(zeroize::Zeroizing<String>, Arc<AtomicBool>),
 }
 
 /// Counts one pairing in flight for as long as it lives: registered synchronously when the attempt starts, released on drop (also
@@ -186,6 +185,11 @@ pub struct App {
     /// The connection session the current pump drives; a reconnect gets a new pump.
     input_for: Option<Device>,
     capturing: bool,
+    paste_active: Arc<AtomicBool>,
+    files: share::Files,
+    tools_open: bool,
+    tool_tab: usize,
+    auto_connect_scan: bool,
     prev_mods: Vec<Key>,
     /// OS-level keyboard capture while input is captured (Windows); `None` elsewhere, where egui's key events are used.
     grab: Option<crate::syskeys::Grab>,
@@ -351,6 +355,11 @@ impl App {
             input_tx: None,
             input_for: None,
             capturing: false,
+            paste_active: Arc::default(),
+            files: Default::default(),
+            tools_open: false,
+            tool_tab: 0,
+            auto_connect_scan: false,
             prev_mods: Vec::new(),
             grab: None,
             released_this_frame: false,
@@ -402,7 +411,9 @@ impl App {
         };
         // Zero-step reconnect: the last adapter and capture device come back on their own.
         if std::env::var_os("KVMIT_START_DISCONNECTED").is_none() {
-            if let Some(id) = app.cfg.last_device.clone() { app.start_link(id, ctx.clone(), false); }
+            if let Some(id) = app.cfg.last_device.clone() {
+                if let Err(error) = app.start_link(id, ctx.clone(), None) { app.set_notice(error); }
+            }
         }
         if remembered_video.is_some() {
             app.open_video();
@@ -423,21 +434,29 @@ impl App {
     }
 
     /// Connect and keep reconnecting until superseded (generation counter) or the app exits.
-    fn start_link(&mut self, id: String, ctx: egui::Context, pair_first: bool) {
-        self.start_link_mode(id, ctx, if pair_first { PairingMode::Pair } else { PairingMode::Reconnect });
-    }
-
-    fn start_link_mode(&mut self, id: String, ctx: egui::Context, mode: PairingMode) {
-        if self.pairing.load(Ordering::SeqCst) > 0 { self.set_notice("Wait for the current pairing operation to finish."); return; }
+    fn start_link(&mut self, id: String, ctx: egui::Context, mode: Option<session::ConnectMode>) -> Result<(), String> {
+        let id = backend::canonical_id(&id);
+        if self.pairing.load(Ordering::SeqCst) > 0 {
+            return Err("Wait for the current connection attempt to finish.".into());
+        }
+        if self.flash.is_some() {
+            return Err("Close the firmware flasher before connecting an adapter.".into());
+        }
         if self.link_task.as_ref().is_none_or(|task| task.is_finished()) && self.adapter_claims.iter().any(|(_, claim)| claim.strong_count() > 0) {
-            self.set_notice("The previous adapter connection is still closing. Wait for it to finish before trying again.");
-            return;
+            return Err("The previous adapter connection is still closing. Try again after it finishes.".into());
         }
-        if mode == PairingMode::Repair && !self.can_repair(&id) { self.set_notice("Stop this console's input/run before repairing its pairing."); return; }
+        if mode == Some(session::ConnectMode::Repair) && !self.can_repair(&id) {
+            return Err("Stop console input and any active run before repairing the Bluetooth pairing.".into());
+        }
         if self.unavailable_adapters.iter().any(|other| other.eq_ignore_ascii_case(&id)) {
-            self.set_notice("This adapter belongs to another console. Switch to its tab, or disconnect it there first.");
-            return;
+            return Err("This adapter belongs to another console. Switch to its tab, or disconnect it there first.".into());
         }
+        if mode != Some(session::ConnectMode::Repair)
+            && self.adapter_id().is_some_and(|current| current.eq_ignore_ascii_case(&id))
+        {
+            return Ok(());
+        }
+        self.repair_dialog = None;
         // Register the attempt synchronously, in the same step that supersedes any earlier one: the generation bump and the
         // `Connecting` state happen under the link lock, so a cancel (the flasher opening) always sees this attempt and a
         // superseded one can no longer publish.
@@ -448,18 +467,24 @@ impl App {
         let generation = {
             let mut l = self.link.lock().unwrap();
             let g = self.link_gen.fetch_add(1, Ordering::SeqCst) + 1;
-            *l = Link::Connecting(id.clone());
+            let stage = match mode {
+                Some(session::ConnectMode::Connect) => session::ConnectStage::CheckingPairing,
+                Some(session::ConnectMode::Repair) => session::ConnectStage::Repairing,
+                None => session::ConnectStage::Connecting,
+            };
+            *l = Link::Connecting(id.clone(), stage);
             *self.status.lock().unwrap() = None;
             *self.status_timing.lock().unwrap() = None;
             g
         };
+        self.set_notice("");
         self.cfg_update(|c| c.last_device = Some(id.clone()));
         let (link, gen_ref, status, notice) = (self.link.clone(), self.link_gen.clone(), self.status.clone(), self.notice.clone());
         let status_timing = self.status_timing.clone();
         // Registered here, before the task is spawned, and held until the first connection attempt has resolved (Connected
         // published, or failed): from the first click until then the flasher cannot open, so no cancel can find a pairing, or the
         // link it leaves open, without an owner.
-        let mut pairing = (mode != PairingMode::Reconnect).then(|| PairingGuard::new(&self.pairing));
+        let mut pairing = mode.map(|_| PairingGuard::new(&self.pairing));
         // The only way this attempt touches shared state: run `f` if the attempt is still the current one, while holding the
         // link lock. The cancels (`cancel_pending_link`, `stop_link`) bump the generation and clear the state under that same
         // lock, so a cancelled or superseded attempt can never write after the cancel, not even between a check and a write.
@@ -483,46 +508,40 @@ impl App {
             let _claim = claim;
             if let Some(previous) = previous { previous.shutdown().await; }
             if let Some(previous_task) = previous_task {
-                with_link(&|_| *notice.lock().unwrap() = "Closing the previous adapter connection before continuing…".into());
+                publish(Link::Connecting(id.clone(), session::ConnectStage::Closing));
                 ctx.request_repaint();
                 if !retire_link_with_claims(previous_task, Duration::from_secs(45), &previous_claims).await {
-                    with_link(&|l| { *l = Link::Disconnected; *notice.lock().unwrap() = "The previous adapter connection could not finish closing. Wait before trying again; its adapter stays reserved until teardown ends.".into(); });
+                    publish(Link::ConnectFailed { id: id.clone(), failure: session::ConnectFailure {
+                        stage: session::ConnectStage::Closing,
+                        message: "The previous adapter connection is still closing. Try again after it finishes.".into(),
+                        repair_available: false,
+                    } });
                     ctx.request_repaint();
                     return;
                 }
             }
             drop(previous_claims);
-            if mode == PairingMode::Repair {
-                if gen_ref.load(Ordering::SeqCst) != generation { return; }
-                with_link(&|_| *notice.lock().unwrap() = "Removing this adapter's saved pairing…".into());
-                ctx.request_repaint();
-                if let Err(e) = backend::unpair(&id).await {
-                    with_link(&|l| { *l = Link::Disconnected; *notice.lock().unwrap() = format!("Could not remove the saved pairing: {e}"); });
-                    ctx.request_repaint();
-                    return;
-                }
-            }
-            if mode != PairingMode::Reconnect {
-                if gen_ref.load(Ordering::SeqCst) != generation {
-                    return; // superseded before it started
-                }
-                with_link(&|_| *notice.lock().unwrap() = "Pairing with the adapter; keep its BOOT pairing window open…".into());
-                ctx.request_repaint();
-                if let Err(e) = backend::pair(&id).await {
-                    with_link(&|l: &mut Link| {
-                        *l = Link::Disconnected;
-                        *notice.lock().unwrap() = format!("Pairing failed: {e}. Press BOOT briefly on the adapter (it opens a 5-minute pairing window; a new adapter also opens one for 15 s after it is plugged in), then try again.");
-                    });
-                    ctx.request_repaint();
-                    return;
-                }
-            }
+            let mut first_mode = mode;
             while gen_ref.load(Ordering::SeqCst) == generation {
-                if !publish(Link::Connecting(id.clone())) {
-                    break;
-                }
-                ctx.request_repaint();
-                match session::connect(&id).await {
+                let progress = |stage| {
+                    if publish(Link::Connecting(id.clone(), stage)) { ctx.request_repaint(); }
+                };
+                let attempt = if let Some(mode) = first_mode.take() {
+                    match session::connect_adapter(&id, mode, progress).await {
+                        Ok(link) => Ok(link),
+                        Err(failure) => {
+                            pairing.take();
+                            if publish(Link::ConnectFailed { id: id.clone(), failure }) {
+                                ctx.request_repaint();
+                            }
+                            break;
+                        }
+                    }
+                } else {
+                    progress(session::ConnectStage::Connecting);
+                    session::connect(&id).await
+                };
+                match attempt {
                     Ok((dev, conn)) => {
                         let name = dev.info().name.clone();
                         if !publish(Link::Connected { dev: dev.clone(), name, id: id.clone() }) {
@@ -571,17 +590,17 @@ impl App {
                         }
                     }
                 }
-                pairing.take(); // the first attempt has resolved: whatever pairing left behind is now owned (or closed)
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
         }));
+        Ok(())
     }
 
     /// Cancel any connection attempt or retry loop without forgetting which adapter was last used (the flasher needs the
     /// adapter quiet, not forgotten). A live connection is left to the person to Disconnect.
     fn cancel_pending_link(&mut self) {
         let mut link = self.link.lock().unwrap();
-        if matches!(&*link, Link::Connecting(_) | Link::Failed(_)) {
+        if matches!(&*link, Link::Connecting(..) | Link::Failed(_)) {
             self.link_gen.fetch_add(1, Ordering::SeqCst);
             *link = Link::Disconnected;
             *self.status.lock().unwrap() = None;
@@ -601,6 +620,7 @@ impl App {
     }
 
     fn stop_transport(&mut self) {
+        self.paste_active.store(false, Ordering::SeqCst);
         // bump the generation and replace the state under one lock, so an in-flight attempt cannot publish in between
         let previous = {
             let mut l = self.link.lock().unwrap();
@@ -611,7 +631,7 @@ impl App {
         };
         let previous_task = self.link_task.take();
         let mut claims: Vec<_> = self.adapter_claims.iter().filter_map(|(_, claim)| claim.upgrade()).collect();
-        if let Link::Connected { id, .. } | Link::Connecting(id) = &previous {
+        if let Link::Connected { id, .. } | Link::Connecting(id, _) = &previous {
             claims.push(self.claim_adapter(id.clone()));
         }
         let notice = self.notice.clone();
@@ -644,7 +664,7 @@ impl App {
     /// Ordered input pump: keystrokes must reach the adapter in the order they happened.
     /// True when no input producer is active: not capturing, no script/Type run, nothing queued in the pump.
     fn input_idle(&self) -> bool {
-        !self.capturing
+        !self.files.preparing.load(Ordering::SeqCst) && !self.capturing
             && self.run_handle.as_ref().is_none_or(|r| r.done.load(Ordering::SeqCst))
             && self.input_tx.as_ref().is_none_or(|t| t.pending.load(Ordering::SeqCst) == 0)
     }
@@ -667,7 +687,15 @@ impl App {
             let pending = Arc::new(AtomicUsize::new(0));
             let done = pending.clone();
             self.rt.spawn(async move {
+                let mut held = Vec::new();
                 while let Some(ev) = rx.recv().await {
+                    match &ev {
+                        Input::Down(k) if !held.contains(k) => held.push(*k),
+                        Input::Up(k) => held.retain(|held_key| held_key != k),
+                        Input::ReleaseAll | Input::SwitchBarrier(_) => held.clear(),
+                        _ => {}
+                    }
+                    let is_paste = matches!(ev, Input::Paste(..));
                     let is_release = matches!(ev, Input::Up(_) | Input::Button(_, false));
                     let r = match ev {
                         Input::Down(k) => dev.key_down(k).await,
@@ -689,6 +717,17 @@ impl App {
                             if r.is_err() { dev.shutdown().await; }
                             let _ = reply.send(r.as_ref().map(|_| ()).map_err(ToString::to_string));
                             r
+                        }
+                        Input::Paste(value, active) => {
+                            let result = paste::type_text(&dev, &value, &active, &held).await;
+                            let completed = active.swap(false, Ordering::SeqCst);
+                            if result.is_err() {
+                                if dev.release_all().await.is_err() { dev.shutdown().await; }
+                                *notice.lock().unwrap() = "Paste interrupted. Check the target before retrying.".into();
+                            } else if completed {
+                                *notice.lock().unwrap() = "Finished typing clipboard text.".into();
+                            }
+                            result
                         }
                         Input::Chord(label, ks) => {
                             let mut ok = true;
@@ -717,7 +756,7 @@ impl App {
                     };
                     if let Err(e) = r {
                         debug_log(&format!("input not delivered: {e}"));
-                        *notice.lock().unwrap() = format!("input not delivered: {e}");
+                        if !is_paste { *notice.lock().unwrap() = format!("input not delivered: {e}"); }
                         // A release that may not have arrived leaves a key or button held on the target (and our
                         // keepalives would keep it held): the same recovery as a chord's. Release everything; if even
                         // that fails, close the session so the adapter's link-drop release takes over. Input queued
@@ -789,6 +828,7 @@ impl App {
     }
 
     fn end_capture(&mut self, ctx: &egui::Context) {
+        self.paste_active.store(false, Ordering::SeqCst);
         if self.capturing {
             self.capturing = false;
             self.wheel.reset();
@@ -803,6 +843,10 @@ impl App {
     }
 
     fn begin_capture(&mut self, ctx: &egui::Context) {
+        if self.files.preparing.load(Ordering::SeqCst) {
+            self.set_notice("Opening the USB drive. Take control once the target reconnects.");
+            return;
+        }
         if self.released_this_frame {
             return;
         }
@@ -863,6 +907,7 @@ impl App {
                     crate::syskeys::Event::Up(k) => {
                         let _ = tx.send(Input::Up(k));
                     }
+                    crate::syskeys::Event::Paste => self.paste_clipboard(None),
                     crate::syskeys::Event::Release => {}
                 }
             }
@@ -892,6 +937,10 @@ impl App {
                         release = true;
                         break;
                     }
+                    if *key == egui::Key::V && modifiers.ctrl && modifiers.shift && !modifiers.alt && !modifiers.mac_cmd {
+                        if *pressed && !*repeat { self.paste_clipboard(None); }
+                        continue;
+                    }
                     if *repeat {
                         continue; // the target generates its own repeat from the held key
                     }
@@ -909,6 +958,13 @@ impl App {
                         _ => continue,
                     };
                     let _ = tx.send(Input::Button(mask, *pressed));
+                }
+                egui::Event::Paste(value) if !hooked && mods.ctrl && mods.shift && !mods.alt && !mods.mac_cmd => {
+                    self.paste_clipboard(Some(value.clone()));
+                }
+                egui::Event::Paste(_) if !hooked && mods.command => {
+                    self.sync_mods(&tx, &mods);
+                    let _ = tx.send(Input::Chord("Paste", vec![Key(0x19)]));
                 }
                 egui::Event::MouseMoved(d) => {
                     if let Some(dev) = &dev {
@@ -1908,7 +1964,7 @@ impl eframe::App for App {
             *self.capture.lock().unwrap() = None;
             self.texture = None;
             self.video_blank = false;
-            self.set_notice("Video stopped: the capture card was unplugged, reset or is in use by another app. Open it again from the Video button.");
+            self.set_notice("Video stopped: the capture card was unplugged, reset or is in use by another app. Open it again under Devices in Tools.");
         }
 
         // new video frame → texture
@@ -1974,57 +2030,67 @@ impl eframe::App for App {
         }
         let idle_ui = !self.capturing;
         let running = self.run_handle.as_ref().is_some_and(|r| !r.done.load(Ordering::SeqCst));
+        if self.auto_connect_scan {
+            let found = match &*self.scan.lock().unwrap() {
+                Scan::Done(list) => Some(list.iter().filter(|f| !self.unavailable_adapters.iter().any(|id| id.eq_ignore_ascii_case(&f.id))).map(|f| f.id.clone()).collect::<Vec<_>>()),
+                Scan::Error(_) => Some(vec![]),
+                _ => None,
+            };
+            if let Some(ids) = found {
+                self.auto_connect_scan = false;
+                if let [id] = ids.as_slice() {
+                    if let Err(e) = self.start_link(id.clone(), ctx.clone(), Some(session::ConnectMode::Connect)) { self.set_notice(e); }
+                } else { self.tool_tab = 0; self.tools_open = true; }
+            }
+        }
         egui::TopBottomPanel::top("bar").show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
-                // Chips and buttons keep their text on one line and move to the next row whole; letting egui wrap their text
-                // stacked "Record" one letter per line in a narrow window (STD-008).
+                ui.spacing_mut().interact_size.y = 30.0;
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                ui.add_enabled_ui(idle_ui, |ui| {
-                    let kind = match &link {
-                        Link::Connected { name, .. } => LinkKind::Connected(name),
-                        Link::Connecting(id) => LinkKind::Connecting(id),
-                        Link::Failed(_) => LinkKind::Failed,
-                        Link::Disconnected => LinkKind::Disconnected,
-                    };
-                    let (h, t) = uistate::adapter_chip(kind);
-                    let r = chip(ui, h, t);
-                    popup(&r, 380.0, |ui| self.adapter_ui(ui, ctx, &link));
-                    if let Link::Connected { dev, .. } = &link {
-                        let fw = dev.info().fw;
-                        ui.small(format!("Firmware {}.{}.{}", fw[0], fw[1], fw[2]));
-                    }
-
-                    // An indicator, not a control: a Label (not a Button), so it is not offered as clickable to screen
-                    // readers / UI Automation. egui exposes a Label's text as its accessible value, which UIA reports as
-                    // its Name, so "Target USB: ..." stays findable by name prefix.
-                    let (h, t) = uistate::target_usb_chip(matches!(link, Link::Connected { .. }), status.as_ref().map(|s| s.hid_mounted));
-                    indicator(ui, h, t);
-
-                    let (level, t) = crate::video_state::chip(vstate);
-                    let h = match level {
-                        crate::video_state::Level::Good => Health::Good,
-                        crate::video_state::Level::Working => Health::Working,
-                        crate::video_state::Level::Bad => Health::Bad,
-                        crate::video_state::Level::Idle => Health::Idle,
-                    };
-                    let r = chip(ui, h, t);
-                    popup(&r, 420.0, |ui| self.video_ui(ui, ctx));
-                });
-
-                {
-                    let block = uistate::input_block_reason(self.device().is_some(), running);
-                    let ic = uistate::input_chip(self.capturing, block);
-                    let r = ui.add_enabled_ui(ic.enabled, |ui| chip(ui, ic.health, ic.text)).inner;
-                    let r = match ic.disabled_reason {
-                        Some(why) => r.on_disabled_hover_text(why),
-                        None => r,
-                    };
-                    if r.clicked() && !self.capturing {
-                        self.begin_capture(ctx);
+                let busy = self.pairing.load(Ordering::SeqCst) > 0 || self.flash.is_some();
+                let label = match &link {
+                    _ if self.capturing => "Release control",
+                    Link::Connected { .. } => "Take control",
+                    Link::Connecting(_, stage) => stage.label(),
+                    _ if self.auto_connect_scan => "Finding adapter…",
+                    Link::ConnectFailed { failure, .. } if failure.repair_available => "Review pairing",
+                    _ => "Connect",
+                };
+                let enabled = !busy && !self.auto_connect_scan && !matches!(link, Link::Connecting(..))
+                    && !(matches!(link, Link::Connected { .. }) && running);
+                let action = egui::Button::new(egui::RichText::new(label).strong().color(egui::Color32::WHITE))
+                    .fill(egui::Color32::from_rgb(17, 94, 91)).min_size(egui::vec2(104.0, 30.0));
+                if ui.add_enabled(enabled, action).clicked() {
+                    match &link {
+                        _ if self.capturing => self.end_capture(ctx),
+                        Link::Connected { .. } => self.begin_capture(ctx),
+                        Link::ConnectFailed { id, failure } if failure.repair_available => self.repair_dialog = Some(id.clone()),
+                        _ => {
+                            let preferred = match &link { Link::ConnectFailed { id, .. } => Some(id.clone()), _ => self.cfg.last_device.clone() };
+                            if let Some(id) = preferred.filter(|id| !self.unavailable_adapters.iter().any(|other| other.eq_ignore_ascii_case(id))) {
+                                if let Err(e) = self.start_link(id, ctx.clone(), Some(session::ConnectMode::Connect)) { self.set_notice(e); }
+                            } else {
+                                self.auto_connect_scan = true;
+                                self.scan_adapters(ctx);
+                            }
+                        }
                     }
                 }
-
+                let send = ui.add_enabled(idle_ui, egui::Button::new("Send"));
+                popup(&send, 340.0, |ui| {
+                    if ui.add_enabled(self.device().is_some() && !running, egui::Button::new("Type host clipboard  ·  Ctrl+Shift+V")).clicked() {
+                        self.paste_clipboard(None);
+                        ui.close();
+                    }
+                    ui.separator();
+                    self.keys_ui(ui);
+                    ui.separator();
+                    self.text_ui(ui, ctx);
+                });
+                if ui.add_enabled(idle_ui, egui::Button::new(if self.files.active.load(Ordering::SeqCst) { "Files · transferring" } else { "Files" })).clicked() {
+                    self.tool_tab = 2; self.tools_open = true;
+                }
                 // Recording stays stoppable while input is captured, like the Input chip: one click, always live.
                 if let Some(el) = self.rec.elapsed() {
                     let r = chip(ui, Health::Bad, format!("⏺ REC {} — click to stop", crate::rec_ui::format_elapsed(el)));
@@ -2049,22 +2115,13 @@ impl eframe::App for App {
                     });
                 }
 
-                ui.separator();
-                let r = ui.add_enabled(idle_ui, egui::Button::new("Keys…"));
-                popup(&r, 360.0, |ui| self.keys_ui(ui));
-                let r = ui.add_enabled(idle_ui, egui::Button::new("Type…"));
-                popup(&r, 340.0, |ui| self.text_ui(ui, ctx));
-                let r = ui.add_enabled(idle_ui, egui::Button::new(if running { "Scripts…  (running)" } else { "Scripts…" }));
-                // The scripts panel scrolls: a workflow's setup, references and timeline are taller than most windows.
-                let tall = (ctx.screen_rect().height() - 140.0).max(200.0);
-                popup(&r, 480.0, |ui| {
-                    egui::ScrollArea::vertical().id_salt("scripts_scroll").max_height(tall).min_scrolled_height(tall).show(ui, |ui| self.scripts_ui(ui, ctx));
-                });
-                let r = ui.add_enabled(idle_ui, egui::Button::new(self.cfg.theme.label()));
-                if r.on_hover_text("Click to cycle: follow the system, light, dark").clicked() {
-                    let theme = self.cfg.theme.next();
-                    self.cfg_update(|c| c.theme = theme);
-                    ctx.set_theme(theme.preference());
+                if ui.add_enabled(idle_ui, egui::Button::selectable(self.tools_open, if running { "Tools · running" } else { "Tools" })).clicked() {
+                    self.tools_open = !self.tools_open;
+                }
+                if self.capturing { ui.small(crate::syskeys::RELEASE_CHORD); }
+                if self.paste_active.load(Ordering::SeqCst) && ui.button("Stop typing").clicked() {
+                    self.paste_active.store(false, Ordering::SeqCst);
+                    self.set_notice("Clipboard typing stopped.");
                 }
             });
             let n = self.notice.lock().unwrap().clone();
@@ -2074,9 +2131,57 @@ impl eframe::App for App {
             if let Link::Failed(e) = &link {
                 ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, format!("Adapter link: {e}"));
             }
+            if let Link::ConnectFailed { failure, .. } = &link {
+                ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, &failure.message);
+            }
             ui.add_space(2.0);
         });
 
+        egui::TopBottomPanel::bottom("health").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let kind = match &link {
+                    Link::Connected { name, .. } => LinkKind::Connected(name),
+                    Link::Connecting(id, _) => LinkKind::Connecting(id),
+                    Link::Failed(_) => LinkKind::Failed,
+                    Link::ConnectFailed { .. } => LinkKind::Attention,
+                    Link::Disconnected => LinkKind::Disconnected,
+                };
+                let (h, t) = uistate::adapter_chip(kind);
+                ui.colored_label(health_color(h, ui), t);
+                ui.separator();
+                let (h, t) = uistate::target_usb_chip(matches!(link, Link::Connected { .. }), status.as_ref().map(|s| s.hid_mounted));
+                ui.colored_label(health_color(h, ui), t);
+                ui.separator();
+                let (_, video) = crate::video_state::chip(vstate);
+                ui.label(video);
+            });
+        });
+        if self.tools_open && idle_ui {
+            let mut open = true;
+            egui::Window::new("Tools").id(egui::Id::new("console_tools")).open(&mut open)
+                .default_pos(egui::pos2((ctx.screen_rect().right() - 460.0).max(8.0), 72.0))
+                .default_width(430.0).max_height((ctx.screen_rect().height() - 96.0).max(150.0))
+                .vscroll(true).show(ctx, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for (i, label) in ["Devices", "Workflows", "Files"].iter().enumerate() {
+                            ui.selectable_value(&mut self.tool_tab, i, *label);
+                        }
+                    });
+                    ui.separator();
+                    match self.tool_tab {
+                        0 => {
+                            ui.heading("Adapter");
+                            self.adapter_ui(ui, ctx, &link);
+                            ui.separator();
+                            ui.heading("Video source");
+                            self.video_ui(ui, ctx);
+                        }
+                        1 => self.scripts_ui(ui, ctx),
+                        _ => self.files_ui(ui, ctx),
+                    }
+                });
+            self.tools_open = open;
+        }
         // the flasher window (opened from the Adapter popup); it owns its own progress, so it can stay up while idle
         if self.flash.is_some() && !self.capturing {
             // flashing resets the board, so nothing may be using the adapter: no script, no connection to it
@@ -2085,7 +2190,7 @@ impl eframe::App for App {
                 external.push("A script is running: wait for it to finish or abort it.".to_string());
             }
             if matches!(link, Link::Connected { .. }) {
-                external.push("The controller is connected to an adapter: use Disconnect in the Adapter popup first.".to_string());
+                external.push("The controller is connected to an adapter: choose Disconnect under Devices in Tools first.".to_string());
             } else if self.link_task.as_ref().is_some_and(|task| !task.is_finished()) || self.adapter_claims.iter().any(|(_, claim)| claim.strong_count() > 0) {
                 external.push("Closing the previous Bluetooth connection: wait for it to finish before flashing.".to_string());
             }
@@ -2151,7 +2256,9 @@ impl eframe::App for App {
                     let avail = ui.available_size();
                     let ratio = tex.size()[0] as f32 / tex.size()[1] as f32;
                     let size = if avail.x / avail.y > ratio { egui::vec2(avail.y * ratio, avail.y) } else { egui::vec2(avail.x, avail.x / ratio) };
-                    let resp = ui.centered_and_justified(|ui| ui.add(egui::Image::new((tex.id(), size)).sense(egui::Sense::click()))).inner;
+                    let can_take_control = self.device().is_some() && !running;
+                    let sense = if can_take_control { egui::Sense::click() } else { egui::Sense::hover() };
+                    let resp = ui.centered_and_justified(|ui| ui.add(egui::Image::new((tex.id(), size)).sense(sense))).inner;
                     if let Some(msg) = crate::video_state::picture_message(vstate).filter(|_| self.video_blank) {
                         ui.painter().text(resp.rect.center(), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(18.0), egui::Color32::from_rgb(235, 190, 70));
                     }
@@ -2159,8 +2266,8 @@ impl eframe::App for App {
                         ui.painter().rect_stroke(resp.rect, 0.0, egui::Stroke::new(4.0_f32, egui::Color32::from_rgb(220, 70, 60)), egui::StrokeKind::Inside);
                     } else if resp.clicked() {
                         self.begin_capture(ctx);
-                    } else if resp.hovered() {
-                        resp.on_hover_text("Click to capture keyboard and mouse");
+                    } else if can_take_control && resp.hovered() {
+                        resp.on_hover_text("Click to take control");
                     }
                 }
                 _ => {
@@ -2181,7 +2288,10 @@ impl eframe::App for App {
             }
         });
 
-        if ctx.input(|i| i.viewport().close_requested()) && self.flash.as_ref().is_some_and(|w| w.busy()) {
+        if ctx.input(|i| i.viewport().close_requested()) && self.files.active.load(Ordering::SeqCst) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.set_notice("Finish or cancel the file transfer before closing.");
+        } else if ctx.input(|i| i.viewport().close_requested()) && self.flash.as_ref().is_some_and(|w| w.busy()) {
             // quitting mid-write could leave the board unbootable
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.set_notice("Flashing is in progress: wait for it to finish before closing the app.");
@@ -2198,33 +2308,63 @@ impl eframe::App for App {
 
 impl App {
     // ---- popup bodies: what used to be the left sidebar, one method per top-bar button ----
+    fn scan_adapters(&self, ctx: &egui::Context) {
+        {
+            let mut state = self.scan.lock().unwrap();
+            if matches!(*state, Scan::Scanning) { return; }
+            *state = Scan::Scanning;
+        }
+        let scan = self.scan.clone();
+        let ctx = ctx.clone();
+        self.rt.spawn(async move {
+            let result = backend::scan(Duration::from_secs(backend::DEFAULT_SCAN_SECS)).await;
+            *scan.lock().unwrap() = match result {
+                Ok(found) => Scan::Done(found),
+                Err(error) => Scan::Error(error.to_string()),
+            };
+            ctx.request_repaint();
+        });
+    }
+
     fn adapter_ui(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, link: &Link) {
         let mut repair = None;
+        if let Link::Connecting(_, stage) = link {
+            ui.label(stage.label());
+        }
+        if let Link::ConnectFailed { id, failure } = link {
+            ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, &failure.message);
+            if failure.repair_available && ui.add_enabled(self.can_repair(id), egui::Button::new("Repair pairing…")).clicked() {
+                repair = Some(id.clone());
+            }
+        }
         match link {
             Link::Connected { name, id, dev } => {
-                ui.label(format!("{name}\n{id}"));
-                let info = dev.info();
-                ui.strong(format!("Firmware {}.{}.{}", info.fw[0], info.fw[1], info.fw[2]));
-                if let Some(bundled) = &self.bundled_firmware {
-                    ui.small(format!("Firmware included with this app: {bundled}"));
-                    if let Some(version) = firmware_triplet(bundled) {
-                        let installed = info.fw.map(u16::from);
-                        if installed < version { ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, "A newer firmware is included. Disconnect and use Flash adapter to update it."); }
-                        else if installed == version { ui.small("Running firmware matches the version included with this app."); }
-                        else { ui.small("This adapter runs a newer firmware version than the one included with this app."); }
+                ui.strong(name);
+                ui.collapsing("Connection details", |ui| {
+                    ui.small(id);
+                    let info = dev.info();
+                    ui.strong(format!("Firmware {}.{}.{}", info.fw[0], info.fw[1], info.fw[2]));
+                    if let Some(bundled) = &self.bundled_firmware {
+                        ui.small(format!("Firmware included with this app: {bundled}"));
+                        if let Some(version) = firmware_triplet(bundled) {
+                            let installed = info.fw.map(u16::from);
+                            if installed < version { ui.colored_label(theme::palette(ui.visuals().dark_mode).warn_text, "A newer firmware is included. Disconnect and use Flash adapter to update it."); }
+                            else if installed == version { ui.small("Running firmware matches the version included with this app."); }
+                            else { ui.small("This adapter runs a newer firmware version than the one included with this app."); }
+                        }
                     }
-                }
-                ui.small(format!("Protocol {}.{} · Bluetooth {}", info.major, info.minor, if dev.is_connected() { "connected" } else { "disconnected" }));
-                if let Some(status) = self.status.lock().unwrap().as_ref() {
-                    ui.label(if status.hid_mounted { "Target USB: connected" } else { "Target USB: not connected" });
-                    ui.small(format!("Held keys: {} · Mouse buttons: {} · Dropped motion: {} · CRC errors: {}", status.keys, status.buttons, status.dropped_motion, status.bad_crc));
-                } else { ui.small("Target status: waiting for a reply"); }
-                if let Some((checked, elapsed)) = self.status_timing.lock().unwrap().as_ref() {
-                    ui.small(format!("Status response: {} ms · checked {} s ago", elapsed.as_millis(), checked.elapsed().as_secs()));
-                }
+                    ui.small(format!("Protocol {}.{} · Bluetooth {}", info.major, info.minor, if dev.is_connected() { "connected" } else { "disconnected" }));
+                    if let Some(status) = self.status.lock().unwrap().as_ref() {
+                        ui.label(if status.hid_mounted { "Target USB: connected" } else { "Target USB: not connected" });
+                        ui.small(format!("Held keys: {} · Mouse buttons: {} · Dropped motion: {} · CRC errors: {}", status.keys, status.buttons, status.dropped_motion, status.bad_crc));
+                    } else { ui.small("Target status: waiting for a reply"); }
+                    if let Some((checked, elapsed)) = self.status_timing.lock().unwrap().as_ref() {
+                        ui.small(format!("Status response: {} ms · checked {} s ago", elapsed.as_millis(), checked.elapsed().as_secs()));
+                    }
+                });
                 ui.horizontal(|ui| {
                     if ui.button("Release all keys").clicked() {
-                        // Through the pump, so it lands after (not between) anything already queued.
+                        self.paste_active.store(false, Ordering::SeqCst);
                         if let Some(tx) = self.pump() {
                             let _ = tx.send(Input::ReleaseAll);
                         }
@@ -2235,39 +2375,32 @@ impl App {
                     }
                 });
                 self.boot_drive_ui(ui, ctx, dev);
-                if PAIRING_REPAIR_SUPPORTED && ui.add_enabled(self.can_repair(id), egui::Button::new("Repair pairing…")).on_hover_text("Remove this board's saved pairing and pair again inside kvm-it").clicked() { repair = Some(id.clone()); }
             }
             _ => {
-                let scanning = matches!(&*self.scan.lock().unwrap(), Scan::Scanning);
-                let flashing = self.flash.is_some() || self.pairing.load(Ordering::SeqCst) > 0;
-                if ui.add_enabled(!scanning && !flashing, egui::Button::new(if scanning { "Scanning…" } else { "Scan for adapters" })).clicked() {
-                    *self.scan.lock().unwrap() = Scan::Scanning;
-                    let (scan, ctx2) = (self.scan.clone(), ctx.clone());
-                    self.rt.spawn(async move {
-                        *scan.lock().unwrap() = match backend::scan(Duration::from_secs(backend::DEFAULT_SCAN_SECS)).await {
-                            Ok(f) => Scan::Done(f),
-                            Err(e) => Scan::Error(e.to_string()),
-                        };
-                        ctx2.request_repaint();
-                    });
+                let busy = self.flash.is_some() || self.pairing.load(Ordering::SeqCst) > 0;
+                let initial_scan = matches!(&*self.scan.lock().unwrap(), Scan::Idle);
+                if !busy && initial_scan && self.cfg.last_device.is_none() {
+                    self.scan_adapters(ctx);
                 }
-                let mut chosen: Option<(String, bool)> = None;
+                let scanning = matches!(&*self.scan.lock().unwrap(), Scan::Scanning);
+                if ui.add_enabled(!scanning && !busy, egui::Button::new(if scanning { "Scanning…" } else { "Scan for adapters" })).clicked() {
+                    self.scan_adapters(ctx);
+                }
+                let mut chosen = None;
+                let mut remembered_in_scan = false;
                 match &*self.scan.lock().unwrap() {
                     Scan::Done(list) if list.is_empty() => {
-                        ui.label("None found. New adapter? Re-plug it (it can pair for 15 s) or press BOOT briefly, then scan again.");
+                        ui.label("No adapters found. Tap BOOT on the adapter. When its light flashes blue, scan again.");
                     }
                     Scan::Done(list) => {
                         for f in list {
+                            remembered_in_scan |= self.cfg.last_device.as_ref().is_some_and(|id| id.eq_ignore_ascii_case(&f.id));
                             ui.horizontal(|ui| {
                                 let claimed = self.unavailable_adapters.iter().any(|id| id.eq_ignore_ascii_case(&f.id));
                                 ui.label(format!("{} · {} ({} dBm){}", f.name, f.id, f.rssi.map(|r| r.to_string()).unwrap_or("?".into()), if claimed { " · in another console" } else { "" }));
-                                if ui.add_enabled(!flashing && !claimed, egui::Button::new("Pair & connect")).clicked() {
-                                    chosen = Some((f.id.clone(), true));
+                                if ui.add_enabled(!busy && !claimed, egui::Button::new("Connect")).clicked() {
+                                    chosen = Some(f.id.clone());
                                 }
-                                if ui.add_enabled(!flashing && !claimed, egui::Button::new("Connect")).clicked() {
-                                    chosen = Some((f.id.clone(), false));
-                                }
-                                if PAIRING_REPAIR_SUPPORTED && ui.add_enabled(!flashing && !claimed, egui::Button::new("Repair pairing…")).clicked() { repair = Some(f.id.clone()); }
                             });
                         }
                     }
@@ -2276,12 +2409,19 @@ impl App {
                     }
                     _ => {}
                 }
-                if let Some((id, pair)) = chosen {
-                    self.start_link(id, ctx.clone(), pair);
+                if let Some(id) = self.cfg.last_device.as_ref().filter(|_| !remembered_in_scan) {
+                    ui.horizontal(|ui| {
+                        ui.small(format!("Remembered adapter: {id}"));
+                        let claimed = self.unavailable_adapters.iter().any(|other| other.eq_ignore_ascii_case(id));
+                        if ui.add_enabled(!busy && !scanning && !claimed, egui::Button::new("Connect")).clicked() {
+                            chosen = Some(id.clone());
+                        }
+                    });
                 }
-                if let Some(id) = self.cfg.last_device.clone() {
-                    ui.small(format!("Remembered adapter: {id}"));
-                    if PAIRING_REPAIR_SUPPORTED && ui.add_enabled(self.can_repair(&id), egui::Button::new("Repair remembered pairing…")).clicked() { repair = Some(id); }
+                if let Some(id) = chosen {
+                    if let Err(error) = self.start_link(id, ctx.clone(), Some(session::ConnectMode::Connect)) {
+                        self.set_notice(error);
+                    }
                 }
             }
         }
@@ -2297,7 +2437,7 @@ impl App {
     }
 
     fn can_repair(&self, id: &str) -> bool {
-        PAIRING_REPAIR_SUPPORTED && self.flash.is_none() && self.input_idle() && self.pairing.load(Ordering::SeqCst) == 0 && !self.unavailable_adapters.iter().any(|other| other.eq_ignore_ascii_case(id))
+        cfg!(any(windows, target_os = "linux")) && self.flash.is_none() && self.input_idle() && self.pairing.load(Ordering::SeqCst) == 0 && !self.unavailable_adapters.iter().any(|other| other.eq_ignore_ascii_case(id))
     }
 
     fn repair_ui(&mut self, ctx: &egui::Context) {
@@ -2308,15 +2448,16 @@ impl App {
         let width = (ctx.screen_rect().width() - 48.0).clamp(240.0, 460.0);
         egui::Window::new("Repair adapter pairing").collapsible(false).default_width(width).max_width(width).max_height((ctx.screen_rect().height() - 48.0).max(180.0)).vscroll(true).open(&mut open).show(ctx, |ui| {
             ui.strong(format!("Adapter {id}"));
-            ui.label("kvm-it will remove this adapter's saved pairing from this computer, pair again, and reconnect. Other adapters are left alone.");
-            ui.label("1. Press BOOT briefly on this board to authorize pairing (do not hold it for 10 seconds).\n2. Click Forget and pair again below.");
-            start = ui.add_enabled(self.can_repair(&id), egui::Button::new("Forget and pair again")).clicked();
+            ui.label("Tap BOOT once. When the LED flashes blue, confirm to replace the saved Bluetooth pairing for this adapter.");
+            start = ui.add_enabled(self.can_repair(&id), egui::Button::new("Replace pairing and connect")).clicked();
             cancel = ui.button("Cancel repair").clicked();
             if !self.can_repair(&id) { ui.small("Stop this console's input/run and wait for pairing or flashing to finish first. The adapter must not belong to another console."); }
         });
         if start {
             self.repair_dialog = None;
-            self.start_link_mode(id, ctx.clone(), PairingMode::Repair);
+            if let Err(error) = self.start_link(id, ctx.clone(), Some(session::ConnectMode::Repair)) {
+                self.set_notice(error);
+            }
         } else if !open || cancel { self.repair_dialog = None; }
     }
 
@@ -2337,8 +2478,9 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(if on { "Boot drive: on" } else { "Boot drive: off" });
             let button = egui::Button::new(if on { "Turn off (restarts adapter)" } else { "Turn on (restarts adapter)" });
-            let hint = if script_running { "Wait for the running script to finish" } else { "The target sees the adapter re-plug, with the drive added or removed" };
-            if ui.add_enabled(!script_running, button).on_hover_text(hint).clicked() {
+            let transferring = self.files.active.load(Ordering::SeqCst);
+            let hint = if script_running { "Wait for the running script to finish" } else if transferring { "Wait for the file transfer to finish" } else { "Eject KVM SHARE on the target before restarting the adapter" };
+            if ui.add_enabled(!script_running && !transferring, button).on_hover_text(hint).clicked() {
                 self.set_boot_drive(dev.clone(), !on, ctx.clone());
             }
         });
@@ -2354,7 +2496,7 @@ impl App {
         *notice.lock().unwrap() = format!("Turning the boot drive {}: the adapter restarts and reconnects by itself…", if enable { "on" } else { "off" });
         self.rt.spawn(async move {
             if let Err(e) = dev.set_boot_drive(enable).await {
-                *notice.lock().unwrap() = format!("Could not change the boot drive: {e}");
+                *notice.lock().unwrap() = format!("Could not change the boot drive: {e}. If KVM SHARE is in use, finish the transfer and eject it on the target.");
             }
             ctx.request_repaint();
         });
@@ -2784,6 +2926,8 @@ impl Console {
     fn request_switch(&mut self, target: usize, ctx: &egui::Context) {
         if target == self.active || target >= self.sessions.len() || self.switching.is_some() { return; }
         let app = &mut self.sessions[self.active].app;
+        app.auto_connect_scan = false;
+        app.paste_active.store(false, Ordering::SeqCst);
         app.end_capture(ctx);
         zeroize::Zeroize::zeroize(&mut app.type_text);
         // Automated runs own their input and continue in the background. They
@@ -2839,7 +2983,7 @@ impl Console {
             s.app.adapter_claims.retain(|(_, claim)| claim.strong_count() > 0);
             let mut ids: Vec<_> = s.app.adapter_claims.iter().map(|(id, _)| id.clone()).collect();
             let current = match &*s.app.link.lock().unwrap() {
-                Link::Connected { id, .. } | Link::Connecting(id) => Some(id.clone()),
+                Link::Connected { id, .. } | Link::Connecting(id, _) => Some(id.clone()),
                 Link::Failed(_) => s.app.cfg.last_device.clone(),
                 _ => None,
             };
@@ -2850,7 +2994,7 @@ impl Console {
             s.app.capture.lock().unwrap().as_ref().filter(|c| !c.info.path.starts_with(kvmit_video::DEMO_PREFIX)).map(|c| c.info.path.clone())
         }).collect();
         let busy: Vec<_> = self.sessions.iter().map(|s| {
-            s.app.device().is_some() || s.app.link_task.as_ref().is_some_and(|task| !task.is_finished()) || s.app.adapter_claims.iter().any(|(_, claim)| claim.strong_count() > 0) || matches!(&*s.app.link.lock().unwrap(), Link::Connecting(_)) || s.app.pairing.load(Ordering::SeqCst) > 0 || s.app.run_handle.as_ref().is_some_and(|h| h.running())
+            s.app.device().is_some() || s.app.link_task.as_ref().is_some_and(|task| !task.is_finished()) || s.app.adapter_claims.iter().any(|(_, claim)| claim.strong_count() > 0) || matches!(&*s.app.link.lock().unwrap(), Link::Connecting(..)) || s.app.pairing.load(Ordering::SeqCst) > 0 || s.app.run_handle.as_ref().is_some_and(|h| h.running())
         }).collect();
         let labels: Vec<_> = self.sessions.iter().map(|s| s.label.clone()).collect();
         for (i, session) in self.sessions.iter_mut().enumerate() {
@@ -2865,12 +3009,15 @@ impl eframe::App for Console {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // A queued command must never start a write after this frame accepted close.
         if ctx.input(|i|i.viewport().close_requested()) && !self.agent.flash_busy() { self.agent.revoke(); }
-        self.agent_ui(ctx);
         self.poll_switch(ctx);
         self.refresh_claims();
         let flashing = self.agent.flash_busy() || self.sessions.iter().any(|s| s.app.flash.as_ref().is_some_and(|w| w.busy()));
         if ctx.input(|i| i.viewport().close_requested()) {
-            if flashing {
+            if self.sessions.iter().any(|s| s.app.files.active.load(Ordering::SeqCst)) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.sessions[self.active].app.set_notice("Finish or cancel the file transfer before closing.");
+                return;
+            } else if flashing {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.sessions[self.active].app.set_notice("A board is being flashed. Wait for it to finish before closing the console.");
             } else {
@@ -2878,6 +3025,7 @@ impl eframe::App for Console {
                 let mut tasks = Vec::new();
                 for session in &mut self.sessions {
                     if let Some(run) = &session.app.run_handle { run.abort(); }
+                    session.app.paste_active.store(false, Ordering::SeqCst);
                     session.app.end_capture(ctx);
                     session.app.link_gen.fetch_add(1, Ordering::SeqCst);
                     if let Some(dev) = session.app.device() { tasks.push(rt.spawn(async move { dev.shutdown().await; })); }
@@ -2894,31 +3042,32 @@ impl eframe::App for Console {
         let session_count = self.sessions.len();
         egui::TopBottomPanel::top("consoles").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.strong("Consoles");
+                ui.strong("kvm-it");
                 for (i, session) in self.sessions.iter().enumerate() {
-                    let state = match &*session.app.link.lock().unwrap() {
-                        Link::Connected { dev, .. } => { let fw = dev.info().fw; format!("connected · fw {}.{}.{}", fw[0], fw[1], fw[2]) },
-                        Link::Connecting(_) => "connecting".into(),
-                        Link::Failed(_) => "reconnecting".into(),
-                        Link::Disconnected if session.app.adapter_claims.iter().any(|(_, claim)| claim.strong_count() > 0) => "disconnecting".into(),
-                        Link::Disconnected => "disconnected".into(),
-                    };
                     let running = session.app.run_handle.as_ref().is_some_and(|h| h.running());
                     let waiting = session.app.run_handle.as_ref().is_some_and(|h| h.confirm.lock().unwrap().is_some());
-                    let label = format!("{} · {}{}", session.label, state, if waiting { " · needs attention" } else if running { " · running" } else { "" });
+                    let label = format!("{}{}", session.label, if waiting { " · needs attention" } else if running { " · running" } else { "" });
                     if ui.add_enabled(!blocked, egui::Button::selectable(i == self.active, label)).clicked() { pick = Some(i); }
                 }
-                add = ui.add_enabled(!blocked, egui::Button::new("+ Add adapter")).clicked();
-            });
-            ui.horizontal_wrapped(|ui| {
-                ui.label("This console:");
+                if self.agent.enabled() && ui.button("Stop agent").clicked() { self.agent.revoke(); }
+                let settings = ui.add_enabled(!blocked, egui::Button::new("Settings"));
+                popup(&settings, 365.0, |ui| {
+                ui.strong("Console");
+                add = ui.add_enabled(!blocked, egui::Button::new("Add console")).clicked();
+                ui.label("Name");
                 let session = &mut self.sessions[self.active];
                 let response = ui.add_enabled(!blocked, egui::TextEdit::singleline(&mut session.label).desired_width(160.0));
                 rename = response.lost_focus();
-                let can_remove = !blocked && session_count > 1 && matches!(&*session.app.link.lock().unwrap(), Link::Disconnected) && session.app.link_task.as_ref().is_none_or(|task| task.is_finished()) && session.app.adapter_claims.iter().all(|(_, claim)| claim.strong_count() == 0) && session.app.pairing.load(Ordering::SeqCst) == 0 && session.app.run_handle.as_ref().is_none_or(|h| !h.running()) && !session.app.rec.is_recording() && !session.app.rec.is_finishing() && session.app.flash.is_none();
+                let can_remove = !blocked && !session.app.files.active.load(Ordering::SeqCst) && session_count > 1 && matches!(&*session.app.link.lock().unwrap(), Link::Disconnected | Link::ConnectFailed { .. }) && session.app.link_task.as_ref().is_none_or(|task| task.is_finished()) && session.app.adapter_claims.iter().all(|(_, claim)| claim.strong_count() == 0) && session.app.pairing.load(Ordering::SeqCst) == 0 && session.app.run_handle.as_ref().is_none_or(|h| !h.running()) && !session.app.rec.is_recording() && !session.app.rec.is_finishing() && session.app.flash.is_none();
                 remove = ui.add_enabled(can_remove, egui::Button::new("Remove console")).on_disabled_hover_text("Disconnect this adapter, stop its run/recording and close its flash window first").clicked();
-                if self.switching.is_some() { ui.spinner(); ui.label("Releasing input on the previous target…"); }
-                else { ui.small(format!("{} · Each console keeps its own adapter, video and workflow", crate::syskeys::RELEASE_CHORD)); }
+                if ui.button(session.app.cfg.theme.label()).clicked() {
+                    let theme = session.app.cfg.theme.next();
+                    session.app.cfg_update(|c| c.theme = theme);
+                    ctx.set_theme(theme.preference());
+                }
+                ui.separator();
+                self.agent_ui(ui);
+                });
             });
         });
         if rename {
@@ -2993,6 +3142,7 @@ mod tests {
     }
 
     pub(super) struct MockBoard {
+        pub(super) keys_seen: Arc<Mutex<Vec<(u8, u8)>>>,
         pub(super) dev: Device,
         pub(super) held: Arc<AtomicUsize>,
         pub(super) fail_release: Arc<AtomicBool>,
@@ -3011,10 +3161,15 @@ mod tests {
         let allow_release = Arc::new(tokio::sync::Notify::new());
         let (waiting, release_waiting) = std_mpsc::channel();
         let (keys, fail, hold, allow) = (held.clone(), fail_release.clone(), hold_release.clone(), allow_release.clone());
+        let keys_seen = Arc::new(Mutex::new(Vec::new()));
+        let trace = keys_seen.clone();
         rt.spawn(async move {
             while let Some(bytes) = input.recv().await {
                 let frame = decode(&bytes).unwrap();
                 let mut ty = frame.msg_type;
+                if matches!(ty, msg::KEY_DOWN | msg::KEY_UP | msg::KEY_TAP | msg::RELEASE_ALL) {
+                    trace.lock().unwrap().push((ty, frame.payload.first().copied().unwrap_or_default()));
+                }
                 let payload = match ty {
                     msg::HELLO => {
                         let mut payload = vec![1, 0, 0, 0, 0, 0, 0, 2, 0];
@@ -3035,7 +3190,7 @@ mod tests {
             }
         });
         let dev = rt.block_on(Device::connect(kvmit_ble::LinkIo { tx, rx })).unwrap();
-        MockBoard { dev, held, fail_release, hold_release, release_waiting, allow_release }
+        MockBoard { keys_seen, dev, held, fail_release, hold_release, release_waiting, allow_release }
     }
 
     pub(super) fn mock_console(ctx: &egui::Context, rt: Arc<tokio::runtime::Runtime>, boards: &[&MockBoard]) -> Console {
@@ -3058,6 +3213,32 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_typing_releases_the_shortcut_and_uses_ordered_target_reports() {
+        use kvmit_protocol::msg::{KEY_DOWN, KEY_TAP, KEY_UP, RELEASE_ALL};
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let board = mock_board(&rt);
+        let mut console = mock_console(&egui::Context::default(), rt.clone(), &[&board]);
+        let app = &mut console.sessions[0].app;
+        let tx = app.pump().unwrap();
+        tx.send(Input::Down(Key::LEFT_CTRL)).unwrap();
+        tx.send(Input::Down(Key::LEFT_SHIFT)).unwrap();
+        app.paste_clipboard(Some("aB\r\n".into()));
+        tx.send(Input::Up(Key::LEFT_SHIFT)).unwrap();
+        tx.send(Input::Up(Key::LEFT_CTRL)).unwrap();
+        rt.block_on(async {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while tx.pending.load(Ordering::SeqCst) != 0 { tokio::task::yield_now().await; }
+            }).await.unwrap();
+        });
+        assert_eq!(*board.keys_seen.lock().unwrap(), vec![
+            (RELEASE_ALL, 0), // The adapter handshake clears any keys left by a previous session.
+            (KEY_DOWN, 0xe0), (KEY_DOWN, 0xe1), (RELEASE_ALL, 0), (KEY_TAP, 4),
+            (KEY_DOWN, 0xe1), (KEY_TAP, 5), (KEY_UP, 0xe1), (KEY_TAP, 0x28),
+            (RELEASE_ALL, 0), (KEY_DOWN, 0xe0), (KEY_DOWN, 0xe1), (KEY_UP, 0xe1), (KEY_UP, 0xe0),
+        ]);
+    }
+
+    #[test]
     fn a_disconnected_adapter_stays_claimed_until_its_old_transport_finishes() {
         let ctx = egui::Context::default();
         let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
@@ -3073,9 +3254,9 @@ mod tests {
         console.refresh_claims();
         assert!(console.sessions[1].app.unavailable_adapters.contains(&"board-0".into()), "disconnect must retain ownership until the old transport finishes");
         let generation = console.sessions[1].app.link_gen.load(Ordering::SeqCst);
-        console.sessions[1].app.start_link("BOARD-0".into(), ctx.clone(), false);
+        let error = console.sessions[1].app.start_link("BOARD-0".into(), ctx.clone(), None).unwrap_err();
         assert_eq!(console.sessions[1].app.link_gen.load(Ordering::SeqCst), generation);
-        assert!(console.sessions[1].app.notice.lock().unwrap().contains("another console"));
+        assert!(error.contains("another console"));
         let _ = finish.send(());
         rt.block_on(async {
             tokio::time::timeout(Duration::from_secs(2), async {
@@ -3105,9 +3286,8 @@ mod tests {
         });
         ready.recv_timeout(Duration::from_secs(2)).unwrap();
         let retired = rt.block_on(retire_link_task(task, Duration::from_millis(10)));
-        app.start_link("board".into(), ctx, false);
+        let notice = app.start_link("board".into(), ctx, None).unwrap_err();
         let generation = app.link_gen.load(Ordering::SeqCst);
-        let notice = app.notice.lock().unwrap().clone();
         // Always release the blocking fixture before asserting, including on a regression.
         let _ = finish.send(());
         rt.block_on(async {
@@ -3356,6 +3536,41 @@ mod tests {
             notice_row(ui, &long);
         });
         assert!(edge <= MIN_WINDOW[0], "notice reaches x={edge}, window is {} wide", MIN_WINDOW[0]);
+    }
+
+    #[test]
+    fn console_toolbar_and_send_menu_work_at_the_minimum_window_size() {
+        use eframe::App as _;
+        let ctx = egui::Context::default();
+        let fixture = tempfile::tempdir().unwrap();
+        let app = App::with_config(&ctx, Config { script_dir: Some(fixture.path().into()), ..Config::default() }, Some("demo".into()));
+        let mut console = Console {
+            agent: agent::Agent::default(), active: 0, switching: None,
+            sessions: vec![ConsoleSession { key: "demo".into(), label: "Test target".into(), app, memory: None }],
+        };
+        let mut frame = eframe::Frame::_new_kittest();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(MIN_WINDOW[0], MIN_WINDOW[1]));
+        let mut render = |events| {
+            let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let output = ctx.run(input, |ctx| console.update(ctx, &mut frame));
+            output.shapes.into_iter().filter_map(|s| match s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.visual_bounding_rect())),
+                _ => None,
+            }).collect::<Vec<_>>()
+        };
+        render(vec![]);
+        let labels = render(vec![]);
+        for label in ["Settings", "Connect", "Send", "Files", "Tools"] {
+            let (_, rect) = labels.iter().find(|(s,_)| s == label).unwrap_or_else(|| panic!("missing {label}"));
+            assert!(screen.contains_rect(*rect), "{label} is clipped");
+        }
+        assert!(!labels.iter().any(|(s,_)| s == "Enable local agent"));
+        let pos = labels.iter().find(|(s,_)| s == "Send").unwrap().1.center();
+        let click = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        render(vec![egui::Event::PointerMoved(pos), click(true)]);
+        render(vec![click(false)]);
+        let menu = render(vec![]);
+        assert!(menu.iter().any(|(s,_)| s.contains("Ctrl+Shift+V")), "Send opens the clipboard action");
     }
 
     #[test]

@@ -195,6 +195,7 @@ impl Agent {
             }
         }
     }
+    pub(super) fn enabled(&self) -> bool { self.broker.is_some() }
     pub(super) fn flash_busy(&self) -> bool {
         self.flash
             .as_ref()
@@ -403,12 +404,19 @@ impl Agent {
                 return Ok(
                     json!({"access":access,"remaining_mutations":self.remaining,"consoles":console.sessions.iter().map(|s| {
                 let app = &s.app;
-                let connected = app.device();
+                let (connected, adapter, connection) = match &*app.link.lock().unwrap() {
+                    Link::Connected { dev, id, .. } if dev.is_connected() => (Some(dev.clone()), Some(id.clone()), json!({"state":"connected","adapter":id})),
+                    Link::Connected { id, .. } => (None, None, json!({"state":"reconnecting","adapter":id})),
+                    Link::Connecting(id, stage) => (None, None, json!({"state":stage.status(),"adapter":id})),
+                    Link::ConnectFailed { id, failure } => (None, None, json!({"state":"failed","adapter":id,"stage":failure.stage.status(),"error":clipped(&failure.message, 512),"repair_available":failure.repair_available})),
+                    Link::Failed(error) => (None, None, json!({"state":"reconnecting","adapter":app.cfg.last_device,"error":clipped(error, 512)})),
+                    Link::Disconnected => (None, None, json!({"state":"disconnected"})),
+                };
                 let capture = app.capture.lock().unwrap();
                 let frame = capture.as_ref().filter(|c| !c.failed()).and_then(|c| c.latest());
                 let status = app.status.lock().unwrap();
                 let scans = match &*app.scan.lock().unwrap() { Scan::Done(found) => json!(found.iter().take(32).map(|f| json!({"adapter":f.id,"name":clipped(&f.name,128),"rssi":f.rssi})).collect::<Vec<_>>()), Scan::Scanning => json!("scanning"), _=>Value::Null };
-                json!({"console":s.key,"label":clipped(&s.label,128),"adapter":app.adapter_id(),"connected":connected.is_some(),"firmware":connected.map(|d| d.info().fw),"hid_mounted":status.as_ref().map(|s| s.hid_mounted),"boot_drive":status.as_ref().and_then(|s|s.boot_drive),"capturing":app.capturing,"running":app.run_handle.as_ref().is_some_and(|h|h.running()),"video":capture.as_ref().map(|c| &c.info.key),"frame_age_ms":frame.as_ref().and_then(|f|f.captured_at).map(|t|t.elapsed().as_millis()),"scan":scans,"recording":app.rec.is_recording(),"recording_finishing":app.rec.is_finishing(),"recording_result":self.recordings.get(&s.key).map(|result|if access==Access::Full{result.clone()}else{json!({"status":result["status"]})})})
+                json!({"console":s.key,"label":clipped(&s.label,128),"adapter":adapter,"connected":connected.is_some(),"connection":connection,"firmware":connected.map(|d| d.info().fw),"hid_mounted":status.as_ref().filter(|_| adapter.is_some()).map(|s| s.hid_mounted),"boot_drive":status.as_ref().filter(|_| adapter.is_some()).and_then(|s|s.boot_drive),"capturing":app.capturing,"running":app.run_handle.as_ref().is_some_and(|h|h.running()),"video":capture.as_ref().map(|c| &c.info.key),"frame_age_ms":frame.as_ref().and_then(|f|f.captured_at).map(|t|t.elapsed().as_millis()),"scan":scans,"recording":app.rec.is_recording(),"recording_finishing":app.rec.is_finishing(),"recording_result":self.recordings.get(&s.key).map(|result|if access==Access::Full{result.clone()}else{json!({"status":result["status"]})})})
             }).collect::<Vec<_>>(),"flash":self.flash.as_ref().map(|f|f.lock().unwrap().clone())}),
                 )
             }
@@ -551,21 +559,7 @@ impl Agent {
                 Ok(json!({"accepted":true}))
             }
             "adapter_scan" => {
-                let scan = app.scan.clone();
-                if matches!(&*scan.lock().unwrap(), Scan::Scanning) {
-                    return Ok(json!({"status":"scanning"}));
-                }
-                *scan.lock().unwrap() = Scan::Scanning;
-                app.rt.spawn(async move {
-                    *scan.lock().unwrap() = match backend::scan(Duration::from_secs(
-                        backend::DEFAULT_SCAN_SECS,
-                    ))
-                    .await
-                    {
-                        Ok(v) => Scan::Done(v),
-                        Err(e) => Scan::Error(e.to_string()),
-                    };
-                });
+                app.scan_adapters(ctx);
                 Ok(json!({"status":"scanning"}))
             }
             "adapter_connect" => {
@@ -573,21 +567,14 @@ impl Agent {
                 if app.rec.is_recording() {
                     return Err("Stop recording first".into());
                 }
-                let id = string(&args, "adapter")?;
-                if app
-                    .unavailable_adapters
-                    .iter()
-                    .any(|v| v.eq_ignore_ascii_case(id))
-                {
-                    return Err("Adapter belongs to another console".into());
-                }
-                let mode = match string(&args, "mode")? {
-                    "pair" => PairingMode::Pair,
-                    "repair" => PairingMode::Repair,
-                    _ => PairingMode::Reconnect,
+                let id = string(&args, "adapter")?.to_owned();
+                let mode = match args["mode"].as_str().unwrap_or("connect") {
+                    "repair" => Some(session::ConnectMode::Repair),
+                    "reconnect" => None,
+                    _ => Some(session::ConnectMode::Connect), // includes the legacy "pair" mode
                 };
-                app.start_link_mode(id.into(), ctx.clone(), mode);
-                Ok(json!({"accepted":true,"connected":false}))
+                app.start_link(id, ctx.clone(), mode)?;
+                Ok(json!({"accepted":true,"connected":app.device().is_some()}))
             }
             "adapter_disconnect" => {
                 idle(app)?;
@@ -601,7 +588,7 @@ impl Agent {
                 {
                     return Err("Disconnect this console before forgetting a bond".into());
                 }
-                let id = string(&args, "adapter")?.to_string();
+                let id = backend::canonical_id(string(&args, "adapter")?);
                 if app
                     .unavailable_adapters
                     .iter()
@@ -848,6 +835,9 @@ impl Agent {
             }
             "boot_drive_set" => {
                 idle(app)?;
+                if app.files.active.load(Ordering::SeqCst) {
+                    return Err("Wait for the file transfer to finish before restarting the adapter.".into());
+                }
                 let dev = app.device().ok_or("No connected adapter")?;
                 if !dev.info().supports_boot_drive() {
                     return Err("Firmware does not support a boot drive".into());
@@ -1592,9 +1582,8 @@ impl Console {
         self.agent = agent;
     }
 
-    pub(super) fn agent_ui(&mut self, ctx: &egui::Context) {
+    pub(super) fn agent_ui(&mut self, ui: &mut egui::Ui) {
         let mut agent = std::mem::take(&mut self.agent);
-        egui::TopBottomPanel::top("agent_access").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.strong("Agent access");
                 if agent.broker.is_some() {
@@ -1633,7 +1622,7 @@ impl Console {
                             .app
                             .selected
                             .and_then(|i| session.app.library.get(i))
-                            .ok_or("Select a workflow in Scripts first")?;
+                            .ok_or("Select a workflow under Workflows in Tools first")?;
                         let approval = approve(&session.app, e)?;
                         let digest = approval.digest.clone();
                         agent
@@ -1650,7 +1639,6 @@ impl Console {
             if !agent.notice.is_empty() {
                 ui.small(&agent.notice);
             }
-        });
         self.agent = agent;
     }
 }
@@ -2008,6 +1996,62 @@ mod tests {
             "refused"
         );
         drop((agent, console));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn console_list_exposes_pairing_progress_and_repairable_failure() {
+        let (root, mut agent, mut console, ctx) = fixture(Access::Full);
+        let id = "98:C3:77:A0:95:A2";
+        let app = &console.sessions[0].app;
+        *app.link.lock().unwrap() = Link::Connecting(id.into(), session::ConnectStage::CheckingPairing);
+        let state = agent.execute(&mut console, "console_list", json!({}), &ctx).unwrap();
+        let row = &state["consoles"][0];
+        assert_eq!(row["connected"], false);
+        assert!(row["adapter"].is_null());
+        assert_eq!(row["connection"], json!({"state":"checking_pairing","adapter":id}));
+
+        *console.sessions[0].app.link.lock().unwrap() = Link::ConnectFailed {
+            id: id.into(),
+            failure: session::ConnectFailure {
+                stage: session::ConnectStage::Connecting,
+                message: "Bluetooth handshake failed".into(),
+                repair_available: true,
+            },
+        };
+        let state = agent.execute(&mut console, "console_list", json!({}), &ctx).unwrap();
+        assert_eq!(state["consoles"][0]["connection"], json!({
+            "state":"failed", "adapter":id, "stage":"connecting",
+            "error":"Bluetooth handshake failed", "repair_available":true
+        }));
+        drop((agent, console));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn emergency_release_stops_uncaptured_clipboard_typing_before_the_first_key() {
+        let (root, mut agent, fixture_console, ctx) = fixture(Access::Full);
+        drop(fixture_console);
+        let rt = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let board = super::super::tests::mock_board(&rt);
+        let mut console = super::super::tests::mock_console(&ctx, rt.clone(), &[&board]);
+        board.hold_release.store(true, Ordering::SeqCst);
+        let app = &mut console.sessions[0].app;
+        assert!(!app.capturing);
+        app.paste_clipboard(Some("still pending".into()));
+        board.release_waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let result = agent.execute(&mut console, "input_release", json!({"console":"console-0"}), &ctx);
+        board.allow_release.notify_one();
+        result.unwrap();
+        let app = &console.sessions[0].app;
+        assert!(!app.paste_active.load(Ordering::SeqCst));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !app.input_idle() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.input_idle());
+        assert!(board.keys_seen.lock().unwrap().iter().all(|(op, _)| *op == kvmit_protocol::msg::RELEASE_ALL));
+        board.dev.close();
+        drop((agent, console, board, rt));
         std::fs::remove_dir_all(root).unwrap();
     }
     #[test]

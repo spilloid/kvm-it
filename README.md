@@ -7,15 +7,15 @@
 See it. Type at it. Install it. No software on the target, no network, no hundred-dollar IP-KVM: an ESP32-S3 dev board (~$10), a cheap
 HDMI capture card, and one app.
 
-<p align="center"><img src="docs/assets/screenshots/console-06.png" alt="The kvm-it 0.6 preview with four disconnected console tabs and synthetic demo video" width="820"></p>
-<p align="center"><sub>The real 0.6 app on Windows 11. Disconnected demo consoles; the target picture is synthetic.</sub></p>
+<p align="center"><img src="docs/assets/screenshots/console-08.png" alt="The kvm-it 0.8 development build with the Connect button above a synthetic target screen" width="820"></p>
+<p align="center"><sub>The 0.8.0 development build on Windows 11 with synthetic target video.</sub></p>
 
 ## Three steps
 
 1. **Get the parts.** An ESP32-S3 board with two USB-C ports (**COM** and **USB**) and a USB HDMI capture card. Details: [get started](docs/getting-started.md).
 2. **Install the app.** Download from [Releases](https://github.com/spilloid/kvm-it/releases): a signed `.msi`/`.zip` for **Windows 11**, a `.dmg` for **macOS** (Apple silicon), an
    `.AppImage` for **Linux**. Double-click or `chmod +x`. That is the whole "dev environment": **no Rust, no Docker, no drivers, no DLLs to hunt down.**
-3. **Plug in.** In the app: **Adapter > Flash adapter…** (one click; the firmware is inside the app), pair once, and drive.
+3. **Plug in.** Open **Tools**, choose **Devices**, then **Flash adapter…**. The app includes the firmware. Click **Connect** to pair and drive.
 
 <p align="center"><img src="docs/assets/screenshots/flash-06.png" alt="The 0.6 Flash adapters window: bundled firmware, COM ports, transfer speed and pairing-preserving defaults" width="700"></p>
 
@@ -23,9 +23,9 @@ HDMI capture card, and one app.
 
 - **See and drive the target in one window.** Click the picture and your keyboard and mouse belong to the target; **Ctrl+Alt+Esc** (**Ctrl+Option+Esc** on a Mac) gives
   them back (that chord is never sent). It works from the BIOS splash onward: if the target takes a USB keyboard, kvm-it can drive it.
-- **The keys your PC would swallow.** One-click Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more; on Windows, and on macOS once kvm-it is allowed under *Privacy & Security > Accessibility*, the rest go to the target too while captured (Linux, or a Mac without that permission: use the Keys button for them).
+- **The keys your PC would swallow.** One-click Ctrl+Alt+Del, Win, Alt+Tab, PrintScreen and more; on Windows, and on macOS once kvm-it is allowed under *Privacy & Security > Accessibility*, the rest go to the target too while captured (Linux, or a Mac without that permission: open **Send** for them).
 - **Local MCP control (0.7).** Connect a local agent to named consoles with explicit access modes, bounded input and durable runs. [Set up MCP](docs/mcp.md).
-- **Several adapters in one console (0.6).** Named tabs keep independent Bluetooth links, capture cards and runs. The Adapter popup shows running firmware and board status, with pairing repair on Windows and Linux.
+- **Several adapters in one console (0.6).** Named tabs keep independent Bluetooth links, capture cards and runs. **Devices** under **Tools** shows firmware, board status and pairing options.
 - **Zero-step reconnect.** Pair once. Move the cables to the next machine and the app reconnects by itself.
 - **Replayable setup scripts.** Native TOML or imported DuckyScript: text, keys, chords, delays, and *wait-for-the-screen* steps, so one slow
   install screen does not wreck everything after it. Preview and dry-run before anything is typed; abort leaves nothing held down.
@@ -43,7 +43,7 @@ Target HDMI out ──► USB capture card ──► your PC ──► kvm-it (l
 Your keyboard/mouse ──► kvm-it ──► Bluetooth LE ──► ESP32-S3 ──► USB HID ──► target PC
 ```
 
-Everything the app does is also on the command line:
+The command line also supports discovery, input, workflows and flashing.
 `kvmit scan | status | type "text" | key ctrl alt delete | run script.toml [--dry-run] | import payload.txt | flash`.
 
 **[Full walkthrough on the docs site](https://spilloid.github.io/kvm-it/)** or [docs/getting-started.md](docs/getting-started.md).
@@ -55,7 +55,13 @@ the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what t
 
 <a id="verification"></a>
 
-## Status: v0.7.1
+## Status: v0.8.0
+
+**Ctrl+Shift+V types the controller’s clipboard into the focused target.** Connect, take control and use the shortcut, or choose **Send → Type host clipboard**. It uses the adapter’s USB keyboard and works with existing firmware. The target needs no application, driver installation or network connection.
+
+**Files** opens the two-cable exchange drive. Firmware 0.3.0 exposes a removable FAT drive using the target’s built-in mass-storage driver. See [using clipboard and files](docs/clipboard-and-files.md) for supported text, cable power and the file handoff. Two-PC hardware verification is pending.
+
+### Earlier releases
 
 **0.7.1** fixes a macOS reconnect stall after an adapter loses power. Replugging a paired adapter uses its saved bond. The repair menu is available on Windows and Linux.
 
@@ -85,6 +91,8 @@ not bare-metal Windows).
 
 | Area | State |
 |---|---|
+| 0.8.0 console and clipboard typing | The Windows UI and ordered keyboard reports were host-tested. Clipboard typing uses the US ANSI target layout. A physical Mac or Linux controller pass is pending. |
+| 0.3.0 USB file exchange | Firmware built and simulated file transfers passed in both directions. A physical two-PC handoff and the board's dual-cable power isolation are unverified. |
 | Local MCP control (0.7.0) | Windows development tests, lint and disconnected MCP smoke passed; maintainer reports successful Windows use. Mac/Linux physical MCP behavior and Claude/Cowork interoperability remain unverified. |
 | Desktop 0.6: in-app pairing repair, adding consoles and GUI use with multiple adapters | **hardware-verified, maintainer-reported** on Windows (2026-11-14). Exact simultaneous adapter count, held-input switching and forced link-failure recovery were not reported; those handoff cases remain host-tested |
 | Firmware: USB keyboard + mouse (boot HID) | **hardware-verified** (enumeration via `lsusb`; self-test typed) |

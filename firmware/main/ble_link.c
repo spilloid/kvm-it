@@ -19,6 +19,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "usb_hid.h"
+#include "share_drive.h"
 
 void ble_store_config_init(void);
 
@@ -379,8 +380,16 @@ static bool o_set_boot_drive(void *c, bool enabled)
     static esp_timer_handle_t t;
     const esp_timer_create_args_t a = {.callback = restart_cb, .name = "bootdrv_restart"};
     if (!t && esp_timer_create(&a, &t) != ESP_OK) return false; /* before the commit: a failure here must leave the stored setting alone */
-    if (kvm_config_set_boot_drive(enabled) != ESP_OK) return false;
-    esp_timer_start_once(t, 500 * 1000);
+    if (esp_timer_is_active(t) || !share_reserve_restart()) return false;
+    if (kvm_config_set_boot_drive(enabled) != ESP_OK) {
+        share_cancel_restart();
+        return false;
+    }
+    if (esp_timer_start_once(t, 500 * 1000) != ESP_OK) {
+        (void)kvm_config_set_boot_drive(!enabled);
+        share_cancel_restart();
+        return false;
+    }
     return true;
 }
 static bool o_boot_drive(void *c) { (void)c; return usb_hid_boot_drive(); }
@@ -480,7 +489,7 @@ esp_err_t ble_link_start(void)
     ESP_ERROR_CHECK(esp_timer_create(&ta, &g_window_timer));
 
     proto_ops_t ops = {NULL, o_down, o_up, o_rel, o_move, o_btn, o_wheel, o_mounted, o_held, o_counts, o_name, o_set_boot_drive, o_boot_drive};
-    uint8_t uuid[16], fw[3] = {0, 2, 1};
+    uint8_t uuid[16], fw[3] = {0, 3, 0};
     char name[KVM_NAME_MAX + 1];
     kvm_config_uuid(uuid);
     kvm_config_name(name);
