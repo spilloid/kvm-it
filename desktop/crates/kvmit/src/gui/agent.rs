@@ -81,6 +81,23 @@ fn string<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
 fn flag(args: &Value, key: &str) -> bool {
     args[key].as_bool().unwrap_or(false)
 }
+
+fn boot_drive_configuration(args: &Value) -> Result<Option<kvmit_flash::BootScript>, String> {
+    let url = args["url"].as_str();
+    let script = args["script"].as_str();
+    let append_mac = flag(args, "append_mac");
+    if append_mac && url.is_none() {
+        return Err("append_mac requires a boot URL".into());
+    }
+    let result = match (url, script, flag(args, "restore")) {
+        (Some(url), None, false) => kvmit_flash::BootScript::for_url(url, append_mac),
+        (None, Some(script), false) => kvmit_flash::BootScript::from_text(script),
+        (None, None, true) => return Ok(None),
+        _ => return Err("Choose exactly one of url, script, or restore=true".into()),
+    };
+    result.map(Some).map_err(|error| error.to_string())
+}
+
 fn clipped(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
@@ -499,10 +516,14 @@ impl Agent {
                     .get(id)
                     .map_or(receipt.cursor, |l| l.revision.max(receipt.cursor));
                 let unchanged = args["since_cursor"].as_u64() == Some(revision);
+                let flash = self.flash.as_ref().and_then(|flash| {
+                    let flash = flash.lock().unwrap();
+                    (flash["run_id"].as_str() == Some(id)).then(|| flash.clone())
+                });
                 return Ok(if unchanged {
                     json!({"run_id":id,"cursor":revision,"changed":false})
                 } else {
-                    json!({"receipt":receipt,"cursor":revision,"changed":true,"progress":self.live.get(id).map(|l|&l.summary)})
+                    json!({"receipt":receipt,"cursor":revision,"changed":true,"progress":self.live.get(id).map(|l|&l.summary).or(flash.as_ref())})
                 });
             }
             "run_cancel" | "run_answer" => {
@@ -529,7 +550,7 @@ impl Agent {
                     json!({"ports":kvmit_flash::list_ports().iter().take(32).map(|p|json!({"port":p.name,"description":p.description,"uart":p.kind==kvmit_flash::PortKind::Uart})).collect::<Vec<_>>()}),
                 )
             }
-            "flash_start" => return self.start_flash(console, &args),
+            "flash_start" | "boot_drive_configure" => return self.start_flash(console, tool, &args),
             _ => {}
         }
         let key = string(&args, "console")?;
@@ -1166,7 +1187,9 @@ impl Agent {
         )
     }
 
-    fn start_flash(&mut self, console: &Console, args: &Value) -> Result<Value, String> {
+    fn start_flash(&mut self, console: &Console, tool: &str, args: &Value) -> Result<Value, String> {
+        let boot_drive_only = tool == "boot_drive_configure";
+        let script = if boot_drive_only { boot_drive_configuration(args)? } else { None };
         if console.sessions.iter().any(|s| {
             s.app.device().is_some()
                 || s.app.link_task.as_ref().is_some_and(|t| !t.is_finished())
@@ -1199,11 +1222,15 @@ impl Agent {
             .as_str()
             .map(str::to_owned)
             .unwrap_or_else(crate::flashwiz::default_firmware_dir);
-        let image =
+        let mut image =
             kvmit_flash::Image::from_build_dir(Path::new(&firmware)).map_err(|e| e.to_string())?;
-        let receipt = runs.begin(request, "administration", "flash_start")?;
+        if let Some(script) = script {
+            image.set_boot_script(&script).map_err(|e| e.to_string())?;
+        }
+        let receipt = runs.begin(request, "administration", tool)?;
         let progress = Arc::new(Mutex::new(
-            json!({"running":true,"run_id":receipt.run_id,"stage":"validating"}),
+            json!({"running":true,"run_id":receipt.run_id,"stage":"validating",
+                   "scope":if boot_drive_only { "boot_drive" } else { "firmware" }}),
         ));
         let shared = progress.clone();
         let options = kvmit_flash::Options {
@@ -1226,11 +1253,19 @@ impl Agent {
                 fn verifying(&mut self) {}
                 fn finish(&mut self, _: bool) {}
             }
-            let result = kvmit_flash::flash(&port, &image, options, &mut Progress(shared.clone()));
+            let mut progress = Progress(shared.clone());
+            let result = if boot_drive_only {
+                kvmit_flash::flash_boot_drive(&port, &image, options.baud, &mut progress)
+            } else {
+                kvmit_flash::flash(&port, &image, options, &mut progress)
+            };
             let mut state = shared.lock().unwrap();
             state["running"] = json!(false);
             state["verified_flash"] = json!(result.is_ok());
             state["running_firmware_verified"] = json!(false);
+            if let Err(error) = result {
+                state["error"] = json!(clipped(&error.to_string(), 512));
+            }
         });
         self.flash = Some(progress);
         Ok(json!({"receipt":receipt,"accepted":true}))
@@ -1888,6 +1923,48 @@ mod tests {
         drop((agent, console));
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn agent_boot_drive_configuration_validates_intent_before_touching_hardware() {
+        let target = "https://boot.example.test/install.ipxe";
+        let script = "#!ipxe\ndhcp || exit 1\n";
+        for args in [
+            json!({"url":target,"script":script}),
+            json!({"url":target,"restore":true}),
+            json!({"restore":true,"append_mac":true}),
+            json!({"script":"missing header"}),
+            json!({}),
+        ] {
+            assert!(boot_drive_configuration(&args).is_err());
+        }
+        assert!(boot_drive_configuration(&json!({"url":target})).unwrap().is_some());
+        assert!(boot_drive_configuration(&json!({"script":script})).unwrap().is_some());
+        assert!(boot_drive_configuration(&json!({"restore":true})).unwrap().is_none());
+        let (root, mut agent, mut console, ctx) = fixture(Access::Workflow);
+        let args = json!({"port":"COM4","request_id":"no-write","url":target});
+        assert!(agent.execute(&mut console, "boot_drive_configure", args, &ctx).unwrap_err().contains("outside"));
+        assert!(agent.runs.as_ref().unwrap().list().is_empty());
+        drop((agent, console));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_boot_drive_request_is_idempotent_and_its_receipt_keeps_no_script() {
+        let (root, mut agent, mut console, ctx) = fixture(Access::Full);
+        let args = json!({"port":"COM4","request_id":"drive-once","script":"#!ipxe\ndhcp || exit 1\n"});
+        let receipt = agent.runs.as_mut().unwrap().begin("drive-once", "administration", "boot_drive_configure").unwrap();
+        agent.fingerprints.insert("drive-once".into(), digest(&serde_json::to_vec(&args).unwrap()));
+        let replay = agent.execute(&mut console, "boot_drive_configure", args.clone(), &ctx).unwrap();
+        assert_eq!(replay["receipt"]["run_id"], receipt.run_id);
+        assert_eq!(replay["deduplicated"], true);
+        assert!(!replay.to_string().contains("dhcp"));
+        let mut changed = args;
+        changed["port"] = json!("COM5");
+        assert!(agent.execute(&mut console, "boot_drive_configure", changed, &ctx).unwrap_err().contains("different arguments"));
+        assert_eq!(agent.runs.as_ref().unwrap().list().len(), 1);
+        drop((agent, console));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn request_replay_checks_arguments_without_repeating_effects() {
         let (root, mut agent, mut console, ctx) = fixture(Access::Full);

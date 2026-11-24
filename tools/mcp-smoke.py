@@ -118,6 +118,13 @@ def main():
             tools, full_catalog_bytes = client.call("tools/list", {})
             full_tool_count = len(tools["tools"])
             assert full_tool_count >= 25
+            assert "boot_drive_configure" in {tool["name"] for tool in tools["tools"]}
+            client.tool("boot_drive_configure", {"port":"nonexistent-smoke-uart","request_id":"boot-config-invalid",
+                        "url":"https://boot.example.test/install.ipxe","restore":True}, error=True)
+            client.tool("boot_drive_configure", {"port":"nonexistent-smoke-uart","request_id":"boot-config-no-port",
+                               "url":"https://boot.example.test/install.ipxe"}, error=True)
+            receipts, _ = client.tool("run_list", {})
+            assert not receipts["runs"], receipts
             consoles, _ = client.tool("console_list", {})
             assert consoles["consoles"][0]["console"] == "one"
             assert not consoles["consoles"][0]["connected"]
@@ -164,7 +171,7 @@ def main():
             client = Client(binary, env)
             tools, observe_catalog_bytes = client.call("tools/list", {})
             names = {tool["name"] for tool in tools["tools"]}
-            assert "input_perform" not in names and "workflow_write" not in names
+            assert "input_perform" not in names and "workflow_write" not in names and "boot_drive_configure" not in names
             client.tool("input_perform", {"console": "one", "request_id": "denied", "observation": "unused",
                                           "actions": [{"kind": "key", "keys": ["enter"]}]}, error=True)
             persisted, _ = client.tool("run_status", {"run_id": run_id})

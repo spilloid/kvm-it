@@ -15,7 +15,7 @@ fn sparse_data_is_written_in_bounded_sector_aligned_regions_without_changing_byt
     let im = four_parts(0x110000, boot_image((4 << 20) - 17));
     im.validate().unwrap();
     im.check_keeps_settings().unwrap();
-    let parts = write_parts(&im);
+    let parts = write_parts(&im, false);
     assert_eq!(parts.len(), 3 + 64);
     for (got, expected) in parts[..3].iter().zip(&im.parts[..3]) {
         assert_eq!((got.offset, &got.data), (expected.offset, &expected.data));

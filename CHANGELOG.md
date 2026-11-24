@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.8.2] - 2026-11-23
+
+- Set a boot URL or supply your own `autoexec.ipxe` from the Flash adapter window, `kvmit flash`, or the full-control MCP tool `boot_drive_configure`. Append the active Ethernet MAC to a URL to use minute2win's per-machine boot endpoint.
+- Boot-drive changes and restore write and verify only the iPXE partition through the adapter's COM port. The target still starts the configured script after a keypress.
+
 ## [0.8.1] - 2026-11-20
 
 - Under Settings, select Observe, Approved workflows, or Full control directly, then choose **Enable local agent**.

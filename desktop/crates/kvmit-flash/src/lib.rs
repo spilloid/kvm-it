@@ -141,6 +141,9 @@ pub struct Image {
     pub flash_bytes: u32,
 }
 
+mod boot_drive;
+pub use boot_drive::BootScript;
+
 /// A JSON object whose duplicate keys are an error (a map would silently keep the last one).
 struct StrictMap(Vec<(String, String)>);
 impl<'de> Deserialize<'de> for StrictMap {
@@ -499,8 +502,8 @@ fn app_version(data: &[u8]) -> Option<String> {
     Some(version.to_string())
 }
 
-fn write_parts(image: &Image) -> Vec<Part> {
-    let mut parts = image.parts[..3].to_vec();
+fn write_parts(image: &Image, boot_drive_only: bool) -> Vec<Part> {
+    let mut parts = if boot_drive_only { Vec::new() } else { image.parts[..3].to_vec() };
     for part in &image.parts[3..] {
         let count = part.data.len().div_ceil(DATA_WRITE_CHUNK);
         for (i, data) in part.data.chunks(DATA_WRITE_CHUNK).enumerate() {
@@ -744,6 +747,15 @@ pub struct Report {
 /// looked up again and must be the same device, no adapter native port may be attached, and the chip that answers must be
 /// an ESP32-S3 of the image's flash size, not in secure download mode.
 pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut dyn ProgressCallbacks) -> Result<Report, FlashError> {
+    flash_with_scope(expected, image, opts, false, progress)
+}
+
+/// Update only the read-only boot drive. The installed boot partition must match the bundle exactly.
+pub fn flash_boot_drive(expected: &PortInfo, image: &Image, baud: Option<u32>, progress: &mut dyn ProgressCallbacks) -> Result<Report, FlashError> {
+    flash_with_scope(expected, image, Options { erase_all: false, allow_other_port: false, baud }, true, progress)
+}
+
+fn flash_with_scope(expected: &PortInfo, image: &Image, opts: Options, boot_drive_only: bool, progress: &mut dyn ProgressCallbacks) -> Result<Report, FlashError> {
     let _hardware = kvmit_control::ResourceClaim::hardware(false).map_err(FlashError)?;
     use espflash::connection::{Connection, ResetAfterOperation, ResetBeforeOperation};
     use espflash::flasher::Flasher;
@@ -751,6 +763,7 @@ pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut d
     use espflash::target::Chip;
     progress.stage(&FlashStage::Validating);
     image.validate()?;
+    let boot_partition = if boot_drive_only { Some(image.boot_drive_partition()?) } else { None };
     if !opts.erase_all {
         image.check_keeps_settings()?;
     }
@@ -795,6 +808,9 @@ pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut d
         let table = read_limited(&file, 64 * 1024, "the board's partition table").map_err(|e| fail("could not read the board's partition table", &e))?;
         image.check_matches_installed(&table)?;
         let installed = parse_partition_table(&table, image.flash_bytes, false)?;
+        if let Some(expected) = boot_partition.as_ref() {
+            boot_drive::check_installed_partition(&installed, expected)?;
+        }
         if let Some(app) = installed.iter().find(|p| p.ptype == 0 && p.subtype == 0) {
             let header = scratch.path().join("app-header.bin");
             flasher.read_flash(app.offset, 256, 0x1000, 64, header.clone()).map_err(|e| fail("could not read the stored application version", &e))?;
@@ -808,7 +824,7 @@ pub fn flash(expected: &PortInfo, image: &Image, opts: Options, progress: &mut d
     }
     // One session for all parts: `write_bin_to_flash` resets the chip after every call, so a second part would go to a
     // restarting chip. Data is padded to a multiple of 4 with 0xFF (erased flash) as the library requires.
-    let parts = write_parts(image);
+    let parts = write_parts(image, boot_drive_only);
     let segments: Vec<Segment<'_>> = parts
         .iter()
         .map(|p| {

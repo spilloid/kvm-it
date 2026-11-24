@@ -14,3 +14,5 @@ sha2 = "0.11"
 md-5 = "0.11"
 nusb = "0.2"
 serialport = { version = "4.7", default-features = false }
+fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc"] }
+url = "2.5"

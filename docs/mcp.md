@@ -1,4 +1,4 @@
-# MCP and agent-assisted workflows (0.7.0)
+# MCP and agent-assisted workflows
 
 kvm-it exposes its console operations to local MCP clients. The agent connects to the same owner as the GUI; it does
 not open a second Bluetooth connection or capture stream. The target still needs only HDMI and USB HID. No LLM,
@@ -127,7 +127,7 @@ reasoning and billing. The smoke harness reports wire sizes; it does not claim a
 | Library/workflows | List/read/select, validate/write/profile setup, DuckyScript import, save named references, approve locally, start/resume/recover |
 | Runs | Durable receipts, compact status/cursors, paginated list, cancellation, question-ID-bound full-mode answers |
 | Recording | GIF/WebM, explicit audio source discovery/selection, asynchronous stop/finalization |
-| Administration | Boot-drive toggle, flash-port listing, bundled/custom firmware through existing safety checks |
+| Administration | Boot-drive configuration and toggle, flash-port listing, bundled/custom firmware through existing safety checks |
 
 Raw input needs the token from `screen_observe` on the same console and connection/capture epoch. The worker checks
 again after durable intent and scheduling, immediately before sending input. New input has a five-second action budget, checked between protocol calls; in-flight acknowledgements and release cleanup may take longer. No API leaves a key held
@@ -143,6 +143,27 @@ Hardware ownership is shared by cooperating 0.7 processes for the same OS user, 
 Capture paths are canonicalized where possible. Claims follow actual native I/O/teardown workers, including bounded
 cleanup that outlives a GUI wrapper. Firmware writes exclude BLE input and pairing. Older installed versions and
 unrelated programs do not participate in these locks.
+
+## Configure the USB boot drive
+
+With kvm-it 0.8.2 and **Full control** granted locally, connect the adapter's COM port to the controller and leave its USB port on the target. Use `flash_ports` to identify the UART. Disconnect the consoles and finish active runs before calling `boot_drive_configure`.
+
+Use one of `url`, `script`, or `restore: true`. A URL can append the active Ethernet MAC for a per-machine boot path. For example, to use minute2win, call `boot_drive_configure` with these arguments.
+
+```json
+{
+  "port": "COM5",
+  "url": "http://192.168.1.50:8080/boot",
+  "append_mac": true,
+  "request_id": "bench-adapter-boot-drive-001"
+}
+```
+
+Pass custom iPXE source as `script` starting with `#!ipxe`. The target can read the stored script, so keep credentials out of it. kvm-it adds a five-second keypress prompt for custom scripts and URLs.
+
+Keep the run ID. Use `run_status` or `kvmit watch` to wait for the verified write, and reuse the same request ID after a timeout. Reconnect through the saved Bluetooth pairing and use `boot_drive_set` to enable the drive if needed. Select the USB drive in the target's UEFI menu and use the existing observed input controls to press a key at the prompt. With minute2win, arm the intended workstation separately. The one-time arm controls which machine gets the image.
+
+Configure an adapter once and use the MAC-suffixed URL across the bench. A local kvm-it workflow can handle the startup menu and keypress on workstation models you have tested. The wired target still needs to reach the deployment server, and the adapter needs its physical USB connection. An HTTPS image host can serve the payload independently of both tools.
 
 ## Headless and command-line use
 

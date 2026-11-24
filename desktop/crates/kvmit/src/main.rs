@@ -109,6 +109,18 @@ enum Cmd {
         /// Skip the confirmation
         #[arg(long)]
         yes: bool,
+        /// Write only the boot drive and chain to this HTTP(S) iPXE script after a key press.
+        #[arg(long, conflicts_with_all = ["boot_script", "restore_boot_drive", "erase_all", "any_port", "list"])]
+        boot_url: Option<String>,
+        /// Write only the boot drive with a UTF-8 iPXE script. A keypress starts the script on the target.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["restore_boot_drive", "erase_all", "any_port", "list"])]
+        boot_script: Option<PathBuf>,
+        /// Append the active Ethernet MAC to the boot URL (for a minute2win /boot endpoint).
+        #[arg(long, requires = "boot_url")]
+        append_mac: bool,
+        /// Restore only the bundled boot drive.
+        #[arg(long, conflicts_with_all = ["erase_all", "any_port", "list"])]
+        restore_boot_drive: bool,
     },
     /// Run a script or a workflow file (`workflow_format = 1`: watches the screen, prompts for its secrets, prints
     /// each state and transition as it happens)
@@ -313,8 +325,8 @@ fn real_main(cli: Cli) -> R<()> {
             conn.disconnect().await;
             Ok(())
         }),
-        Cmd::Flash { firmware, port, baud, any_port, erase_all, list, yes } => {
-            kvmit::flashcmd::run(kvmit::flashcmd::Args { firmware, port, baud, any_port, erase_all, yes, list })
+        Cmd::Flash { firmware, port, baud, any_port, erase_all, list, yes, boot_url, boot_script, append_mac, restore_boot_drive } => {
+            kvmit::flashcmd::run(kvmit::flashcmd::Args { firmware, port, baud, any_port, erase_all, yes, list, boot_url, boot_script, append_mac, restore_boot_drive })
         }
         Cmd::Unpair => rt().block_on(async {
             let id = backend::canonical_id(&session::resolve(cli.device, cfg.last_device.clone()).await?);
