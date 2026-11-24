@@ -55,6 +55,8 @@ self-test types into the machine it is plugged into.
 
 ## Things to re-verify before trusting them (dated, STD-003 rule 4)
 
+- 2026-11-23 (0.8.2): The Windows workspace tests cover generated and custom boot scripts, the bundled FAT image, the partition-only write range and MCP authority and replay checks. Re-verify a physical partition-only update and USB boot on workstation models used for the field test.
+
 - 2026-11-20 (0.8.0): Windows GUI checks, ordered clipboard reports and simulated file round trips passed. Physical two-PC transfers, dual-host power isolation on YD-ESP32-23 rev 2022-v1.3 and a new Linux or macOS hardware regression pass remain unverified.
 
 - 2026-11-16 (0.7.0): the maintainer reports successful MCP operation on Windows, without an exact operation/failure-case inventory. Physical Mac/Linux MCP input, delayed release, capture-stall/reconnect and flash-shutdown paths, and Claude/Cowork interoperability remain unverified. CI checks are software evidence. Workflow provisioning remains prerelease beta; the regular GitHub release flag does not graduate it.

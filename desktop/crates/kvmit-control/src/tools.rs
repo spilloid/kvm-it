@@ -71,6 +71,7 @@ pub fn catalog() -> Vec<Tool> {
         Tool { name:"recording_start", description:"Start GIF/WebM recording. Audio is off unless an explicit discovered audio_source is supplied. Recordings contain sensitive pixels.", access:Full, schema: object(fields(json!({"format":{"type":"string","enum":["gif","webm"]},"audio_source":text()})), &["console"]) },
         Tool { name:"recording_stop", description:"Finalize this console's recording asynchronously.", access:Full, schema:object(console(), &["console"]) },
         Tool { name:"boot_drive_set", description:"Toggle the read-only boot drive; restarts the explicit idle adapter.", access:Full, schema:object(fields(json!({"enabled":{"type":"boolean"},"request_id":text()})), &["console","enabled","request_id"]) },
+        Tool { name:"boot_drive_configure", description:"Write and verify only the iPXE boot drive on an explicit UART port. Supply exactly one of url, script (iPXE text starting with #!ipxe), or restore=true. append_mac applies to url. All consoles must be disconnected and idle. The drive still waits for a keypress. Inspect the run receipt before retrying.", access:Full, schema:object(json!({"port":text(),"url":{"type":"string","maxLength":1024},"append_mac":{"type":"boolean"},"script":{"type":"string","maxLength":16384},"restore":{"type":"boolean"},"baud":{"type":"integer","enum":[115200,460800,921600]},"request_id":text()}), &["port","request_id"]) },
         Tool { name:"flash_ports", description:"List serial flash ports; native target USB must not be attached to this controller.", access:Observe, schema:object(json!({}), &[]) },
         Tool { name:"flash_start", description:"Flash bundled or specified firmware on an explicit port with all existing checks; other ports need explicit allow_other_port. All consoles must be disconnected/idle; full erase requires erase_all=true.", access:Full, schema:object(json!({"port":text(),"firmware":text(),"allow_other_port":{"type":"boolean"},"erase_all":{"type":"boolean"},"baud":{"type":"integer","enum":[115200,460800,921600]},"request_id":text()}), &["port","request_id"]) },
     ]
@@ -158,6 +159,7 @@ mod tests {
             "workflow_setup",
             "run_answer",
             "boot_drive_set",
+            "boot_drive_configure",
             "flash_start",
         ] {
             let tool = catalog().into_iter().find(|t| t.name == name).unwrap();
@@ -168,5 +170,19 @@ mod tests {
             .find(|t| t.name == "workflow_start")
             .unwrap();
         assert!(validate(&tool.schema, &json!({"console":"one","library_id":"a","approval":"b","request_id":"c","secrets":{"password":"bad"}})).is_err());
+    }
+
+    #[test]
+    fn boot_drive_configuration_requires_an_explicit_port_and_cannot_override_flash_checks() {
+        let tool = catalog().into_iter().find(|tool| tool.name == "boot_drive_configure").unwrap();
+        assert!(!permitted(Access::Observe, tool.access));
+        let request = json!({"port":"COM4","request_id":"bench-once","url":"https://boot.example.test/install.ipxe"});
+        assert!(validate(&tool.schema, &request).is_ok());
+        assert!(validate(&tool.schema, &json!({"request_id":"bench-once","restore":true})).is_err());
+        for option in ["erase_all", "allow_other_port", "firmware"] {
+            let mut bad = request.clone();
+            bad[option] = json!(true);
+            assert!(validate(&tool.schema, &bad).is_err());
+        }
     }
 }

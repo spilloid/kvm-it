@@ -55,7 +55,9 @@ the [hardware guide](docs/hardware.md) once: which USB-C port goes where, what t
 
 <a id="verification"></a>
 
-## Status: v0.8.1
+## Status: v0.8.2
+
+**Point the USB boot drive at your own installer.** Set a URL or supply an iPXE script from **Tools → Devices → Flash adapter**, the CLI, or full-control MCP. The write is limited to the boot-drive partition and keeps the adapter's pairing. A minute2win boot URL can append the workstation's wired MAC so one configuration works across a bench. [Boot drive setup](docs/getting-started.md#point-the-boot-drive-at-your-deployment-server) · [MCP configuration](docs/mcp.md#configure-the-usb-boot-drive)
 
 In **Settings → Agent access**, select the mode and choose **Enable local agent**. The **Files** panel shows both directions and the measured transfer speed over the COM cable.
 
@@ -93,6 +95,7 @@ not bare-metal Windows).
 
 | Area | State |
 |---|---|
+| 0.8.2 boot-drive configuration | Host-tested on Windows with the bundled drive image and local MCP. Physical partition-only writes and USB boot across workstation models remain to be verified. |
 | 0.8.0 console and clipboard typing | The Windows UI and ordered keyboard reports were host-tested. Clipboard typing uses the US ANSI target layout. A physical Mac or Linux controller pass is pending. |
 | 0.3.0 USB file exchange | Firmware built and simulated file transfers passed in both directions. A physical two-PC handoff and the board's dual-cable power isolation are unverified. |
 | Local MCP control (0.7.0) | Windows development tests, lint and disconnected MCP smoke passed; maintainer reports successful Windows use. Mac/Linux physical MCP behavior and Claude/Cowork interoperability remain unverified. |

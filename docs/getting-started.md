@@ -142,14 +142,17 @@ The drive is **read-only from the target**. Use the adapter's COM USB port on yo
 2. Enter an HTTP or HTTPS URL to your iPXE script. For minute2win, enter the server's LAN boot endpoint, such as `http://192.168.1.50:8080/boot`, and select **Append the Ethernet MAC to the URL**.
 3. Choose the adapter's COM port and select **Write boot drive**. Reconnect after the verified write and turn on **Boot drive**. On the target, select the drive in UEFI and press a key at the iPXE prompt.
 
-The same update and restore are available from the command line.
+For your own `autoexec.ipxe`, choose **Use iPXE script** and paste the UTF-8 script, starting with `#!ipxe` on its own line. kvm-it puts the keypress prompt before your commands. **Restore boot drive** brings back the bundled demo.
+
+You can do the same work from the command line or through [full-control MCP](mcp.md#configure-the-usb-boot-drive).
 
 ```text
 kvmit flash --boot-url http://192.168.1.50:8080/boot --append-mac
+kvmit flash --boot-script autoexec.ipxe
 kvmit flash --restore-boot-drive
 ```
 
-The boot drive still waits five seconds for a keypress. iPXE uses the target's wired Ethernet and ordinary DHCP. Put authentication and one-time arming on the deployment server, since the target can read the configured URL. For Windows installs, minute2win can fetch the WIM from a separate HTTPS image host.
+The boot drive waits five seconds for a keypress. URL mode uses the target's wired Ethernet and ordinary DHCP. Custom scripts choose their own network setup and boot commands. The target can read the script, so keep credentials and one-time arming on the deployment server. For Windows installs, minute2win can fetch the WIM from a separate HTTPS image host such as Cloudflare R2.
 
 If a target's firmware dislikes the extra drive, turn it off (the adapter goes back to presenting just a keyboard and mouse), or flash the previous firmware
 from the 0.3.0 release with `kvmit flash --firmware <its firmware folder>`; your pairing is kept.

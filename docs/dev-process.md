@@ -1693,3 +1693,9 @@ Assets were built and checked on a draft, then published as a regular release. R
 Workflow automation remains prerelease beta. Physical Mac/Linux MCP, the inherited Linux hardware regression, delayed-release/capture-stall/reconnect/flash-shutdown hardware paths, actual Claude/Cowork interoperability and end-to-end provisioning are not established by these software checks. The maintainer's useful Windows MCP operation is reported separately without an invented operation inventory. The next work remains the existing hardware/client acceptance and pre-1.0 verification debt.
 
 [Machine-readable release evidence and asset hashes](reviews/2026-11-16-0.7.0-release.json).
+
+## 2026-11-23 - 0.8.2 configurable boot drive field test
+
+The maintainer waived the independent model review for this field test. GUI, CLI and full-control MCP share the boot-drive writer. It checks the installed iPXE partition and writes only that range. URL mode can append the active wired MAC. Custom UTF-8 iPXE scripts keep their commands after the built-in keypress prompt. Full firmware and signed EFI assets are carried over from 0.8.1.
+
+The Windows workspace tests passed, including the bundled-drive edit, untouched EFI binaries, flash partition bounds, MCP access and request replay. The physical partition-only write and boot from this candidate are field-test checks.

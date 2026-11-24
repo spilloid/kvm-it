@@ -142,7 +142,7 @@ pub struct Image {
 }
 
 mod boot_drive;
-pub use boot_drive::BootUrl;
+pub use boot_drive::BootScript;
 
 /// A JSON object whose duplicate keys are an error (a map would silently keep the last one).
 struct StrictMap(Vec<(String, String)>);

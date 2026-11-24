@@ -1,8 +1,9 @@
 # Changelog
 
-## [Unreleased]
+## [0.8.2] - 2026-11-23
 
-- Configure the adapter's boot drive from the Flash adapter window or with `kvmit flash --boot-url`. A boot URL can append the active Ethernet MAC for a minute2win deployment server. The configuration and restore commands write and verify only the boot-drive partition.
+- Set a boot URL or supply your own `autoexec.ipxe` from the Flash adapter window, `kvmit flash`, or the full-control MCP tool `boot_drive_configure`. Append the active Ethernet MAC to a URL to use minute2win's per-machine boot endpoint.
+- Boot-drive changes and restore write and verify only the iPXE partition through the adapter's COM port. The target still starts the configured script after a keypress.
 
 ## [0.8.1] - 2026-11-20
 

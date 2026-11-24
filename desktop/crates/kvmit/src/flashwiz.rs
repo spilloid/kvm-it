@@ -1,7 +1,7 @@
 //! The "Flash adapter" wizard (0.3.0): a window that walks through the safety checks and writes the adapter's firmware
 //! through its UART (COM) port. All the rules are in [`blockers`] (tested) and in `kvmit-flash`; the flashing runs on its
 //! own thread and the window only reads its progress.
-use kvmit_flash::{check_no_native_adapter, check_port, flash, flash_boot_drive, list_ports, usb_devices, BootUrl, FlashStage, Image, Options, PortInfo, PortKind, ProgressCallbacks, Report};
+use kvmit_flash::{check_no_native_adapter, check_port, flash, flash_boot_drive, list_ports, usb_devices, BootScript, FlashStage, Image, Options, PortInfo, PortKind, ProgressCallbacks, Report};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -31,6 +31,7 @@ type Outcome = Option<Result<Report, String>>;
 enum FlashMode {
     Firmware,
     BootUrl,
+    BootScript,
     RestoreBootDrive,
 }
 
@@ -45,6 +46,7 @@ pub struct Wizard {
     erase_ack: bool,
     mode: FlashMode,
     boot_url: String,
+    boot_script: String,
     append_mac: bool,
     progress: Arc<Mutex<Progress>>,
     outcome: Arc<Mutex<Outcome>>,
@@ -173,6 +175,7 @@ impl Wizard {
             erase_ack: false,
             mode: FlashMode::Firmware,
             boot_url: String::new(),
+            boot_script: String::new(),
             append_mac: false,
             progress: Arc::default(),
             outcome: Arc::default(),
@@ -210,7 +213,7 @@ impl Wizard {
         self.running
     }
 
-    fn start(&mut self, ctx: &egui::Context, boot_url: Option<BootUrl>) {
+    fn start(&mut self, ctx: &egui::Context, boot_script: Option<BootScript>) {
         let (Ok(mut image), Some(port)) = (self.image.clone(), self.selected().cloned()) else { return };
         let boot_drive_only = self.mode != FlashMode::Firmware;
         let erase_all = !boot_drive_only && self.erase_all;
@@ -229,7 +232,7 @@ impl Wizard {
         std::thread::spawn(move || {
             let mut bar = Bar { p, ctx: ctx2.clone() };
             let r = (|| {
-                if let Some(url) = &boot_url { image.set_boot_url(url)?; }
+                if let Some(script) = &boot_script { image.set_boot_script(script)?; }
                 if boot_drive_only {
                     flash_boot_drive(&port, &image, opts.baud, &mut bar)
                 } else {
@@ -316,16 +319,26 @@ impl Wizard {
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(&mut self.mode, FlashMode::Firmware, "Firmware");
             ui.selectable_value(&mut self.mode, FlashMode::BootUrl, "Set boot URL");
+            ui.selectable_value(&mut self.mode, FlashMode::BootScript, "Use iPXE script");
             ui.selectable_value(&mut self.mode, FlashMode::RestoreBootDrive, "Restore boot drive");
         });
         let boot_drive_only = self.mode != FlashMode::Firmware;
-        let boot_url = (self.mode == FlashMode::BootUrl).then(|| {
-            ui.label("Boot URL");
-            ui.add(egui::TextEdit::singleline(&mut self.boot_url).hint_text("https://server.example/install.ipxe"));
-            ui.checkbox(&mut self.append_mac, "Append the Ethernet MAC to the URL");
-            ui.weak("The target can read this URL. Use a URL without credentials.");
-            BootUrl::new(self.boot_url.trim(), self.append_mac)
-        });
+        let boot_script = match self.mode {
+            FlashMode::BootUrl => {
+                ui.label("Boot URL");
+                ui.add(egui::TextEdit::singleline(&mut self.boot_url).hint_text("https://server.example/install.ipxe"));
+                ui.checkbox(&mut self.append_mac, "Append the Ethernet MAC to the URL");
+                ui.weak("The target can read the URL. Keep credentials on the deployment server.");
+                Some(BootScript::for_url(self.boot_url.trim(), self.append_mac))
+            }
+            FlashMode::BootScript => {
+                ui.label("iPXE script");
+                ui.add(egui::TextEdit::multiline(&mut self.boot_script).code_editor().desired_rows(6).hint_text("#!ipxe"));
+                ui.weak("kvm-it adds the keypress prompt. The target can read the script.");
+                Some(BootScript::from_text(&self.boot_script))
+            }
+            _ => None,
+        };
         ui.collapsing("Firmware location (advanced)", |ui| {
             ui.label("Firmware folder");
             if ui.text_edit_singleline(&mut self.firmware).lost_focus() {
@@ -391,7 +404,7 @@ impl Wizard {
         }
         ui.add_space(4.0);
         let mut reasons = blockers(self.image.is_ok(), self.native.as_deref(), external, self.selected(), erase_all, self.erase_ack, false);
-        if let Some(Err(error)) = &boot_url { reasons.push(error.0.clone()); }
+        if let Some(Err(error)) = &boot_script { reasons.push(error.0.clone()); }
         if boot_drive_only && self.image.as_ref().is_ok_and(|image| image.parts.len() < 4) {
             reasons.push("This firmware bundle has no boot-drive image.".into());
         }
@@ -401,7 +414,7 @@ impl Wizard {
         ui.weak("Keep the board's native USB port unplugged from this computer: it acts as a keyboard and mouse.");
         let label = if boot_drive_only { "Write boot drive" } else { "Flash adapter" };
         if ui.add_enabled(reasons.is_empty(), egui::Button::new(label)).clicked() {
-            self.start(ctx, boot_url.and_then(Result::ok));
+            self.start(ctx, boot_script.and_then(Result::ok));
         }
         if !self.history.is_empty() {
             ui.collapsing("Boards tested in this window", |ui| { for line in &self.history { ui.label(line); } });

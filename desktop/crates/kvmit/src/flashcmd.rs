@@ -1,6 +1,6 @@
 //! `kvmit flash`: write the adapter's firmware through its UART (COM) port. The decisions live in `kvmit-flash`; this is
 //! the talking-to-a-person part.
-use kvmit_flash::{check_no_native_adapter, check_port, flash, flash_boot_drive, list_ports, usb_devices, BootUrl, FlashStage, Image, Options, PortKind, ProgressCallbacks};
+use kvmit_flash::{check_no_native_adapter, check_port, flash, flash_boot_drive, list_ports, usb_devices, BootScript, FlashStage, Image, Options, PortKind, ProgressCallbacks};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
@@ -13,6 +13,7 @@ pub struct Args {
     pub list: bool,
     pub baud: Option<u32>,
     pub boot_url: Option<String>,
+    pub boot_script: Option<PathBuf>,
     pub append_mac: bool,
     pub restore_boot_drive: bool,
 }
@@ -72,9 +73,11 @@ pub fn run(a: Args) -> R<()> {
         return Err("no firmware folder found next to the program (and none given): pass --firmware <dir> or set KVMIT_FIRMWARE".into());
     }
     let mut image = Image::from_build_dir(&firmware)?;
-    let boot_drive_only = a.restore_boot_drive || a.boot_url.is_some();
+    let boot_drive_only = a.restore_boot_drive || a.boot_url.is_some() || a.boot_script.is_some();
     if let Some(url) = &a.boot_url {
-        image.set_boot_url(&BootUrl::new(url, a.append_mac)?)?;
+        image.set_boot_script(&BootScript::for_url(url, a.append_mac)?)?;
+    } else if let Some(file) = &a.boot_script {
+        image.set_boot_script(&BootScript::from_file(file)?)?;
     }
     let port = match &a.port {
         Some(name) => ports.iter().find(|p| &p.name == name).cloned().ok_or_else(|| format!("{name} is not a USB serial port here (see `kvmit flash --list`)"))?,

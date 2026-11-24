@@ -1,19 +1,49 @@
-use super::{err, FlashError, Image, Partition, DATA_FAT_SUBTYPE, DATA_TYPE};
+use super::{err, read_limited, FlashError, Image, Partition, DATA_FAT_SUBTYPE, DATA_TYPE};
 use std::io::{Cursor, Write};
 use std::ops::Range;
+use std::path::Path;
 use url::Url;
 
 const SECTOR_BYTES: usize = 512;
+const MAX_SCRIPT_BYTES: usize = 16 * 1024;
+const BOOT_PROMPT: &str =
+    "prompt --timeout 5000 kvm-it: press any key to run the boot script... || exit 1";
 
-/// An HTTP(S) destination suitable for a single iPXE script argument.
-#[derive(Clone, Debug)]
-pub struct BootUrl {
-    url: Url,
-    append_mac: bool,
-}
+/// The commands to run from the boot drive after the keypress prompt.
+pub struct BootScript(String);
 
-impl BootUrl {
-    pub fn new(input: &str, append_mac: bool) -> Result<Self, FlashError> {
+impl BootScript {
+    pub fn from_file(path: &Path) -> Result<Self, FlashError> {
+        let bytes = read_limited(path, MAX_SCRIPT_BYTES as u64, "iPXE boot script")?;
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| FlashError("The iPXE boot script must be UTF-8 text.".into()))?;
+        Self::from_text(text)
+    }
+
+    pub fn from_text(input: &str) -> Result<Self, FlashError> {
+        if input.len() > MAX_SCRIPT_BYTES {
+            return err("The iPXE boot script is limited to 16 KiB.");
+        }
+        let text = input.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+        let body = text
+            .strip_prefix("#!ipxe\n")
+            .filter(|body| !body.trim().is_empty())
+            .ok_or_else(|| {
+                FlashError(
+                    "Start the boot script with #!ipxe on its own line, followed by your commands."
+                        .into(),
+                )
+            })?;
+        if body
+            .chars()
+            .any(|ch| ch.is_control() && ch != '\n' && ch != '\t')
+        {
+            return err("The iPXE boot script contains unsupported control characters.");
+        }
+        Ok(Self(body.into()))
+    }
+
+    pub fn for_url(input: &str, append_mac: bool) -> Result<Self, FlashError> {
         let authority = input
             .strip_prefix("https://")
             .or_else(|| input.strip_prefix("http://"));
@@ -36,21 +66,20 @@ impl BootUrl {
         if append_mac && url.query().is_some() {
             return err("A boot URL that appends the Ethernet MAC must omit the query string.");
         }
-        Ok(Self { url, append_mac })
-    }
-
-    fn script(&self) -> String {
-        let destination = if self.append_mac {
-            format!("{}/${{netX/mac}}", self.url.as_str().trim_end_matches('/'))
+        let destination = if append_mac {
+            format!("{}/${{netX/mac}}", url.as_str().trim_end_matches('/'))
         } else {
-            self.url.to_string()
+            url.to_string()
         };
-        format!(
-            "#!ipxe\nprompt --timeout 5000 kvm-it: press any key to boot from the configured URL... || exit 1\n\
-             dhcp || goto dhcp_failed\nchain {destination} || goto boot_failed\nexit 1\n\
+        Ok(Self(format!(
+            "dhcp || goto dhcp_failed\nchain {destination} || goto boot_failed\nexit 1\n\
              :dhcp_failed\necho kvm-it: no DHCP address. Check the wired Ethernet connection.\nifstat\nexit 1\n\
              :boot_failed\necho kvm-it: the configured boot URL failed.\nexit 1\n"
-        )
+        )))
+    }
+
+    fn autoexec(&self) -> String {
+        format!("#!ipxe\n{BOOT_PROMPT}\n{}\n", self.0.trim_end_matches('\n'))
     }
 }
 
@@ -79,7 +108,7 @@ impl Image {
     }
 
     /// Rewrite only the autoexec file in the validated bundled boot-drive image.
-    pub fn set_boot_url(&mut self, url: &BootUrl) -> Result<(), FlashError> {
+    pub fn set_boot_script(&mut self, script: &BootScript) -> Result<(), FlashError> {
         self.validate()?;
         self.boot_drive_partition()?;
         let part = &mut self.parts[3];
@@ -91,7 +120,8 @@ impl Image {
             let root = fs.root_dir();
             let mut file = root.open_file("autoexec.ipxe").map_err(fat_error)?;
             file.truncate().map_err(fat_error)?;
-            file.write_all(url.script().as_bytes()).map_err(fat_error)?;
+            file.write_all(script.autoexec().as_bytes())
+                .map_err(fat_error)?;
         }
         fs.unmount().map_err(fat_error)?;
         part.data = data;
@@ -136,7 +166,6 @@ fn fat_error(error: std::io::Error) -> FlashError {
 mod tests {
     use super::*;
     use std::io::Read;
-    use std::path::Path;
 
     fn bundle() -> Image {
         Image::from_build_dir(
@@ -164,8 +193,8 @@ mod tests {
     fn packaged_image_keeps_its_signed_loaders_and_requires_a_key() {
         let mut image = bundle();
         let before = image.clone();
-        let url = BootUrl::new("http://192.168.68.60:8080/boot/", true).unwrap();
-        image.set_boot_url(&url).unwrap();
+        let script = BootScript::for_url("http://192.168.68.60:8080/boot/", true).unwrap();
+        image.set_boot_script(&script).unwrap();
         image.validate().unwrap();
         assert_eq!(image.parts[..3], before.parts[..3]);
         let old_drive = &before.parts[3].data;
@@ -185,9 +214,10 @@ mod tests {
 
     #[test]
     fn fleet_url_accepts_static_https_and_refuses_script_syntax() {
-        let url = BootUrl::new("https://boot.example.test/windows11/install.ipxe", false).unwrap();
-        assert!(url
-            .script()
+        let script =
+            BootScript::for_url("https://boot.example.test/windows11/install.ipxe", false).unwrap();
+        assert!(script
+            .autoexec()
             .contains("chain https://boot.example.test/windows11/install.ipxe "));
         for input in [
             "ftp://example.test/file",
@@ -199,9 +229,33 @@ mod tests {
             "https://example.test/script\nreboot",
             "https://example.test/${script}",
         ] {
-            assert!(BootUrl::new(input, false).is_err(), "{input:?}");
+            assert!(BootScript::for_url(input, false).is_err(), "{input:?}");
         }
-        assert!(BootUrl::new("https://example.test/boot?key=value", true).is_err());
+        assert!(BootScript::for_url("https://example.test/boot?key=value", true).is_err());
+    }
+
+    #[test]
+    fn imported_script_writes_its_commands_after_the_keypress_prompt() {
+        let mut image = bundle();
+        let commands =
+            "dhcp || goto done\nchain https://boot.example.test/menu.ipxe\n:done\nexit 1\n";
+        let input = format!("\u{feff}#!ipxe\r\n{}", commands.replace('\n', "\r\n"));
+        let script = BootScript::from_text(&input).unwrap();
+        image.set_boot_script(&script).unwrap();
+        assert_eq!(
+            read_file(&image.parts[3].data, "autoexec.ipxe"),
+            format!("#!ipxe\n{BOOT_PROMPT}\n{commands}").as_bytes()
+        );
+    }
+
+    #[test]
+    fn imported_script_rejects_missing_header_binary_text_and_oversized_input() {
+        for input in ["dhcp", "#!ipxe\n", "#!ipxe\n\0dhcp", "#!ipxe\ndhcp\r"] {
+            assert!(BootScript::from_text(input).is_err(), "{input:?}");
+        }
+        assert!(
+            BootScript::from_text(&format!("#!ipxe\n{}", "x".repeat(MAX_SCRIPT_BYTES))).is_err()
+        );
     }
 
     #[test]
