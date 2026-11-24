@@ -1,6 +1,6 @@
 //! `kvmit flash`: write the adapter's firmware through its UART (COM) port. The decisions live in `kvmit-flash`; this is
 //! the talking-to-a-person part.
-use kvmit_flash::{check_no_native_adapter, check_port, flash, list_ports, usb_devices, FlashStage, Image, Options, PortKind, ProgressCallbacks};
+use kvmit_flash::{check_no_native_adapter, check_port, flash, flash_boot_drive, list_ports, usb_devices, BootUrl, FlashStage, Image, Options, PortKind, ProgressCallbacks};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
@@ -12,6 +12,9 @@ pub struct Args {
     pub yes: bool,
     pub list: bool,
     pub baud: Option<u32>,
+    pub boot_url: Option<String>,
+    pub append_mac: bool,
+    pub restore_boot_drive: bool,
 }
 
 type R<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -68,7 +71,11 @@ pub fn run(a: Args) -> R<()> {
     if firmware.as_os_str().is_empty() {
         return Err("no firmware folder found next to the program (and none given): pass --firmware <dir> or set KVMIT_FIRMWARE".into());
     }
-    let image = Image::from_build_dir(&firmware)?;
+    let mut image = Image::from_build_dir(&firmware)?;
+    let boot_drive_only = a.restore_boot_drive || a.boot_url.is_some();
+    if let Some(url) = &a.boot_url {
+        image.set_boot_url(&BootUrl::new(url, a.append_mac)?)?;
+    }
     let port = match &a.port {
         Some(name) => ports.iter().find(|p| &p.name == name).cloned().ok_or_else(|| format!("{name} is not a USB serial port here (see `kvmit flash --list`)"))?,
         None => {
@@ -90,7 +97,9 @@ pub fn run(a: Args) -> R<()> {
     }
     println!(
         "{}",
-        if a.erase_all {
+        if boot_drive_only {
+            "mode:     boot drive only. The adapter restarts after verification."
+        } else if a.erase_all {
             "mode:     FULL ERASE first: the adapter's pairing (bond) and settings are erased; re-pair afterwards."
         } else {
             "mode:     all bundled images (including the boot drive): pairing and settings are kept."
@@ -107,7 +116,11 @@ pub fn run(a: Args) -> R<()> {
         }
     }
     let mut bar = Bar { total: 0, done: 0, name: "" };
-    let report = flash(&port, &image, Options { erase_all: a.erase_all, allow_other_port: a.any_port, baud: a.baud }, &mut bar)?;
+    let report = if boot_drive_only {
+        flash_boot_drive(&port, &image, a.baud, &mut bar)?
+    } else {
+        flash(&port, &image, Options { erase_all: a.erase_all, allow_other_port: a.any_port, baud: a.baud }, &mut bar)?
+    };
     println!("flashed and verified (ESP32-S3{}). The adapter restarts by itself; check it with `kvmit status`.", report.mac.map(|m| format!(", {m}")).unwrap_or_default());
     Ok(())
 }

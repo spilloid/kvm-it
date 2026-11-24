@@ -2364,6 +2364,7 @@ name = "kvmit-flash"
 version = "0.8.1"
 dependencies = [
  "espflash",
+ "fatfs",
  "kvmit-control",
  "md-5 0.11.0",
  "nusb",
@@ -2371,6 +2372,7 @@ dependencies = [
  "serde_json",
  "serialport",
  "sha2 0.11.0",
+ "url",
 ]
 
 [[package]]

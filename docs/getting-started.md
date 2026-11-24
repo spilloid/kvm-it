@@ -134,15 +134,28 @@ network, driven from your desk. **It is off until you turn it on**, so by defaul
    project's public demo menu, which proves the whole path without a server of your own. (If you do nothing it exits and the target carries on with its normal boot
    order, so a target that happens to boot USB first is not hijacked.)
 
-The drive is **read-only by design**: the adapter reports it write-protected and rejects every write, so nothing on the target can ever change it.
+The drive is **read-only from the target**. Use the adapter's COM USB port on your controller to change its boot URL.
+
+### Point the boot drive at your deployment server
+
+1. Disconnect the adapter in kvm-it, plug its COM USB port into the controller, and open **Tools → Devices → Flash adapter → Set boot URL**.
+2. Enter an HTTP or HTTPS URL to your iPXE script. For minute2win, enter the server's LAN boot endpoint, such as `http://192.168.1.50:8080/boot`, and select **Append the Ethernet MAC to the URL**.
+3. Choose the adapter's COM port and select **Write boot drive**. Reconnect after the verified write and turn on **Boot drive**. On the target, select the drive in UEFI and press a key at the iPXE prompt.
+
+The same update and restore are available from the command line.
+
+```text
+kvmit flash --boot-url http://192.168.1.50:8080/boot --append-mac
+kvmit flash --restore-boot-drive
+```
+
+The boot drive still waits five seconds for a keypress. iPXE uses the target's wired Ethernet and ordinary DHCP. Put authentication and one-time arming on the deployment server, since the target can read the configured URL. For Windows installs, minute2win can fetch the WIM from a separate HTTPS image host.
 
 If a target's firmware dislikes the extra drive, turn it off (the adapter goes back to presenting just a keyboard and mouse), or flash the previous firmware
 from the 0.3.0 release with `kvmit flash --firmware <its firmware folder>`; your pairing is kept.
 
 Honest limits for now: **UEFI only** (not legacy BIOS). **Secure Boot can stay on** on firmware that trusts Microsoft's third-party UEFI CA, because the drive carries the iPXE
-project's signed shim and iPXE; but then iPXE only starts signed things (Windows PE through `wimboot` is fine; an unsigned Linux kernel is refused with "Security Policy
-Violation"), and some locked-down PCs turn that CA off and refuse the drive. All of that has been run in a virtual machine, not yet on a real PC. And the boot script on the
-drive is the demo until editing it from the app lands (developers can change it today: [developing.md](developing.md)).
+project's signed shim and iPXE. With Secure Boot on, iPXE enforces signature requirements. The signed boot chain and Windows PE through `wimboot` were exercised in a virtual machine. Check that iPXE sees the wired adapter on each workstation model before using the USB boot path.
 
 ## 7. Set up Windows 11 with a workflow (new in 0.5.0, reads the screen since 0.6.0)
 

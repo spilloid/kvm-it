@@ -1,5 +1,9 @@
 # Changelog
 
+## [Unreleased]
+
+- Configure the adapter's boot drive from the Flash adapter window or with `kvmit flash --boot-url`. A boot URL can append the active Ethernet MAC for a minute2win deployment server. The configuration and restore commands write and verify only the boot-drive partition.
+
 ## [0.8.1] - 2026-11-20
 
 - Under Settings, select Observe, Approved workflows, or Full control directly, then choose **Enable local agent**.
